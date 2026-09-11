@@ -65,9 +65,12 @@ metadata:
   name: prod-web-01
 spec:
   environment: production
-  groups: [web]
-  applications: [debug-tools]     # extras, on top of the groups
-  excludeApplications: [frontend] # opt out of something a group brings
+  groups: 
+    - web
+  applications: 
+    - debug-tools  # extras, on top of the groups
+  excludeApplications: 
+    - frontend  # opt out of something a group brings
   overrides:
     api:
       env:
