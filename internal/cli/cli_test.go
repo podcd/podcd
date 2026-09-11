@@ -24,6 +24,9 @@ func TestCmdInstallWritesSystemdService(t *testing.T) {
 	if !strings.Contains(text, "ExecStart=/usr/local/bin/podcd-agent run") {
 		t.Fatalf("service file does not contain the podcd agent command:\n%s", text)
 	}
+	if !strings.Contains(text, "WorkingDirectory=%h") {
+		t.Fatalf("service file does not set the working directory to the service user's home:\n%s", text)
+	}
 	if !strings.Contains(text, "WantedBy=default.target") {
 		t.Fatalf("service file is missing the systemd install target:\n%s", text)
 	}

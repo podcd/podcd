@@ -51,6 +51,8 @@ type AgentConfig struct {
 	UnitDir string `yaml:"unitDir,omitempty"`
 	// SecretsDir is the root for relative file: secret references.
 	SecretsDir string `yaml:"secretsDir,omitempty"`
+	// EnvFile is the host-local file containing KEY=value secrets for env: references.
+	EnvFile string `yaml:"envFile,omitempty"`
 
 	// Prune removes managed applications that Git no longer declares. On by
 	// default: leaving orphans running is its own kind of drift.
@@ -75,6 +77,7 @@ func DefaultAgentConfig() AgentConfig {
 		StateDir:         defaultStateDir(),
 		UnitDir:          defaultUnitDir(),
 		SecretsDir:       "",
+		EnvFile:          defaultEnvFilePath(),
 		Prune:            &prune,
 		LogFormat:        "text",
 	}
@@ -161,12 +164,16 @@ func (c *AgentConfig) applyDefaults() {
 	if c.UnitDir == "" {
 		c.UnitDir = d.UnitDir
 	}
+	if c.EnvFile == "" {
+		c.EnvFile = d.EnvFile
+	}
 	if c.LogFormat == "" {
 		c.LogFormat = d.LogFormat
 	}
 	c.StateDir = expandPath(c.StateDir)
 	c.UnitDir = expandPath(c.UnitDir)
 	c.SecretsDir = expandPath(c.SecretsDir)
+	c.EnvFile = expandPath(c.EnvFile)
 	for i := range c.Repositories {
 		if c.Repositories[i].Revision == "" {
 			c.Repositories[i].Revision = "main"
@@ -221,6 +228,20 @@ func defaultStateDir() string {
 		return "/var/lib/podcd"
 	}
 	return filepath.Join(home, ".local", "state", "podcd")
+}
+
+func defaultEnvFilePath() string {
+	if p := os.Getenv("PODCD_ENV_FILE"); p != "" {
+		return p
+	}
+	if p := os.Getenv("PODCD_CONFIG"); p != "" {
+		return filepath.Join(filepath.Dir(p), "agent.env")
+	}
+	home, err := os.UserHomeDir()
+	if err == nil {
+		return filepath.Join(home, ".config", "podcd", "agent.env")
+	}
+	return "/etc/podcd/agent.env"
 }
 
 func defaultUnitDir() string {

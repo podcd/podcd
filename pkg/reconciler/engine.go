@@ -71,7 +71,7 @@ func NewEngine(cfg config.AgentConfig, log *slog.Logger) (*Engine, error) {
 	e.source = &Source{
 		Repos:   ReposFromConfig(cfg),
 		Host:    ident.Host,
-		Secrets: secrets.Default(cfg.SecretsDir),
+		Secrets: secrets.Default(cfg.SecretsDir, cfg.EnvFile),
 		Log:     log,
 	}
 	return e, nil

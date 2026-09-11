@@ -7,10 +7,12 @@
 package secrets
 
 import (
+	"bufio"
 	"context"
 	"errors"
 	"fmt"
 	"os"
+	"path/filepath"
 	"sort"
 	"strings"
 )
@@ -42,8 +44,12 @@ func NewResolver(providers ...Provider) *Resolver {
 
 // Default returns the resolver used when nothing else is configured:
 // environment variables and files readable by the agent user.
-func Default(secretsDir string) *Resolver {
-	return NewResolver(EnvProvider{}, FileProvider{Root: secretsDir})
+func Default(secretsDir string, envFiles ...string) *Resolver {
+	explicit := ""
+	if len(envFiles) > 0 {
+		explicit = envFiles[0]
+	}
+	return NewResolver(EnvProvider{Paths: envFilePaths(explicit)}, FileProvider{Root: secretsDir})
 }
 
 // Schemes lists the registered schemes, sorted.
@@ -80,18 +86,89 @@ func (r *Resolver) Resolve(ctx context.Context, ref string) (string, error) {
 
 // EnvProvider reads secrets from the agent's own environment, typically
 // supplied by a systemd EnvironmentFile that is not in Git.
-type EnvProvider struct{}
+type EnvProvider struct {
+	Paths []string
+}
 
 // Scheme implements Provider.
 func (EnvProvider) Scheme() string { return "env" }
 
 // Resolve implements Provider.
-func (EnvProvider) Resolve(_ context.Context, locator string) (string, error) {
-	v, ok := os.LookupEnv(locator)
-	if !ok {
-		return "", fmt.Errorf("environment variable %s is not set: %w", locator, ErrNotFound)
+func (p EnvProvider) Resolve(_ context.Context, locator string) (string, error) {
+	if v, ok := os.LookupEnv(locator); ok {
+		return v, nil
 	}
-	return v, nil
+	paths := p.Paths
+	if len(paths) == 0 {
+		paths = envFilePaths("")
+	}
+	if v, ok := lookupEnvFile(locator, paths...); ok {
+		return v, nil
+	}
+	return "", fmt.Errorf("environment variable %s is not set: %w", locator, ErrNotFound)
+}
+
+func envFilePaths(configured string) []string {
+	paths := []string{}
+	if envFile := os.Getenv("PODCD_ENV_FILE"); envFile != "" {
+		paths = append(paths, envFile)
+	}
+	if configured != "" {
+		paths = append(paths, configured)
+	}
+	if home, err := os.UserHomeDir(); err == nil {
+		paths = append(paths, filepath.Join(home, ".config", "podcd", "agent.env"))
+	}
+	paths = append(paths, filepath.Join("/etc", "podcd", "agent.env"))
+	seen := map[string]struct{}{}
+	out := make([]string, 0, len(paths))
+	for _, p := range paths {
+		if p == "" {
+			continue
+		}
+		if _, ok := seen[p]; ok {
+			continue
+		}
+		seen[p] = struct{}{}
+		out = append(out, p)
+	}
+	return out
+}
+
+func lookupEnvFile(locator string, paths ...string) (string, bool) {
+	for _, path := range paths {
+		if path == "" {
+			continue
+		}
+		file, err := os.Open(path)
+		if err != nil {
+			continue
+		}
+		scanner := bufio.NewScanner(file)
+		for scanner.Scan() {
+			line := strings.TrimSpace(scanner.Text())
+			if line == "" || strings.HasPrefix(line, "#") {
+				continue
+			}
+			if strings.HasPrefix(line, "export ") {
+				line = strings.TrimSpace(strings.TrimPrefix(line, "export "))
+			}
+			key, value, ok := strings.Cut(line, "=")
+			if !ok {
+				continue
+			}
+			key = strings.TrimSpace(key)
+			if key == locator {
+				_ = file.Close()
+				return strings.Trim(value, "\"'"), true
+			}
+		}
+		_ = file.Close()
+		if err := scanner.Err(); err != nil {
+			break
+		}
+	}
+	return "", false
 }
 
 // FileProvider reads secrets from files on the host. Relative locators resolve

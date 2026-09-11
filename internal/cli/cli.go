@@ -353,6 +353,7 @@ Wants=network-online.target
 
 [Service]
 Type=simple
+WorkingDirectory=%h
 ExecStart=/usr/local/bin/podcd-agent run
 Restart=always
 RestartSec=10
