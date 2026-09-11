@@ -24,10 +24,7 @@ jobs:
       - name: gofmt check
         run: test -z "$(gofmt -l .)"
 
-      - uses: golangci/golangci-lint-action@v6
-        with:
-          version: latest
-          install-mode: go
+      - run: make lint
 
       - run: make build
 

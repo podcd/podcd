@@ -3,6 +3,8 @@
 VERSION ?= $(shell git describe --tags --always --dirty 2>/dev/null || echo dev)
 LDFLAGS := -X github.com/podcd/podcd/internal/cli.Version=$(VERSION)
 DIST    := dist
+GO ?= go
+GOLANGCILINT_VERSION ?= v2.13.2
 
 .PHONY: all build test test-e2e vet fmt lint clean install
 
@@ -30,6 +32,10 @@ vet:
 
 fmt:
 	gofmt -l -w .
+
+## lint: run golangci-lint using the repo's Go toolchain.
+lint:
+	GO111MODULE=on $(GO) run github.com/golangci/golangci-lint/v2/cmd/golangci-lint@$(GOLANGCILINT_VERSION) run --timeout 10m --default=none --enable=govet
 
 ## install: put the binaries on this machine (needs root).
 install: build
