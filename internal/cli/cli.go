@@ -195,6 +195,9 @@ func newInstallCommand() *cobra.Command {
 
 func newConfigCommand() *cobra.Command {
 	cmd := &cobra.Command{Use: "config", Short: "view or create the agent config file", RunE: func(cmd *cobra.Command, args []string) error {
+		if len(args) == 0 {
+			return cmd.Help()
+		}
 		return cmdConfig(args)
 	}}
 	cmd.AddCommand(&cobra.Command{Use: "path", Short: "print the default agent config path", RunE: func(cmd *cobra.Command, args []string) error {
@@ -242,6 +245,13 @@ func newConfigCommand() *cobra.Command {
 	createCmd.Flags().String("interval", "60s", "reconcile interval")
 	createCmd.Flags().Bool("force", false, "overwrite an existing config")
 	cmd.AddCommand(createCmd)
+
+	setCmd := &cobra.Command{Use: "set <field> <value>", Short: "set a value in the agent config file", Args: cobra.ExactArgs(2), RunE: func(cmd *cobra.Command, args []string) error {
+		path, _ := cmd.Flags().GetString("path")
+		return setConfigValue(path, args[0], args[1])
+	}}
+	setCmd.Flags().String("path", defaultConfigPath(), "path for the agent config")
+	cmd.AddCommand(setCmd)
 	return cmd
 }
 
@@ -430,10 +440,34 @@ func writeDefaultAgentConfig(path, host, repoURL, repoName, repoPath, revision, 
 	return nil
 }
 
+func setConfigValue(path, field, value string) error {
+	cfg := config.DefaultAgentConfig()
+	if _, err := os.Stat(path); err == nil {
+		loaded, err := config.LoadAgentConfig(path)
+		if err != nil {
+			return err
+		}
+		cfg = loaded
+	}
+	if err := cfg.SetValue(field, value); err != nil {
+		return err
+	}
+	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+		return fmt.Errorf("create config dir %s: %w", filepath.Dir(path), err)
+	}
+	content, err := yaml.Marshal(cfg)
+	if err != nil {
+		return fmt.Errorf("marshal config: %w", err)
+	}
+	if err := os.WriteFile(path, content, 0o644); err != nil {
+		return fmt.Errorf("write config %s: %w", path, err)
+	}
+	return nil
+}
+
 func cmdConfig(args []string) error {
 	if len(args) == 0 {
-		fmt.Fprintln(os.Stdout, defaultConfigPath())
-		return nil
+		return fmt.Errorf("missing config subcommand")
 	}
 
 	switch args[0] {

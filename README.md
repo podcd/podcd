@@ -86,6 +86,49 @@ podcd config create --repo-url https://github.com/podcd/podcd.git --repo-path ex
 
 This writes the default config to `~/.config/podcd/agent.yaml` unless `PODCD_CONFIG` or `--path` is set.
 
+### Shell completion
+
+podcd includes Cobra shell completion for bash, zsh, fish, and PowerShell. The built-in command is:
+
+```bash
+podcd completion --help
+```
+
+#### Bash
+
+```bash
+mkdir -p ~/.local/share/bash-completion/completions
+podcd completion bash > ~/.local/share/bash-completion/completions/podcd
+
+# add this to ~/.bashrc if it is not already present
+echo 'source ~/.local/share/bash-completion/completions/podcd' >> ~/.bashrc
+source ~/.bashrc
+```
+
+If you prefer a system-wide install, this also works on many Linux systems:
+
+```bash
+sudo podcd completion bash > /etc/bash_completion.d/podcd
+```
+
+#### Zsh
+
+```bash
+mkdir -p ~/.zsh/completions
+podcd completion zsh > ~/.zsh/completions/_podcd
+
+# add this to ~/.zshrc
+cat <<'EOF' >> ~/.zshrc
+fpath=(~/.zsh/completions $fpath)
+autoload -Uz compinit
+compinit
+EOF
+
+source ~/.zshrc
+```
+
+After reloading your shell, tab completion should work for commands, flags, and arguments such as `podcd conf<TAB>` or `podcd plan --<TAB>`.
+
 The actual agent configuration file looks like this:
 
 ```yaml

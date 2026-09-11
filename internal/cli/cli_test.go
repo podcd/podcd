@@ -70,9 +70,45 @@ func TestMainConfigCreateWritesDefaultConfig(t *testing.T) {
 	}
 }
 
+func TestMainConfigSetUpdatesConfigFile(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	t.Setenv("PODCD_CONFIG", "")
+
+	path := filepath.Join(home, ".config", "podcd", "agent.yaml")
+	if code := Main([]string{"config", "create", "--path", path, "--host", "old-host"}, ""); code != 0 {
+		t.Fatalf("Main(config create) exit code = %d; expected 0", code)
+	}
+	if code := Main([]string{"config", "set", "host", "new-host", "--path", path}, ""); code != 0 {
+		t.Fatalf("Main(config set host) exit code = %d; expected 0", code)
+	}
+	if code := Main([]string{"config", "set", "repo-url", "https://github.com/example/new.git", "--path", path}, ""); code != 0 {
+		t.Fatalf("Main(config set repo-url) exit code = %d; expected 0", code)
+	}
+
+	content, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("reading config after set: %v", err)
+	}
+	text := string(content)
+	if !strings.Contains(text, "host: new-host") {
+		t.Fatalf("set host did not persist to config:\n%s", text)
+	}
+	if !strings.Contains(text, "https://github.com/example/new.git") {
+		t.Fatalf("set repo-url did not persist to config:\n%s", text)
+	}
+}
+
 func TestMainConfigCreateHelpDoesNotCrash(t *testing.T) {
 	code := Main([]string{"config", "create", "--help"}, "")
 	if code != 0 {
 		t.Fatalf("Main(config create --help) exit code = %d; expected 0", code)
+	}
+}
+
+func TestMainConfigSetHelpDoesNotCrash(t *testing.T) {
+	code := Main([]string{"config", "set", "--help"}, "")
+	if code != 0 {
+		t.Fatalf("Main(config set --help) exit code = %d; expected 0", code)
 	}
 }

@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"time"
 
@@ -180,6 +181,70 @@ func (c *AgentConfig) applyDefaults() {
 		}
 		c.Repositories[i].URL = expandPath(c.Repositories[i].URL)
 	}
+}
+
+// SetValue updates a single known field on the config using the same schema and
+// validation rules the loader uses.
+func (c *AgentConfig) SetValue(field, value string) error {
+	switch field {
+	case "host":
+		c.Host = value
+	case "interval":
+		dur, err := time.ParseDuration(value)
+		if err != nil {
+			return fmt.Errorf("parse interval %q: %w", value, err)
+		}
+		c.Interval = dur
+	case "jitter":
+		dur, err := time.ParseDuration(value)
+		if err != nil {
+			return fmt.Errorf("parse jitter %q: %w", value, err)
+		}
+		c.Jitter = dur
+	case "runtime":
+		c.Runtime = value
+	case "log-format":
+		c.LogFormat = value
+	case "state-dir":
+		c.StateDir = value
+	case "unit-dir":
+		c.UnitDir = value
+	case "secrets-dir":
+		c.SecretsDir = value
+	case "env-file":
+		c.EnvFile = value
+	case "prune":
+		b, err := strconv.ParseBool(value)
+		if err != nil {
+			return fmt.Errorf("parse prune %q: %w", value, err)
+		}
+		c.Prune = &b
+	case "repo-url", "repo-name", "repo-path", "revision":
+		if len(c.Repositories) == 0 {
+			c.Repositories = []RepositorySpec{{
+				Name:     "infrastructure",
+				URL:      "https://github.com/podcd/podcd.git",
+				Revision: "main",
+			}}
+		}
+		repo := &c.Repositories[0]
+		switch field {
+		case "repo-url":
+			repo.URL = value
+		case "repo-name":
+			repo.Name = value
+		case "repo-path":
+			repo.Path = value
+		case "revision":
+			repo.Revision = value
+		}
+	default:
+		return fmt.Errorf("unknown config field %q (try: host, interval, jitter, runtime, log-format, state-dir, unit-dir, secrets-dir, env-file, prune, repo-url, repo-name, repo-path, revision)", field)
+	}
+	if err := c.Validate(); err != nil {
+		return err
+	}
+	return nil
 }
 
 // Validate rejects configurations that cannot work, loudly and all at once.
