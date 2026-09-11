@@ -1,0 +1,351 @@
+// Package model holds the canonical desired/actual/plan types.
+// Everything the agent reasons about lives here.
+// Raw Podman output and raw user YAML are both translated into these types before anything is compared
+
+// ! The planner never diffs a string from `podman inspect` against a string a human typed into Git.
+package model
+
+import (
+	"encoding/json"
+	"sort"
+	"time"
+)
+
+// Port is a published port mapping.
+type Port struct {
+	Host      int    `json:"host"`
+	Container int    `json:"container"`
+	Protocol  string `json:"protocol,omitempty"` // tcp (default) or udp
+	HostIP    string `json:"hostIP,omitempty"`   // empty means all interfaces
+}
+
+// Volume is a bind mount or named volume.
+type Volume struct {
+	Source      string `json:"source"`
+	Destination string `json:"destination"`
+	Options     string `json:"options,omitempty"` // e.g. ro,Z
+}
+
+// HTTPProbe checks an HTTP endpoint published by the container.
+type HTTPProbe struct {
+	Port    int    `json:"port"`
+	Path    string `json:"path,omitempty"`
+	Host    string `json:"host,omitempty"`   // default 127.0.0.1
+	Scheme  string `json:"scheme,omitempty"` // http (default) or https
+	Expect  int    `json:"expect,omitempty"` // expected status, default 200
+	Timeout string `json:"timeout,omitempty"`
+}
+
+// TCPProbe checks that a TCP port accepts a connection.
+type TCPProbe struct {
+	Port    int    `json:"port"`
+	Host    string `json:"host,omitempty"`
+	Timeout string `json:"timeout,omitempty"`
+}
+
+// ExecProbe runs a command inside the container.
+type ExecProbe struct {
+	Command []string `json:"command"`
+	Timeout string   `json:"timeout,omitempty"`
+}
+
+// Healthcheck describes how to tell whether an application is working.
+// Exactly one probe may be set; none means "systemd says the unit is active".
+type Healthcheck struct {
+	HTTP *HTTPProbe `json:"http,omitempty"`
+	TCP  *TCPProbe  `json:"tcp,omitempty"`
+	Exec *ExecProbe `json:"exec,omitempty"`
+
+	// Retries and interval used while waiting for an app to become healthy
+	// after it is applied.
+	Retries  int    `json:"retries,omitempty"`
+	Interval string `json:"interval,omitempty"`
+}
+
+// Resources are the optional systemd resource limits for the unit.
+type Resources struct {
+	Memory string `json:"memory,omitempty"` // e.g. 512M -> MemoryMax
+	CPU    string `json:"cpu,omitempty"`    // e.g. 150% -> CPUQuota
+}
+
+// Workload kinds. A container is one Quadlet .container unit; a kube workload
+// is a pod manifest played by podman through a Quadlet .kube unit.
+const (
+	KindContainer = "container"
+	KindKube      = "kube"
+)
+
+// Application is a fully resolved application: the result of compiling
+// environment + group + host + application definitions for one host. Nothing in
+// here is inherited or templated any more; it is what should exist on this host.
+type Application struct {
+	Name string `json:"name"`
+
+	// Kind is KindContainer (the default when empty) or KindKube.
+	Kind string `json:"kind,omitempty"`
+
+	// Manifest is the multi-document YAML played by podman for a kube
+	// workload: the Pod, its ConfigMaps and its Secrets with values resolved.
+	// It may contain secrets, so it never appears in JSON output; ManifestHash
+	// stands in for it everywhere, including in the spec hash.
+	Manifest     []byte `json:"-"`
+	ManifestHash string `json:"manifestHash,omitempty"`
+	// Images lists every image a kube workload runs, for reporting. Image
+	// holds the first one so the common code paths have something to show.
+	Images []string `json:"images,omitempty"`
+
+	Image      string   `json:"image"`
+	Command    []string `json:"command,omitempty"`
+	Entrypoint []string `json:"entrypoint,omitempty"`
+
+	Env map[string]string `json:"env,omitempty"`
+
+	// SecretEnv holds resolved secret values. It is redacted by MarshalJSON and
+	// is never written to a unit file; the renderer puts it in a 0600 env file.
+	SecretEnv map[string]string `json:"secretEnv,omitempty"`
+
+	Ports    []Port            `json:"ports,omitempty"`
+	Volumes  []Volume          `json:"volumes,omitempty"`
+	Networks []string          `json:"networks,omitempty"`
+	Labels   map[string]string `json:"labels,omitempty"`
+
+	RestartPolicy string `json:"restartPolicy,omitempty"` // always (default), on-failure, no
+	User          string `json:"user,omitempty"`          // user[:group] inside the container
+	WorkingDir    string `json:"workingDir,omitempty"`
+	StopTimeout   int    `json:"stopTimeout,omitempty"`
+
+	Healthcheck *Healthcheck `json:"healthcheck,omitempty"`
+	Resources   Resources    `json:"resources,omitempty"`
+
+	// AllowMutableImage permits an image reference without a digest. It is a
+	// deliberate, visible opt-out, not a default.
+	AllowMutableImage bool `json:"allowMutableImage,omitempty"`
+
+	// Provenance, for humans debugging on the host.
+	SourceRepo string   `json:"sourceRepo,omitempty"`
+	Origins    []string `json:"origins,omitempty"`
+}
+
+// ImageList returns every image the workload runs: one for a container, one
+// per container for a pod.
+func (a Application) ImageList() []string {
+	if len(a.Images) > 0 {
+		return a.Images
+	}
+	if a.Image == "" {
+		return nil
+	}
+	return []string{a.Image}
+}
+
+// IsKube reports whether the workload is a pod manifest rather than a container.
+func (a Application) IsKube() bool { return a.Kind == KindKube }
+
+// SetManifest stores a kube manifest and its hash together, so the two can
+// never disagree.
+func (a *Application) SetManifest(manifest []byte) {
+	a.Manifest = manifest
+	a.ManifestHash = HashBytes(manifest)
+}
+
+// MarshalJSON redacts secret values so that logs, `podcd plan` output and the
+// local state file never carry them.
+func (a Application) MarshalJSON() ([]byte, error) {
+	type alias Application // avoid recursion
+	clone := alias(a)
+	if len(a.SecretEnv) > 0 {
+		redacted := make(map[string]string, len(a.SecretEnv))
+		for k := range a.SecretEnv {
+			redacted[k] = "«redacted»"
+		}
+		clone.SecretEnv = redacted
+	}
+	return json.Marshal(clone)
+}
+
+// DesiredState is everything that should exist on this host at a given Git revision.
+type DesiredState struct {
+	Host        string            `json:"host"`
+	Environment string            `json:"environment"`
+	Groups      []string          `json:"groups,omitempty"`
+	Revisions   map[string]string `json:"revisions,omitempty"` // repo name -> commit sha
+
+	Applications []Application `json:"applications"`
+}
+
+// App returns the application with the given name.
+func (d DesiredState) App(name string) (Application, bool) {
+	for _, a := range d.Applications {
+		if a.Name == name {
+			return a, true
+		}
+	}
+	return Application{}, false
+}
+
+// Names returns the application names, sorted.
+func (d DesiredState) Names() []string {
+	names := make([]string, 0, len(d.Applications))
+	for _, a := range d.Applications {
+		names = append(names, a.Name)
+	}
+	sort.Strings(names)
+	return names
+}
+
+// RevisionString renders the pinned revisions as a stable single-line string.
+func (d DesiredState) RevisionString() string {
+	names := make([]string, 0, len(d.Revisions))
+	for n := range d.Revisions {
+		names = append(names, n)
+	}
+	sort.Strings(names)
+	out := ""
+	for i, n := range names {
+		if i > 0 {
+			out += " "
+		}
+		rev := d.Revisions[n]
+		if len(rev) > 12 {
+			rev = rev[:12]
+		}
+		out += n + "=" + rev
+	}
+	return out
+}
+
+// UnitState is what systemd reports about a unit.
+type UnitState string
+
+const (
+	UnitActive   UnitState = "active"
+	UnitInactive UnitState = "inactive"
+	UnitFailed   UnitState = "failed"
+	UnitMissing  UnitState = "missing"
+	UnitUnknown  UnitState = "unknown"
+)
+
+// ActualApp is what really exists on the host for one application.
+type ActualApp struct {
+	Name string `json:"name"`
+
+	// Managed is false for units podcd did not write. podcd never touches those.
+	Managed bool `json:"managed"`
+
+	UnitFile     string `json:"unitFile,omitempty"`
+	UnitFileHash string `json:"unitFileHash,omitempty"` // sha256 of the on-disk unit
+	// UnitContent is the raw unit as read from disk. It stays out of the state
+	// file, but it lets the planner explain a change without re-reading disk.
+	UnitContent []byte `json:"-"`
+	// ManifestContent is the played manifest of a kube workload as read from
+	// disk. Same rules as UnitContent: for explaining changes, never stored.
+	ManifestContent []byte `json:"-"`
+	SpecHash        string `json:"specHash,omitempty"` // marker written by the renderer
+	SecretsHash     string `json:"secretsHash,omitempty"`
+
+	UnitName  string    `json:"unitName,omitempty"`
+	UnitState UnitState `json:"unitState,omitempty"`
+	SubState  string    `json:"subState,omitempty"`
+
+	ContainerID    string `json:"containerId,omitempty"`
+	ContainerImage string `json:"containerImage,omitempty"`
+	ContainerState string `json:"containerState,omitempty"`
+}
+
+// ActualState is the observed state of the whole host.
+type ActualState struct {
+	Runtime string               `json:"runtime"`
+	Apps    map[string]ActualApp `json:"apps"`
+}
+
+// Names returns the observed application names, sorted.
+func (s ActualState) Names() []string {
+	names := make([]string, 0, len(s.Apps))
+	for n := range s.Apps {
+		names = append(names, n)
+	}
+	sort.Strings(names)
+	return names
+}
+
+// ActionType is the kind of change the planner decided on.
+type ActionType string
+
+const (
+	ActionCreate  ActionType = "create"
+	ActionUpdate  ActionType = "update"
+	ActionDelete  ActionType = "delete"
+	ActionRestart ActionType = "restart"
+	ActionNoOp    ActionType = "noop"
+)
+
+// Action is one change to one application.
+type Action struct {
+	Type    ActionType `json:"type"`
+	App     string     `json:"app"`
+	Reason  string     `json:"reason"`
+	Details []string   `json:"details,omitempty"`
+
+	// Destructive marks actions that remove something a human might miss.
+	Destructive bool `json:"destructive,omitempty"`
+
+	// Application is the desired spec; empty for deletes.
+	Application *Application `json:"-"`
+}
+
+// Plan is the ordered set of actions to make reality match Git.
+type Plan struct {
+	Actions []Action `json:"actions"`
+}
+
+// Empty reports whether the plan would change anything. No-ops do not count.
+func (p Plan) Empty() bool {
+	for _, a := range p.Actions {
+		if a.Type != ActionNoOp {
+			return false
+		}
+	}
+	return true
+}
+
+// Changes returns only the actions that change something.
+func (p Plan) Changes() []Action {
+	out := make([]Action, 0, len(p.Actions))
+	for _, a := range p.Actions {
+		if a.Type != ActionNoOp {
+			out = append(out, a)
+		}
+	}
+	return out
+}
+
+// Destructive reports whether the plan removes anything.
+func (p Plan) Destructive() bool {
+	for _, a := range p.Actions {
+		if a.Destructive {
+			return true
+		}
+	}
+	return false
+}
+
+// HealthStatus is the outcome of a probe.
+type HealthStatus string
+
+const (
+	HealthHealthy   HealthStatus = "healthy"
+	HealthUnhealthy HealthStatus = "unhealthy"
+	HealthUnknown   HealthStatus = "unknown"
+)
+
+// Health is one application's health at a point in time.
+type Health struct {
+	App       string       `json:"app"`
+	Status    HealthStatus `json:"status"`
+	Probe     string       `json:"probe"`
+	Message   string       `json:"message,omitempty"`
+	CheckedAt time.Time    `json:"checkedAt"`
+}
+
+// OK reports whether the application is healthy.
+func (h Health) OK() bool { return h.Status == HealthHealthy }

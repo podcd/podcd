@@ -1,0 +1,14 @@
+# A Group is a role: what a machine is for. Hosts join groups;
+# groups decide which applications run and how they are tuned for that role.
+apiVersion: gitops.podcd.io/v1
+kind: Group
+metadata:
+  name: web
+spec:
+  applications:
+    - api
+    - frontend
+  overrides:
+    api:
+      resources:
+        memory: 1G

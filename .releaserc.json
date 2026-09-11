@@ -1,0 +1,25 @@
+{
+  "branches": ["main"],
+  "plugins": [
+    "@semantic-release/commit-analyzer",
+    "@semantic-release/release-notes-generator",
+    [
+      "@semantic-release/exec",
+      {
+        "prepareCmd": "VERSION=${nextRelease.version} scripts/build-release.sh"
+      }
+    ],
+    [
+      "@semantic-release/github",
+      {
+        "assets": [
+          { "path": "dist/release/*.tar.gz", "label": "Binaries" },
+          { "path": "dist/release/checksums.txt", "label": "Checksums (SHA-256)" }
+        ],
+        "successComment": false,
+        "failComment": false,
+        "labels": false
+      }
+    ]
+  ]
+}

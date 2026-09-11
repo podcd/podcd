@@ -1,0 +1,28 @@
+# An Environment applies to every host that declares it. Use it for the things
+# that are true of a whole environment, not of one machine.
+apiVersion: gitops.podcd.io/v1
+kind: Environment
+metadata:
+  name: production
+spec:
+  # Every production host runs the exporter, whatever else it does.
+  applications:
+    - node-exporter
+  overrides:
+    api:
+      env:
+        APP_ENV: production
+        LOG_LEVEL: warn
+---
+apiVersion: gitops.podcd.io/v1
+kind: Environment
+metadata:
+  name: staging
+spec:
+  applications:
+    - node-exporter
+  overrides:
+    api:
+      env:
+        APP_ENV: staging
+        LOG_LEVEL: debug

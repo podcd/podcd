@@ -1,0 +1,43 @@
+# podcd agent - a systemd *user* service.
+#
+# It runs as an ordinary, unprivileged user. That user owns its containers and
+# nothing else; nothing here needs root, and nothing here listens on a port.
+#
+# Install to ~/.config/systemd/user/podcd-agent.service and enable with:
+#   loginctl enable-linger <user>       # so it starts at boot without a login
+#   systemctl --user enable --now podcd-agent.service
+
+[Unit]
+Description=podcd GitOps agent
+Documentation=https://github.com/podcd/podcd
+# The agent only makes outbound connections (git). Waiting for the network is
+# a courtesy to the first reconcile, not a requirement: it retries anyway.
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+ExecStart=/usr/local/bin/podcd-agent run
+Restart=always
+RestartSec=10
+
+# Secrets reach the agent through this file, never through Git. It is optional:
+# a host with no secretEnv references does not need it.
+EnvironmentFile=-%h/.config/podcd/agent.env
+
+# There is deliberately no systemd sandboxing here, and that is a finding, not
+# an oversight. Rootless podman builds its user namespace with newuidmap, which
+# relies on file capabilities and on the unit's own mount namespace. Both of
+# these were tested on a real host and both break every container with
+#
+#   newuidmap: write to uid_map failed: Operation not permitted
+#
+#   NoNewPrivileges=yes      strips the capability newuidmap needs
+#   ProtectSystem=full       (or strict) gives the unit a mount namespace
+#                            podman cannot map uids from
+#
+# The security story here is the unprivileged user, not the unit options: this
+# process is an ordinary user with no privileges to drop.
+
+[Install]
+WantedBy=default.target

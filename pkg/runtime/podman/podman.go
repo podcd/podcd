@@ -1,0 +1,523 @@
+// Package podman runs applications as rootless Podman containers managed by
+// systemd through Quadlet.
+//
+// The agent writes .container files and asks systemd to start them. It never
+// runs `podman run`: systemd owns the process, Podman owns the container, and
+// the agent owns neither. Podman is only asked questions.
+package podman
+
+import (
+	"bytes"
+	"context"
+	"encoding/json"
+	"errors"
+	"fmt"
+	"os"
+	"os/exec"
+	"path/filepath"
+	"strconv"
+	"strings"
+	"time"
+
+	"github.com/podcd/podcd/internal/atomicfile"
+	"github.com/podcd/podcd/pkg/health"
+	"github.com/podcd/podcd/pkg/model"
+	"github.com/podcd/podcd/pkg/renderer"
+)
+
+// Options configures a Runtime.
+type Options struct {
+	UnitDir string
+	EnvDir  string
+	// KubeDir holds the manifests played by .kube units. Like EnvDir it can
+	// contain resolved secrets and is never the unit directory.
+	KubeDir string
+
+	// PodmanBin and SystemctlBin default to the names on PATH.
+	PodmanBin    string
+	SystemctlBin string
+
+	// Timeout bounds any single podman or systemctl invocation.
+	Timeout time.Duration
+}
+
+// Runtime is the rootless Podman + Quadlet + systemd --user implementation.
+type Runtime struct {
+	unitDir string
+	envDir  string
+	kubeDir string
+
+	podman     string
+	systemctl  string
+	journalctl string
+	timeout    time.Duration
+
+	rend    *renderer.Renderer
+	checker *health.Checker
+}
+
+// New returns a Podman runtime writing units into opts.UnitDir.
+func New(opts Options) *Runtime {
+	r := &Runtime{
+		unitDir:    opts.UnitDir,
+		envDir:     opts.EnvDir,
+		kubeDir:    opts.KubeDir,
+		podman:     orDefault(opts.PodmanBin, "podman"),
+		systemctl:  orDefault(opts.SystemctlBin, "systemctl"),
+		journalctl: "journalctl",
+		timeout:    opts.Timeout,
+	}
+	if r.timeout <= 0 {
+		r.timeout = 2 * time.Minute
+	}
+	r.rend = &renderer.Renderer{UnitDir: opts.UnitDir, EnvDir: opts.EnvDir, KubeDir: opts.KubeDir}
+	r.checker = &health.Checker{Exec: r.execProbe}
+	return r
+}
+
+// Renderer exposes the renderer this runtime writes with, so the planner
+// compares against exactly the bytes the runtime would produce.
+func (r *Runtime) Renderer() *renderer.Renderer { return r.rend }
+
+// Name implements runtime.Runtime.
+func (r *Runtime) Name() string { return "podman" }
+
+// Available reports whether this host can run rootless Podman under systemd.
+func (r *Runtime) Available(ctx context.Context) (bool, string) {
+	if _, err := exec.LookPath(r.podman); err != nil {
+		return false, fmt.Sprintf("podman is not installed (%v)", err)
+	}
+	if _, err := exec.LookPath(r.systemctl); err != nil {
+		return false, fmt.Sprintf("systemctl is not installed (%v)", err)
+	}
+	if _, err := r.systemctlRun(ctx, "is-system-running"); err != nil {
+		// is-system-running exits non-zero for "degraded", which is fine; only
+		// a total absence of a user manager is fatal.
+		if !strings.Contains(err.Error(), "degraded") && !strings.Contains(err.Error(), "starting") {
+			return false, "no systemd user manager: " + err.Error()
+		}
+	}
+	if !quadletGeneratorPresent() {
+		return false, "the Quadlet generator was not found; podman 4.4+ with quadlet is required"
+	}
+	return true, ""
+}
+
+// Inspect reads the real state of the host: the unit files on disk, what
+// systemd thinks of them, and what Podman actually has running.
+func (r *Runtime) Inspect(ctx context.Context) (model.ActualState, error) {
+	state := model.ActualState{Runtime: r.Name(), Apps: map[string]model.ActualApp{}}
+
+	entries, err := os.ReadDir(r.unitDir)
+	if err != nil && !os.IsNotExist(err) {
+		return state, fmt.Errorf("reading unit directory %s: %w", r.unitDir, err)
+	}
+	for _, e := range entries {
+		if e.IsDir() {
+			continue
+		}
+		name, ok := renderer.AppFromFileName(e.Name())
+		if !ok {
+			continue // not ours, by name
+		}
+		path := filepath.Join(r.unitDir, e.Name())
+		content, err := os.ReadFile(path)
+		if err != nil {
+			return state, fmt.Errorf("reading %s: %w", path, err)
+		}
+		m := renderer.ParseMarkers(content)
+		if m.App != "" {
+			name = m.App
+		}
+		if prev, ok := state.Apps[name]; ok {
+			// A .container and a .kube for the same name would both claim
+			// podcd-<name>.service. Refuse to guess which one systemd picked.
+			return state, fmt.Errorf("application %q has two unit files: %s and %s; remove one", name, prev.UnitFile, path)
+		}
+		cur := model.ActualApp{
+			Name:         name,
+			Managed:      m.Managed,
+			UnitFile:     path,
+			UnitFileHash: model.HashBytes(content),
+			UnitContent:  content,
+			SpecHash:     m.SpecHash,
+			SecretsHash:  m.SecretsHash,
+			UnitName:     renderer.ServiceName(name),
+			UnitState:    model.UnitUnknown,
+		}
+		// A kube unit is only as current as the manifest it points at. If
+		// that file was edited or deleted, the unit must be re-applied even
+		// though its own bytes still match.
+		if m.Kind == model.KindKube && m.Managed {
+			if manifestPath := yamlPathOf(content); manifestPath != "" {
+				data, err := os.ReadFile(manifestPath)
+				if err != nil || model.HashBytes(data) != m.ManifestHash {
+					cur.UnitFileHash = "manifest-drift:" + cur.UnitFileHash
+				}
+				cur.ManifestContent = data
+			}
+		}
+		state.Apps[name] = cur
+	}
+
+	// Containers we own but have no unit for: a half-removed application, or a
+	// unit file someone deleted by hand. They are still ours to clean up.
+	containers, err := r.listContainers(ctx)
+	if err != nil {
+		return state, err
+	}
+	for app, c := range containers {
+		cur, ok := state.Apps[app]
+		if !ok {
+			cur = model.ActualApp{Name: app, Managed: true, UnitName: renderer.ServiceName(app), UnitState: model.UnitMissing}
+		}
+		cur.ContainerID = c.id
+		cur.ContainerImage = c.image
+		cur.ContainerState = c.state
+		state.Apps[app] = cur
+	}
+
+	if err := r.fillUnitStates(ctx, state); err != nil {
+		return state, err
+	}
+	return state, nil
+}
+
+type containerInfo struct {
+	id    string
+	image string
+	state string
+}
+
+// listContainers asks Podman for everything labelled as ours, keyed by app.
+func (r *Runtime) listContainers(ctx context.Context) (map[string]containerInfo, error) {
+	out, err := r.podmanRun(ctx, "ps", "--all", "--filter", "label=io.podcd.managed=true", "--format", "json")
+	if err != nil {
+		return nil, fmt.Errorf("listing containers: %w", err)
+	}
+	var raw []struct {
+		ID     string            `json:"Id"`
+		Image  string            `json:"Image"`
+		State  string            `json:"State"`
+		Labels map[string]string `json:"Labels"`
+	}
+	trimmed := strings.TrimSpace(out)
+	if trimmed == "" || trimmed == "null" {
+		return map[string]containerInfo{}, nil
+	}
+	if err := json.Unmarshal([]byte(trimmed), &raw); err != nil {
+		return nil, fmt.Errorf("parsing podman ps output: %w", err)
+	}
+	result := make(map[string]containerInfo, len(raw))
+	for _, c := range raw {
+		app := c.Labels["io.podcd.app"]
+		if app == "" {
+			continue
+		}
+		id := c.ID
+		if len(id) > 12 {
+			id = id[:12]
+		}
+		result[app] = containerInfo{id: id, image: c.Image, state: c.State}
+	}
+	return result, nil
+}
+
+// fillUnitStates asks systemd about every unit in one call.
+func (r *Runtime) fillUnitStates(ctx context.Context, state model.ActualState) error {
+	names := state.Names()
+	if len(names) == 0 {
+		return nil
+	}
+	args := []string{"show", "--property=Id", "--property=ActiveState", "--property=SubState", "--property=LoadState"}
+	for _, n := range names {
+		args = append(args, renderer.ServiceName(n))
+	}
+	out, err := r.systemctlRun(ctx, args...)
+	if err != nil {
+		return fmt.Errorf("querying systemd: %w", err)
+	}
+	byUnit := parseShowBlocks(out)
+	for _, n := range names {
+		app := state.Apps[n]
+		props, ok := byUnit[renderer.ServiceName(n)]
+		if !ok {
+			app.UnitState = model.UnitMissing
+			state.Apps[n] = app
+			continue
+		}
+		app.SubState = props["SubState"]
+		switch {
+		case props["LoadState"] == "not-found":
+			app.UnitState = model.UnitMissing
+		case props["ActiveState"] == "active":
+			app.UnitState = model.UnitActive
+		case props["ActiveState"] == "failed":
+			app.UnitState = model.UnitFailed
+		case props["ActiveState"] == "inactive":
+			app.UnitState = model.UnitInactive
+		case props["ActiveState"] == "":
+			app.UnitState = model.UnitUnknown
+		default:
+			// activating, deactivating, reloading: not yet running.
+			app.UnitState = model.UnitState(props["ActiveState"])
+		}
+		state.Apps[n] = app
+	}
+	return nil
+}
+
+// parseShowBlocks splits `systemctl show` output into one property map per unit.
+func parseShowBlocks(out string) map[string]map[string]string {
+	result := map[string]map[string]string{}
+	current := map[string]string{}
+	flush := func() {
+		if id := current["Id"]; id != "" {
+			result[id] = current
+		}
+		current = map[string]string{}
+	}
+	for _, line := range strings.Split(out, "\n") {
+		line = strings.TrimRight(line, "\r")
+		if strings.TrimSpace(line) == "" {
+			flush()
+			continue
+		}
+		k, v, ok := strings.Cut(line, "=")
+		if !ok {
+			continue
+		}
+		current[k] = v
+	}
+	flush()
+	return result
+}
+
+// Apply writes the unit for one application and makes systemd run it.
+//
+// It is safe to call on an application that is already correct: writing the
+// same bytes and restarting is the worst it can do, and the planner makes sure
+// it is not called in that case.
+func (r *Runtime) Apply(ctx context.Context, app model.Application) error {
+	unit, err := r.rend.Render(app)
+	if err != nil {
+		return err
+	}
+
+	if unit.EnvFile != nil {
+		if err := atomicfile.Write(unit.EnvFilePath, unit.EnvFile, 0o600); err != nil {
+			return fmt.Errorf("writing secret env file for %s: %w", app.Name, err)
+		}
+	} else if r.envDir != "" {
+		// The application stopped using secrets: do not leave the old values behind.
+		_ = os.Remove(filepath.Join(r.envDir, app.Name+".env"))
+	}
+
+	if unit.IsKube() {
+		// Resolved secrets may be in here: readable by the agent user only.
+		if err := atomicfile.Write(unit.ManifestPath, unit.Manifest, 0o600); err != nil {
+			return fmt.Errorf("writing manifest for %s: %w", app.Name, err)
+		}
+	} else if r.kubeDir != "" {
+		_ = os.Remove(filepath.Join(r.kubeDir, app.Name+".yaml"))
+	}
+
+	// An application can change kind between commits. Both kinds claim the
+	// same service name, so the other kind's unit file must go first.
+	other := renderer.FileName(app.Name)
+	if !unit.IsKube() {
+		other = renderer.KubeFileName(app.Name)
+	}
+	if err := os.Remove(filepath.Join(r.unitDir, other)); err != nil && !os.IsNotExist(err) {
+		return fmt.Errorf("removing stale unit for %s: %w", app.Name, err)
+	}
+
+	if err := atomicfile.Write(unit.Path, unit.Content, 0o644); err != nil {
+		return fmt.Errorf("writing unit for %s: %w", app.Name, err)
+	}
+
+	if err := r.daemonReload(ctx); err != nil {
+		return err
+	}
+	if _, err := r.systemctlRun(ctx, "restart", unit.ServiceName); err != nil {
+		return fmt.Errorf("starting %s: %w%s", unit.ServiceName, err, r.diagnose(ctx, app.Name))
+	}
+	return nil
+}
+
+// Remove stops an application and deletes its definition.
+//
+// Volumes are deliberately left alone. Removing an application from Git is a
+// configuration change; deleting its data is not, and podcd will not do it.
+func (r *Runtime) Remove(ctx context.Context, app string) error {
+	service := renderer.ServiceName(app)
+	if _, err := r.systemctlRun(ctx, "stop", service); err != nil {
+		// A unit that is not loaded is already stopped; anything else matters.
+		if !strings.Contains(err.Error(), "not loaded") && !strings.Contains(err.Error(), "not found") {
+			return fmt.Errorf("stopping %s: %w", service, err)
+		}
+	}
+	for _, f := range []string{renderer.FileName(app), renderer.KubeFileName(app)} {
+		if err := os.Remove(filepath.Join(r.unitDir, f)); err != nil && !os.IsNotExist(err) {
+			return fmt.Errorf("removing unit for %s: %w", app, err)
+		}
+	}
+	if r.envDir != "" {
+		_ = os.Remove(filepath.Join(r.envDir, app+".env"))
+	}
+	if r.kubeDir != "" {
+		_ = os.Remove(filepath.Join(r.kubeDir, app+".yaml"))
+	}
+	if err := r.daemonReload(ctx); err != nil {
+		return err
+	}
+	// Quadlet normally removes the container (or plays the pod down) on stop;
+	// if something interrupted that, the names must still be free for the
+	// next reconcile. Volumes are untouched either way.
+	_, _ = r.podmanRun(ctx, "rm", "--force", "--time", "10", renderer.ContainerName(app))
+	_, _ = r.podmanRun(ctx, "pod", "rm", "--force", "--time", "10", app)
+	return nil
+}
+
+// yamlPathOf reads the Yaml= line back out of a .kube unit.
+func yamlPathOf(content []byte) string {
+	for _, line := range strings.Split(string(content), "\n") {
+		if v, ok := strings.CutPrefix(strings.TrimSpace(line), "Yaml="); ok {
+			return strings.TrimSpace(v)
+		}
+	}
+	return ""
+}
+
+// Restart restarts an application whose unit is already correct.
+func (r *Runtime) Restart(ctx context.Context, app string) error {
+	service := renderer.ServiceName(app)
+	if _, err := r.systemctlRun(ctx, "restart", service); err != nil {
+		return fmt.Errorf("restarting %s: %w%s", service, err, r.diagnose(ctx, app))
+	}
+	return nil
+}
+
+// Health probes one application.
+func (r *Runtime) Health(ctx context.Context, app model.Application) (model.Health, error) {
+	return r.checker.Check(ctx, app, r.unitActive(ctx, app.Name)), nil
+}
+
+// WaitHealthy probes until the application is healthy or the retries run out.
+func (r *Runtime) WaitHealthy(ctx context.Context, app model.Application) model.Health {
+	return r.checker.Wait(ctx, app, func(ctx context.Context) bool { return r.unitActive(ctx, app.Name) })
+}
+
+// Logs returns the most recent journal lines for an application.
+func (r *Runtime) Logs(ctx context.Context, app string, lines int) (string, error) {
+	if lines <= 0 {
+		lines = 50
+	}
+	return r.run(ctx, r.journalctl, "--user", "-u", renderer.ServiceName(app),
+		"-n", strconv.Itoa(lines), "--no-pager", "--output=short-iso")
+}
+
+func (r *Runtime) unitActive(ctx context.Context, app string) bool {
+	out, _ := r.systemctlRun(ctx, "is-active", renderer.ServiceName(app))
+	return strings.TrimSpace(out) == "active"
+}
+
+func (r *Runtime) execProbe(ctx context.Context, app string, cmd []string) error {
+	args := append([]string{"exec", renderer.ContainerName(app)}, cmd...)
+	if _, err := r.podmanRun(ctx, args...); err != nil {
+		return err
+	}
+	return nil
+}
+
+func (r *Runtime) daemonReload(ctx context.Context) error {
+	if _, err := r.systemctlRun(ctx, "daemon-reload"); err != nil {
+		return fmt.Errorf("systemd daemon-reload: %w", err)
+	}
+	return nil
+}
+
+// diagnose adds the tail of the unit's journal to an error, because "job
+// failed" on its own has never helped anybody at 3am.
+func (r *Runtime) diagnose(ctx context.Context, app string) string {
+	logs, err := r.Logs(ctx, app, 15)
+	if err != nil || strings.TrimSpace(logs) == "" {
+		return ""
+	}
+	return "\nlast log lines for " + renderer.ServiceName(app) + ":\n" + strings.TrimRight(logs, "\n")
+}
+
+func (r *Runtime) systemctlRun(ctx context.Context, args ...string) (string, error) {
+	return r.run(ctx, r.systemctl, append([]string{"--user"}, args...)...)
+}
+
+func (r *Runtime) podmanRun(ctx context.Context, args ...string) (string, error) {
+	return r.run(ctx, r.podman, args...)
+}
+
+func (r *Runtime) run(ctx context.Context, bin string, args ...string) (string, error) {
+	ctx, cancel := context.WithTimeout(ctx, r.timeout)
+	defer cancel()
+
+	cmd := exec.CommandContext(ctx, bin, args...)
+	cmd.Env = sessionEnv()
+	var stdout, stderr bytes.Buffer
+	cmd.Stdout = &stdout
+	cmd.Stderr = &stderr
+	err := cmd.Run()
+	if err != nil {
+		msg := strings.TrimSpace(stderr.String())
+		if msg == "" {
+			msg = strings.TrimSpace(stdout.String())
+		}
+		if msg == "" {
+			msg = err.Error()
+		}
+		if errors.Is(ctx.Err(), context.DeadlineExceeded) {
+			msg += " (timed out)"
+		}
+		return stdout.String(), fmt.Errorf("%s %s: %s", filepath.Base(bin), strings.Join(args, " "), msg)
+	}
+	return stdout.String(), nil
+}
+
+// sessionEnv makes sure systemctl --user can find the user's session bus even
+// when the agent was started from cron, a shell over a serial console, or a
+// systemd service without a full session environment.
+func sessionEnv() []string {
+	env := os.Environ()
+	uid := os.Getuid()
+	if os.Getenv("XDG_RUNTIME_DIR") == "" {
+		env = append(env, "XDG_RUNTIME_DIR=/run/user/"+strconv.Itoa(uid))
+	}
+	if os.Getenv("DBUS_SESSION_BUS_ADDRESS") == "" {
+		runtimeDir := os.Getenv("XDG_RUNTIME_DIR")
+		if runtimeDir == "" {
+			runtimeDir = "/run/user/" + strconv.Itoa(uid)
+		}
+		env = append(env, "DBUS_SESSION_BUS_ADDRESS=unix:path="+runtimeDir+"/bus")
+	}
+	return append(env, "LC_ALL=C")
+}
+
+// quadletGeneratorPresent reports whether podman's Quadlet generator is installed.
+func quadletGeneratorPresent() bool {
+	for _, p := range []string{
+		"/usr/lib/systemd/user-generators/podman-user-generator",
+		"/usr/libexec/podman/quadlet",
+		"/usr/lib/podman/quadlet",
+		"/usr/local/lib/systemd/user-generators/podman-user-generator",
+	} {
+		if _, err := os.Stat(p); err == nil {
+			return true
+		}
+	}
+	return false
+}
+
+func orDefault(v, def string) string {
+	if v == "" {
+		return def
+	}
+	return v
+}
