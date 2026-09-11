@@ -1,0 +1,9 @@
+# An Environment applies to every host that declares it. 
+# Use it for the things that are true of a whole environment, not of one machine.
+apiVersion: gitops.podcd.io/v1
+kind: Environment
+metadata:
+  name: local
+spec:
+  applications:
+    - local

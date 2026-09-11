@@ -120,6 +120,11 @@ RUN_HOME="$(getent passwd "$RUN_USER" | cut -d: -f6)"
 RUN_UID="$(id -u "$RUN_USER")"
 [ -n "$RUN_HOME" ] || die "user $RUN_USER has no home directory"
 
+# Rootless Podman needs a user-owned home tree under ~/.local and ~/.config.
+# If those directories were created by root earlier, Podman cannot initialize its storage at ~/.local/share/containers/storage and fails with a permission error.
+install -d -o "$RUN_USER" -g "$RUN_USER" -m 0755 "$RUN_HOME/.local" "$RUN_HOME/.local/share" "$RUN_HOME/.local/share/containers" "$RUN_HOME/.config"
+chown -R "$RUN_USER:$RUN_USER" "$RUN_HOME/.config" "$RUN_HOME/.local"
+
 # Rootless podman needs a subordinate id range. useradd usually grants one;
 # make sure, because the failure mode otherwise is a confusing runtime error.
 if ! grep -q "^$RUN_USER:" /etc/subuid 2>/dev/null; then

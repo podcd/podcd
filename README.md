@@ -43,10 +43,15 @@ On a Debian or Ubuntu VM, you can install the latest published release directly 
 curl -fsSL https://raw.githubusercontent.com/podcd/podcd/refs/heads/main/deploy/bootstrap.sh | sudo bash -s -- \
   --repo-url https://github.com/podcd/podcd.git \
   --repo-path examples \
+  --host local \
   --user podcd
 ```
 
 This downloads the latest release binaries from GitHub, installs Podman, creates or reuses a dedicated `podcd` service user, enables lingering so workloads come back after reboot, and starts the agent as a systemd user service.
+
+```bash
+sudo podcd
+```
 
 By default, the bootstrap script creates a non-login system account for the agent. The service account is not a human login account; its shell is `/usr/sbin/nologin` unless you explicitly opt in with `--allow-user-login`.
 
@@ -57,7 +62,7 @@ curl -fsSL https://raw.githubusercontent.com/podcd/podcd/refs/heads/main/deploy/
   --repo-url https://github.com/podcd/podcd.git \
   --repo-path examples \
   --user podcd \
-  --host prod-web-01 \
+  --host local \
   --allow-user-login
 ```
 
@@ -76,21 +81,76 @@ The agent config file is also managed directly by the CLI:
 
 ```bash
 podcd config path
-podcd config create --repo-url https://github.com/podcd/podcd.git --repo-path examples --host prod-web-01
+podcd config create --repo-url https://github.com/podcd/podcd.git --repo-path examples --host local
 ```
 
 This writes the default config to `~/.config/podcd/agent.yaml` unless `PODCD_CONFIG` or `--path` is set.
+
+The actual agent configuration file looks like this:
+
+```yaml
+# ~/.config/podcd/agent.yaml
+host: prod-web-01
+interval: 60s
+jitter: 10s
+runtime: podman
+
+repositories:
+  - name: gitops
+    url: https://github.com/your-user/gitops.git
+    revision: main
+    path: .
+
+stateDir: /home/podcd/.local/state/podcd
+unitDir: /home/podcd/.config/containers/systemd
+secretsDir: /home/podcd/.local/share/podcd/secrets
+envFile: /home/podcd/.config/podcd/agent.env
+prune: true
+logFormat: text
+```
+
+This is the file the agent reads to decide which Git repository to reconcile.
+
+### Configure against your own GitOps repository
+
+If your desired state lives in your own `podcd-gitops.git` repository, point the agent at that repo instead of the example checkout:
+
+```bash
+# As the podcd user
+podcd config create \
+  --path /home/podcd/.config/podcd/agent.yaml \
+  --host vm-prod \
+  --repo-url https://github.com/your-user/podcd-gitops.git \
+  --repo-path . \
+  --revision main
+
+podcd validate
+podcd plan
+```
+
+If you are invoking `podcd` as the service user from another directory, always switch into the user's home first. The current working directory is inherited from the shell, and rootless Podman refuses to run in a directory the `podcd` user cannot access. i.e:
+```bash
+sudo -u podcd bash -lc 'cd /home/podcd && podcd validate'
+sudo -u podcd bash -lc 'cd /home/podcd && podcd plan'
+```
+
+Once the config is in place, install the user service file for that same account and enable the agent:
+
+```bash
+# As the podcd user
+cd /home/podcd && podcd install -y
+systemctl --user daemon-reload
+systemctl --user enable --now podcd-agent.service
+```
+
+That keeps the service account, its config, and its runtime state all rooted under `/home/podcd` rather than the root account's home directory.
 
 ### Manual build and bootstrap
 
 ```bash
 make build
-sudo ./deploy/bootstrap.sh \
-  --repo-url https://github.com/podcd/podcd.git \
-  --repo-path examples \
-  --user podcd \
-  --host prod-web-01 \
-  --binaries ./dist
+mv dist/podcd-agent /usr/local/bin
+mv dist/podcd /usr/local/bin
 
 ```
 
@@ -103,7 +163,7 @@ podcd status      # what is running here and when it last reconciled
 podcd plan        # show changes without making them
 podcd reconcile   # apply the current Git desired state
 podcd health      # probe application health
-podcd logs api    # recent output for one application
+podcd logs local  # recent output for one application
 podcd validate    # compile config and check for errors
 podcd install     # write the systemd user service file for the agent
 ```
@@ -135,19 +195,11 @@ The core document types are:
 apiVersion: gitops.podcd.io/v1
 kind: Host
 metadata:
-  name: prod-web-01
+  name: local
 spec:
-  environment: production
+  environment: local
   groups:
-    - web
-  applications:
-    - debug-tools
-  excludeApplications:
-    - frontend
-  overrides:
-    api:
-      env:
-        LOG_LEVEL: debug
+    - local
 ```
 
 ### Application example
@@ -156,22 +208,18 @@ spec:
 apiVersion: gitops.podcd.io/v1
 kind: Application
 metadata:
-  name: api
+  name: local
 spec:
   image: docker.io/library/nginx:latest
   ports:
     - host: 8080
-      container: 8080
+      container: 80
       hostIP: 127.0.0.1
-  env:
-    APP_ENV: production
-  secretEnv:
-    DATABASE_PASSWORD: env:API_DATABASE_PASSWORD
   restartPolicy: always
   healthcheck:
     http:
       port: 8080
-      path: /health
+      path: /
 ```
 
 ### Pod manifests
