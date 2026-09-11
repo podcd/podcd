@@ -66,3 +66,10 @@ func TestMainConfigCreateWritesDefaultConfig(t *testing.T) {
 		t.Fatalf("default config did not include the repo path:\n%s", text)
 	}
 }
+
+func TestMainConfigCreateHelpDoesNotCrash(t *testing.T) {
+	code := Main([]string{"config", "create", "--help"}, "")
+	if code != 0 {
+		t.Fatalf("Main(config create --help) exit code = %d; expected 0", code)
+	}
+}

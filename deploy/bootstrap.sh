@@ -184,15 +184,25 @@ fetch_release_binaries() {
 
 install_binary() {
   local name="$1" src="$2"
+  local installed="/usr/local/bin/$name"
+
   if [ -n "$src" ] && [ -x "$src" ]; then
-    install -m 0755 "$src" "/usr/local/bin/$name"
-    info "installed /usr/local/bin/$name"
-  elif [ -x "/usr/local/bin/$name" ]; then
-    info "/usr/local/bin/$name already installed"
+    install -m 0755 "$src" "$installed"
+    info "installed $installed from $src"
+    return
+  fi
+
+  if [ -x "$installed" ] && "$installed" config >/dev/null 2>&1; then
+    info "$installed already installed and supports the current CLI"
+    return
+  fi
+
+  if [ -x "$installed" ]; then
+    info "$installed is stale or missing required subcommands; downloading the latest GitHub release"
   else
     info "no local $name binary found; downloading the latest GitHub release"
-    fetch_release_binaries
   fi
+  fetch_release_binaries
 }
 install_binary podcd-agent "${BINARY_DIR:+$BINARY_DIR/podcd-agent}"
 install_binary podcd "${BINARY_DIR:+$BINARY_DIR/podcd}"

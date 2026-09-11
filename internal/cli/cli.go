@@ -24,6 +24,8 @@ import (
 	"github.com/podcd/podcd/pkg/model"
 	"github.com/podcd/podcd/pkg/reconciler"
 	"github.com/podcd/podcd/pkg/state"
+	"github.com/spf13/cobra"
+	"go.yaml.in/yaml/v2"
 )
 
 // Version is set at build time with -ldflags "-X .../internal/cli.Version=...".
@@ -57,64 +59,208 @@ global flags:
 // defaultCmd is used when no command is given, so the agent binary can default
 // to "run" while the CLI prints help.
 func Main(args []string, defaultCmd string) int {
-	global := flag.NewFlagSet("podcd", flag.ContinueOnError)
-	global.SetOutput(os.Stderr)
-	configPath := global.String("config", "", "path to the agent config")
-	hostOverride := global.String("host", "", "override this host's identity")
-	logLevel := global.String("log-level", "info", "debug, info, warn, error")
-	logFormat := global.String("log-format", "", "text or json")
-	global.Usage = func() { fmt.Fprintf(os.Stderr, usage, progName()) }
-
-	if err := global.Parse(args); err != nil {
-		return 2
+	root := newRootCommand(defaultCmd)
+	if len(args) == 0 && defaultCmd != "" {
+		args = []string{defaultCmd}
 	}
-	rest := global.Args()
-	cmd := defaultCmd
-	if len(rest) > 0 {
-		cmd, rest = rest[0], rest[1:]
-	}
-	if cmd == "" || cmd == "help" || cmd == "-h" || cmd == "--help" {
-		global.Usage()
-		return 0
-	}
-	if cmd == "version" {
-		fmt.Println(versionString())
-		return 0
-	}
-
-	if cmd == "install" {
-		if err := cmdInstall(rest); err != nil {
-			fmt.Fprintln(os.Stderr, "error: "+err.Error())
-			return 1
+	root.SetArgs(args)
+	if err := root.Execute(); err != nil {
+		if errors.Is(err, flag.ErrHelp) {
+			return 2
 		}
-		return 0
-	}
-	if cmd == "config" {
-		if err := cmdConfig(rest); err != nil {
-			fmt.Fprintln(os.Stderr, "error: "+err.Error())
-			return 1
-		}
-		return 0
-	}
-
-	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
-	defer stop()
-
-	env, err := setup(*configPath, *hostOverride, *logLevel, *logFormat)
-	if err != nil {
 		fmt.Fprintln(os.Stderr, "error: "+err.Error())
 		return 1
 	}
-
-	runErr := dispatch(ctx, env, cmd, rest)
-	if runErr != nil {
-		if errors.Is(runErr, flag.ErrHelp) {
-			return 2
-		}
-		fmt.Fprintln(os.Stderr, "error: "+runErr.Error())
-		return 1
-	}
 	return 0
+}
+
+func newRootCommand(defaultCmd string) *cobra.Command {
+	root := &cobra.Command{
+		Use:           "podcd",
+		Short:         "Git-driven reconciler for Linux workloads",
+		SilenceErrors: true,
+		SilenceUsage:  true,
+	}
+	root.SetOut(os.Stdout)
+	root.SetErr(os.Stderr)
+	root.SetHelpTemplate(`{{.UseLine}}
+
+{{.Short}}
+
+{{.Long}}
+
+{{if .HasAvailableSubCommands}}Available Commands:{{range .Commands}}{{if .IsAvailableCommand}}
+  {{.Name}}{{"\t"}}{{.Short}}{{end}}{{end}}{{end}}
+
+{{if .HasLocalFlags}}Flags:
+{{.LocalFlags.FlagUsagesWrapped 80}}{{end}}
+`)
+	root.PersistentFlags().String("config", "", "path to the agent config")
+	root.PersistentFlags().String("host", "", "override this host's identity")
+	root.PersistentFlags().String("log-level", "info", "debug, info, warn, error")
+	root.PersistentFlags().String("log-format", "", "text or json")
+
+	root.RunE = func(cmd *cobra.Command, args []string) error {
+		return cmd.Help()
+	}
+
+	root.AddCommand(newStatusCommand())
+	root.AddCommand(newPlanCommand())
+	root.AddCommand(newReconcileCommand())
+	root.AddCommand(newHealthCommand())
+	root.AddCommand(newLogsCommand())
+	root.AddCommand(newValidateCommand())
+	root.AddCommand(newInstallCommand())
+	root.AddCommand(newConfigCommand())
+	root.AddCommand(newRunCommand())
+	root.AddCommand(newVersionCommand())
+	return root
+}
+
+func envFromCommand(cmd *cobra.Command) (*environment, error) {
+	configPath, _ := cmd.Flags().GetString("config")
+	hostOverride, _ := cmd.Flags().GetString("host")
+	logLevel, _ := cmd.Flags().GetString("log-level")
+	logFormat, _ := cmd.Flags().GetString("log-format")
+	return setup(configPath, hostOverride, logLevel, logFormat)
+}
+
+func dispatcherFor(cmd *cobra.Command, args []string, fn func(context.Context, *environment, []string) error) error {
+	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+	defer stop()
+	env, err := envFromCommand(cmd)
+	if err != nil {
+		return err
+	}
+	return fn(ctx, env, args)
+}
+
+func newStatusCommand() *cobra.Command {
+	cmd := &cobra.Command{Use: "status", Short: "what this host is running and when it last reconciled", RunE: func(cmd *cobra.Command, args []string) error {
+		return dispatcherFor(cmd, args, cmdStatus)
+	}}
+	cmd.Flags().Bool("json", false, "print machine readable output")
+	return cmd
+}
+
+func newPlanCommand() *cobra.Command {
+	return &cobra.Command{Use: "plan", Short: "what would change, without changing anything", RunE: func(cmd *cobra.Command, args []string) error {
+		return dispatcherFor(cmd, args, cmdPlan)
+	}}
+}
+
+func newReconcileCommand() *cobra.Command {
+	return &cobra.Command{Use: "reconcile", Aliases: []string{"apply"}, Short: "make this host match Git", RunE: func(cmd *cobra.Command, args []string) error {
+		return dispatcherFor(cmd, args, cmdReconcile)
+	}}
+}
+
+func newHealthCommand() *cobra.Command {
+	return &cobra.Command{Use: "health", Short: "probe the applications this host should be running", RunE: func(cmd *cobra.Command, args []string) error {
+		return dispatcherFor(cmd, args, cmdHealth)
+	}}
+}
+
+func newLogsCommand() *cobra.Command {
+	return &cobra.Command{Use: "logs <app>", Short: "recent log output for one application", RunE: func(cmd *cobra.Command, args []string) error {
+		return dispatcherFor(cmd, args, cmdLogs)
+	}}
+}
+
+func newValidateCommand() *cobra.Command {
+	return &cobra.Command{Use: "validate", Short: "load Git and compile the configuration for a host", RunE: func(cmd *cobra.Command, args []string) error {
+		return dispatcherFor(cmd, args, cmdValidate)
+	}}
+}
+
+func newInstallCommand() *cobra.Command {
+	cmd := &cobra.Command{Use: "install", Short: "install the podcd-agent systemd user service file", RunE: func(cmd *cobra.Command, args []string) error {
+		output, _ := cmd.Flags().GetString("output")
+		force, _ := cmd.Flags().GetBool("y")
+		forceLong, _ := cmd.Flags().GetBool("yes")
+		installArgs := []string{}
+		if output != "" {
+			installArgs = append(installArgs, "-output", output)
+		}
+		if force || forceLong {
+			installArgs = append(installArgs, "-y")
+		}
+		return cmdInstall(installArgs)
+	}}
+	cmd.Flags().String("output", "", "destination for the systemd service file")
+	cmd.Flags().BoolP("y", "y", false, "overwrite the destination file without prompting")
+	cmd.Flags().Bool("yes", false, "overwrite the destination file without prompting")
+	return cmd
+}
+
+func newConfigCommand() *cobra.Command {
+	cmd := &cobra.Command{Use: "config", Short: "view or create the agent config file", RunE: func(cmd *cobra.Command, args []string) error {
+		return cmdConfig(args)
+	}}
+	cmd.AddCommand(&cobra.Command{Use: "path", Short: "print the default agent config path", RunE: func(cmd *cobra.Command, args []string) error {
+		fmt.Fprintln(cmd.OutOrStdout(), defaultConfigPath())
+		return nil
+	}})
+	cmd.AddCommand(&cobra.Command{Use: "view", Short: "print the agent config file", RunE: func(cmd *cobra.Command, args []string) error {
+		if len(args) > 0 {
+			data, err := os.ReadFile(args[0])
+			if err != nil {
+				return err
+			}
+			fmt.Fprint(cmd.OutOrStdout(), string(data))
+			return nil
+		}
+		path := defaultConfigPath()
+		data, err := os.ReadFile(path)
+		if err != nil {
+			return err
+		}
+		fmt.Fprint(cmd.OutOrStdout(), string(data))
+		return nil
+	}})
+	createCmd := &cobra.Command{Use: "create", Short: "create a default agent config file", RunE: func(cmd *cobra.Command, args []string) error {
+		path, _ := cmd.Flags().GetString("path")
+		host, _ := cmd.Flags().GetString("host")
+		repoURL, _ := cmd.Flags().GetString("repo-url")
+		repoName, _ := cmd.Flags().GetString("repo-name")
+		repoPath, _ := cmd.Flags().GetString("repo-path")
+		revision, _ := cmd.Flags().GetString("revision")
+		interval, _ := cmd.Flags().GetString("interval")
+		force, _ := cmd.Flags().GetBool("force")
+		if err := writeDefaultAgentConfig(path, host, repoURL, repoName, repoPath, revision, interval, force); err != nil {
+			return err
+		}
+		fmt.Fprintln(cmd.OutOrStdout(), path)
+		return nil
+	}}
+	createCmd.Flags().String("path", defaultConfigPath(), "path for the agent config")
+	createCmd.Flags().String("host", "", "host override")
+	createCmd.Flags().String("repo-url", "https://github.com/podcd/podcd.git", "Git repository URL")
+	createCmd.Flags().String("repo-name", "infrastructure", "repository name")
+	createCmd.Flags().String("repo-path", "", "repository subdirectory to read")
+	createCmd.Flags().String("revision", "main", "branch, tag or SHA")
+	createCmd.Flags().String("interval", "60s", "reconcile interval")
+	createCmd.Flags().Bool("force", false, "overwrite an existing config")
+	cmd.AddCommand(createCmd)
+	return cmd
+}
+
+func newRunCommand() *cobra.Command {
+	return &cobra.Command{Use: "run", Aliases: []string{"agent"}, Short: "reconcile in a loop (this is what the systemd service runs)", RunE: func(cmd *cobra.Command, args []string) error {
+		ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+		defer stop()
+		env, err := envFromCommand(cmd)
+		if err != nil {
+			return err
+		}
+		return env.engine.Run(ctx)
+	}}
+}
+
+func newVersionCommand() *cobra.Command {
+	return &cobra.Command{Use: "version", Short: "print the version", Run: func(cmd *cobra.Command, args []string) {
+		fmt.Fprintln(cmd.OutOrStdout(), versionString())
+	}}
 }
 
 type environment struct {
@@ -236,41 +382,51 @@ func defaultConfigPath() string {
 	return "/etc/podcd/agent.yaml"
 }
 
-func defaultAgentConfigYAML(host, repoURL, repoName, repoPath, revision, interval string) string {
-	if repoName == "" {
-		repoName = "infrastructure"
+func defaultAgentConfig(host, repoURL, repoName, repoPath, revision, interval string) config.AgentConfig {
+	cfg := config.DefaultAgentConfig()
+	if host != "" {
+		cfg.Host = host
+	}
+	if interval != "" {
+		d, err := time.ParseDuration(interval)
+		if err == nil {
+			cfg.Interval = d
+		}
 	}
 	if repoURL == "" {
 		repoURL = "https://github.com/podcd/podcd.git"
 	}
+	if repoName == "" {
+		repoName = "infrastructure"
+	}
 	if revision == "" {
 		revision = "main"
 	}
-	if interval == "" {
-		interval = "60s"
+	cfg.Repositories = []config.RepositorySpec{{
+		Name:     repoName,
+		URL:      repoURL,
+		Revision: revision,
+		Path:     repoPath,
+	}}
+	return cfg
+}
+
+func writeDefaultAgentConfig(path, host, repoURL, repoName, repoPath, revision, interval string, force bool) error {
+	if _, err := os.Stat(path); err == nil && !force {
+		return fmt.Errorf("config already exists at %s; use --force to overwrite", path)
 	}
-	var b strings.Builder
-	fmt.Fprintf(&b, "# The agent's own configuration.\n")
-	fmt.Fprintf(&b, "# It lives on the VM (~/.config/podcd/agent.yaml or /etc/podcd/agent.yaml), not in Git.\n\n")
-	if host == "" {
-		fmt.Fprintf(&b, "host: \"\"\n")
-	} else {
-		fmt.Fprintf(&b, "host: %s\n", host)
+	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+		return fmt.Errorf("create config dir %s: %w", filepath.Dir(path), err)
 	}
-	fmt.Fprintf(&b, "interval: %s\n", interval)
-	fmt.Fprintf(&b, "jitter: 10s\n\n")
-	fmt.Fprintf(&b, "runtime: podman\n\n")
-	fmt.Fprintf(&b, "repositories:\n")
-	fmt.Fprintf(&b, "  - name: %s\n", repoName)
-	fmt.Fprintf(&b, "    url: %s\n", repoURL)
-	fmt.Fprintf(&b, "    revision: %s\n", revision)
-	if repoPath != "" {
-		fmt.Fprintf(&b, "    path: %s\n", repoPath)
+	cfg := defaultAgentConfig(host, repoURL, repoName, repoPath, revision, interval)
+	content, err := yaml.Marshal(cfg)
+	if err != nil {
+		return fmt.Errorf("marshal default config: %w", err)
 	}
-	fmt.Fprintf(&b, "\nprune: true\n")
-	fmt.Fprintf(&b, "secretsDir: /etc/podcd/secrets\n")
-	fmt.Fprintf(&b, "logFormat: text\n")
-	return b.String()
+	if err := os.WriteFile(path, content, 0o644); err != nil {
+		return fmt.Errorf("write config %s: %w", path, err)
+	}
+	return nil
 }
 
 func cmdConfig(args []string) error {
@@ -282,6 +438,17 @@ func cmdConfig(args []string) error {
 	switch args[0] {
 	case "path":
 		fmt.Fprintln(os.Stdout, defaultConfigPath())
+		return nil
+	case "view":
+		path := defaultConfigPath()
+		if len(args) > 1 {
+			path = args[1]
+		}
+		data, err := os.ReadFile(path)
+		if err != nil {
+			return fmt.Errorf("read config %s: %w", path, err)
+		}
+		fmt.Fprint(os.Stdout, string(data))
 		return nil
 	case "create":
 		fs := flag.NewFlagSet("config create", flag.ContinueOnError)
@@ -296,20 +463,13 @@ func cmdConfig(args []string) error {
 		if err := fs.Parse(args[1:]); err != nil {
 			return err
 		}
-		if _, err := os.Stat(*path); err == nil && !*force {
-			return fmt.Errorf("config already exists at %s; use --force to overwrite", *path)
-		}
-		if err := os.MkdirAll(filepath.Dir(*path), 0o755); err != nil {
-			return fmt.Errorf("create config dir %s: %w", filepath.Dir(*path), err)
-		}
-		content := defaultAgentConfigYAML(*host, *repoURL, *repoName, *repoPath, *revision, *interval)
-		if err := os.WriteFile(*path, []byte(content), 0o644); err != nil {
-			return fmt.Errorf("write config %s: %w", *path, err)
+		if err := writeDefaultAgentConfig(*path, *host, *repoURL, *repoName, *repoPath, *revision, *interval, *force); err != nil {
+			return err
 		}
 		fmt.Fprintln(os.Stdout, *path)
 		return nil
 	default:
-		return fmt.Errorf("unknown config command %q (try: path, create)", args[0])
+		return fmt.Errorf("unknown config command %q (try: path, view, create)", args[0])
 	}
 }
 
