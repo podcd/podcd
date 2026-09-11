@@ -35,19 +35,31 @@ This is not Kubernetes, it is a focused GitOps model for Linux hosts that need p
 
 ## Get started
 
-On a Debian or Ubuntu VM:
+### Quick install
+
+On a Debian or Ubuntu VM, you can install the latest published release directly with:
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/podcd/podcd/main/deploy/bootstrap.sh | sudo bash -s -- \
+  --repo-url https://github.com/podcd/podcd.git \
+  --repo-path examples \
+  --user podcd 
+```
+
+This downloads the latest release binaries from GitHub, installs Podman, creates an unprivileged `podcd` user, enables lingering so workloads come back after reboot, and starts the agent as a systemd user service.
+
+### Manual build and bootstrap
 
 ```bash
 make build
 sudo ./deploy/bootstrap.sh \
-  --repo-url https://git.example.com/infrastructure.git \
+  --repo-url https://github.com/podcd/podcd.git \
   --repo-path examples \
   --user podcd \
   --host prod-web-01 \
   --binaries ./dist
-```
 
-This installs Podman, creates an unprivileged `podcd` user, enables lingering so workloads come back after reboot, and starts the agent as a systemd user service.
+```
 
 From then on, the host reconciles itself automatically.
 
@@ -196,12 +208,9 @@ Each failure names the offending file and explains the issue clearly.
 ```yaml
 repositories:
   - name: infrastructure
-    url: https://git.example.com/infrastructure.git
+    url: https://github.com/podcd/podcd.git
     revision: main
-  - name: applications
-    url: https://git.example.com/applications.git
-    revision: main
-    path: clusters/prod
+    path: examples
 ```
 
 ## Testing

@@ -10,7 +10,7 @@
 #   sudo ./bootstrap.sh --repo-url https://github.com/podcd/podcd-gitops.git \
 #                       [--revision main] [--repo-path clusters/prod] \
 #                       [--user podcd] [--host prod-web-01] \
-#                       [--binaries ./dist] [--interval 60s]
+#                       [--binaries ./dist] [--release-version 1.0.0] [--interval 60s]
 
 set -euo pipefail
 
@@ -21,6 +21,7 @@ REPO_NAME="infrastructure"
 RUN_USER=""
 HOST_NAME=""
 BINARY_DIR=""
+RELEASE_VERSION=""
 INTERVAL="60s"
 
 die() { echo "[podcd] bootstrap: $*" >&2; exit 1; }
@@ -28,16 +29,17 @@ info() { echo "[podcd] bootstrap: $*"; }
 
 while [ $# -gt 0 ]; do
   case "$1" in
-    --repo-url)  REPO_URL="$2"; shift 2 ;;
-    --revision)  REVISION="$2"; shift 2 ;;
-    --repo-path) REPO_PATH="$2"; shift 2 ;;
-    --repo-name) REPO_NAME="$2"; shift 2 ;;
-    --user)      RUN_USER="$2"; shift 2 ;;
-    --host)      HOST_NAME="$2"; shift 2 ;;
-    --binaries)  BINARY_DIR="$2"; shift 2 ;;
-    --interval)  INTERVAL="$2"; shift 2 ;;
-    -h|--help)   sed -n '2,20p' "$0"; exit 0 ;;
-    *)           die "unknown argument: $1" ;;
+    --repo-url)         REPO_URL="$2"; shift 2 ;;
+    --revision)         REVISION="$2"; shift 2 ;;
+    --repo-path)        REPO_PATH="$2"; shift 2 ;;
+    --repo-name)        REPO_NAME="$2"; shift 2 ;;
+    --user)             RUN_USER="$2"; shift 2 ;;
+    --host)             HOST_NAME="$2"; shift 2 ;;
+    --binaries)         BINARY_DIR="$2"; shift 2 ;;
+    --release-version)  RELEASE_VERSION="$2"; shift 2 ;;
+    --interval)         INTERVAL="$2"; shift 2 ;;
+    -h|--help)          sed -n '2,20p' "$0"; exit 0 ;;
+    *)                  die "unknown argument: $1" ;;
   esac
 done
 
@@ -102,6 +104,50 @@ if [ "$(loginctl show-user "$RUN_USER" --property=Linger --value 2>/dev/null || 
 fi
 
 # ---------------------------------------------------------------- binaries ---
+fetch_release_binaries() {
+  # Download the published release tarball, matching the GitHub release asset
+  # naming convention created by scripts/build-release.sh.
+  local version="${RELEASE_VERSION:-latest}"
+  local os arch tag_name url tmpdir
+
+  case "$(uname -s)" in
+    Linux) os="linux" ;;
+    Darwin) os="darwin" ;;
+    *) die "unsupported OS for release download: $(uname -s)" ;;
+  esac
+
+  case "$(uname -m)" in
+    x86_64|amd64) arch="amd64" ;;
+    aarch64|arm64) arch="arm64" ;;
+    *) die "unsupported architecture for release download: $(uname -m)" ;;
+  esac
+
+  if [ "$version" = "latest" ]; then
+    info "fetching latest podcd release metadata from GitHub"
+    tag_name="$(curl -fsSL "https://api.github.com/repos/podcd/podcd/releases/latest" \
+      | sed -n 's/.*"tag_name": *"\([^"]*\)".*/\1/p' | head -n 1)"
+    [ -n "$tag_name" ] || die "unable to determine the latest podcd release"
+    version="${tag_name#v}"
+  elif [[ "$version" == v* ]]; then
+    tag_name="$version"
+    version="${version#v}"
+  else
+    tag_name="v$version"
+  fi
+
+  url="https://github.com/podcd/podcd/releases/download/${tag_name}/podcd_${version}_${os}_${arch}.tar.gz"
+  tmpdir="$(mktemp -d)"
+  trap 'rm -rf "$tmpdir"' RETURN
+
+  info "downloading podcd release ${tag_name} from $url"
+  curl -fsSL "$url" -o "$tmpdir/podcd.tar.gz" || die "failed to download podcd release ${tag_name}"
+  tar -xzf "$tmpdir/podcd.tar.gz" -C "$tmpdir"
+
+  install -m 0755 "$tmpdir/podcd" /usr/local/bin/podcd
+  install -m 0755 "$tmpdir/podcd-agent" /usr/local/bin/podcd-agent
+  info "installed /usr/local/bin/podcd and /usr/local/bin/podcd-agent from the GitHub release"
+}
+
 install_binary() {
   local name="$1" src="$2"
   if [ -n "$src" ] && [ -x "$src" ]; then
@@ -110,7 +156,8 @@ install_binary() {
   elif [ -x "/usr/local/bin/$name" ]; then
     info "/usr/local/bin/$name already installed"
   else
-    die "no $name binary: pass --binaries DIR containing podcd and podcd-agent"
+    info "no local $name binary found; downloading the latest GitHub release"
+    fetch_release_binaries
   fi
 }
 install_binary podcd-agent "${BINARY_DIR:+$BINARY_DIR/podcd-agent}"
@@ -189,5 +236,4 @@ next:
   sudo -u $RUN_USER XDG_RUNTIME_DIR=/run/user/$RUN_UID podcd plan
   journalctl _UID=$RUN_UID -u podcd-agent --user -f
 
-This VM now pulls Git by itself. It does not need inbound SSH.
 EOF
