@@ -8,7 +8,7 @@
 #
 # usage:
 #   sudo ./bootstrap.sh --repo-url https://github.com/podcd/podcd-gitops.git \
-#                       [--revision main] [--path clusters/prod] \
+#                       [--revision main] [--repo-path clusters/prod] \
 #                       [--user podcd] [--host prod-web-01] \
 #                       [--binaries ./dist] [--interval 60s]
 
@@ -30,7 +30,7 @@ while [ $# -gt 0 ]; do
   case "$1" in
     --repo-url)  REPO_URL="$2"; shift 2 ;;
     --revision)  REVISION="$2"; shift 2 ;;
-    --path)      REPO_PATH="$2"; shift 2 ;;
+    --repo-path) REPO_PATH="$2"; shift 2 ;;
     --repo-name) REPO_NAME="$2"; shift 2 ;;
     --user)      RUN_USER="$2"; shift 2 ;;
     --host)      HOST_NAME="$2"; shift 2 ;;

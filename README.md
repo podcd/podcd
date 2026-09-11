@@ -1,23 +1,39 @@
 # podcd
 
-A Git-driven reconciler for containers on ordinary Linux VMs.
+A Git-driven reconciler for Linux workloads.
 
-Git says what should run. A small agent on each VM pulls Git, works out what belongs on *this* machine, compares that with what is actually there, and performs continuous deployment. 
+podcd is a small system for declaring what should be running on a VM in Git, then reconciling the host to match that desired state continuously.
+It is designed for ordinary Linux hosts.
 
-Applications run as rootless Podman containers supervised by systemd through Quadlet.
-It is not Kubernetes.
+The model is intentionally simple:
 
-```text
-* Git desired state
-* Agent  (pull -> identify host -> compile -> plan)
-* Quadlet unit files
-* Running app
+- Git defines the desired state.
+- A local agent reads that state and identifies the host.
+- The agent compiles the resulting configuration.
+- Quadlet and systemd manage the running containers.
+
+```
+Git desired state
+  -> agent pull + host match + plan
+  -> Quadlet units
+  -> running app
 ```
 
-`~/.local/state/podcd/state.json` records the agent's identity, the last revisions, the last successful and failed reconcile, and per-application history including the previous deployment. 
-It is metadata and is safe to delete. Agent recomputes everything from Git and the host.
+podcd is for teams that want disciplined, declarative deployment on regular Linux VMs while keeping the operational model lightweight and auditable.
 
-## Quick start
+## Why podcd?
+
+podcd is built around a few principles:
+
+- Declarative configuration in Git
+- Host-specific reconciliation with explicit inheritance
+- Rootless Podman workloads managed by systemd
+- Deterministic compilation and clear validation errors
+- A small, operationally simple control plane
+
+This is not Kubernetes, it is a focused GitOps model for Linux hosts that need predictable service deployment without a cluster control plane.
+
+## Get started
 
 On a Debian or Ubuntu VM:
 
@@ -25,38 +41,49 @@ On a Debian or Ubuntu VM:
 make build
 sudo ./deploy/bootstrap.sh \
   --repo-url https://git.example.com/infrastructure.git \
+  --repo-path examples \
   --user podcd \
   --host prod-web-01 \
   --binaries ./dist
 ```
 
-That installs podman, creates an unprivileged `podcd` user, enables lingering so
-the applications come back after a reboot, and starts the agent as a systemd
-*user* service. From then on the VM reconciles itself every minute.
+This installs Podman, creates an unprivileged `podcd` user, enables lingering so workloads come back after reboot, and starts the agent as a systemd user service.
 
-To see what it is doing:
+From then on, the host reconciles itself automatically.
+
+### Useful commands
 
 ```bash
-podcd status      # what is running here, and when it last reconciled
-podcd plan        # what would change, without changing anything
-podcd reconcile   # make it so, now
-podcd health      # probe the applications
-podcd logs api    # recent output from one application
-podcd validate    # compile the configuration and check it
+podcd status      # what is running here and when it last reconciled
+podcd plan        # show changes without making them
+podcd reconcile   # apply the current Git desired state
+podcd health      # probe application health
+podcd logs api    # recent output for one application
+podcd validate    # compile config and check for errors
 ```
 
-## Configuration
+## How it works
 
-Four kinds of document, all `apiVersion: gitops.podcd.io/v1`, living in one or more Git repositories:
+The agent stores local state in `~/.local/state/podcd/state.json`. This file records the agent identity, last revisions, last successful and failed reconciliation, and per-application history including the previous deployment.
 
-```text
-* Environment   what is true of a whole environment
-* Group         what a machine is for (a role)
-* Host          this VM: its environment, its groups, its own overrides
-* Application   what an app is, defined once and referenced by name
+That state is metadata only and is safe to delete. The agent can reconstruct its state from Git and the host.
+
+## Configuration model
+
+podcd reads documents from one or more Git repositories. All config documents share the same API version:
+
+```yaml
+apiVersion: gitops.podcd.io/v1
 ```
 
-A host:
+The core document types are:
+
+- `Environment`: values that apply broadly to a whole environment
+- `Group`: a role or machine-purpose definition
+- `Host`: a specific VM, including its environment, groups, and overrides
+- `Application`: a reusable application definition referenced by name
+
+### Host example
 
 ```yaml
 apiVersion: gitops.podcd.io/v1
@@ -65,19 +92,19 @@ metadata:
   name: prod-web-01
 spec:
   environment: production
-  groups: 
+  groups:
     - web
-  applications: 
-    - debug-tools  # extras, on top of the groups
-  excludeApplications: 
-    - frontend  # opt out of something a group brings
+  applications:
+    - debug-tools
+  excludeApplications:
+    - frontend
   overrides:
     api:
       env:
         LOG_LEVEL: debug
 ```
 
-An application:
+### Application example
 
 ```yaml
 apiVersion: gitops.podcd.io/v1
@@ -100,7 +127,15 @@ spec:
       port: 8080
       path: /health
 ```
+
 ### Pod manifests
+
+Pod definitions follow the same rules as applications. They are validated for things such as:
+
+- immutable image references unless explicitly allowed
+- referenced ConfigMaps and Secrets that must exist or be optional
+- host port conflicts
+- the first readiness or liveness probe on a published port becoming the health check
 
 ```yaml
 apiVersion: v1
@@ -120,15 +155,9 @@ spec:
         httpGet: { path: /ready, port: 9200 }
 ```
 
-The same rules apply as to an `Application`: every container image must be digest-pinned (or the pod carries `gitops.podcd.io/allow-mutable-image: "true"`), referenced ConfigMaps and Secrets must exist unless marked `optional`, host ports are checked for conflicts, and the first readiness (or liveness) probe on a published port becomes the health check.
+Secrets in Git hold references, not plaintext values. The `data:` field is rejected, and every `stringData` entry must resolve to either `env:NAME` or `file:path`. Values are resolved on the host, written to a 0600 file outside the unit directory, and displayed as a hash in `podcd plan`.
 
-A `Secret` in Git holds references, never values: `data:` is refused, and every
-`stringData` value must be `env:NAME` or `file:path`. Values are resolved on the
-host, written into a 0600 manifest outside the unit directory, and shown as a
-hash in `podcd plan`.
-
-Overrides for a Pod are strategic merge patches - containers merge by name,
-ports by containerPort - which is what a Pod author expects:
+Overrides for a Pod use strategic merge semantics. Containers merge by name and ports merge by `containerPort`, which matches the expectation of a Pod author:
 
 ```yaml
 overrides:
@@ -139,17 +168,28 @@ overrides:
           args: ["--target", "http://127.0.0.1:9200", "--verbose"]
 ```
 
-### Inheritance
+### Inheritance and merge rules
 
-Lowest precedence to highest:
+Precedence runs from lowest to highest:
 
 ```text
 Application -> Environment override -> Group overrides -> Host override
 ```
 
-Groups are applied in the order the host lists them, so later entries win. Scalars and map entries are overridden key by key; lists (ports, volumes, command) are replaced wholesale, because appending to a port list has no sane meaning. Applications are the union of what the environment, the groups and the host ask for, minus what the host excludes, sorted by name.
+Groups are applied in the order listed by the host, so later entries win. Scalar values and map entries are overridden key-by-key; lists such as ports, volumes, and command arguments are replaced wholesale because appending to a port list has no sane meaning.
 
-Two runs of the compiler on the same commit produce the same bytes. Ambiguity is an error, never a guess: an application defined twice across repositories, a reference to an application that does not exist, an unknown group, a host with no `Host` document, a misspelled field, two applications fighting over one host port - each of those fails the reconcile with a message naming the file.
+The final application set is the union of what the environment, groups, and host request, minus any exclusions from the host, sorted by name.
+
+Two compiler runs on the same commit produce the same bytes. Ambiguity is treated as an error, not a guess. Examples include:
+
+- an application defined twice across repositories
+- a reference to a missing application
+- an unknown group
+- a host with no `Host` document
+- a misspelled field
+- two applications contending for the same host port
+
+Each failure names the offending file and explains the issue clearly.
 
 ### Multiple repositories
 
@@ -161,12 +201,26 @@ repositories:
   - name: applications
     url: https://git.example.com/applications.git
     revision: main
-    path: clusters/prod   # optional subdirectory
+    path: clusters/prod
 ```
 
 ## Testing
 
 ```bash
 make test           # unit tests
-make test-e2e       # podman, quadlet, systemd, on local machine
+make test-e2e       # podman, quadlet, systemd validation on the local machine
 ```
+
+## Security
+
+podcd is designed to keep the host-side trust boundary simple and explicit. The agent reads its config pointing to its git repos, resolves secrets locally, and writes generated unit files and runtime state in a controlled location.
+
+Before enabling a deployment, validate the rendered configuration and review the plan output. The project expects deterministic behavior and clear failures when configuration is ambiguous or invalid.
+
+## Contributing
+
+Contributions are welcome. If you are working on a change, keep the scope focused and validate the relevant tests before submitting.
+
+## License
+
+This project is licensed under the MIT License. See the license in the repository for full details.
