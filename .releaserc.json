@@ -13,8 +13,8 @@
       "@semantic-release/github",
       {
         "assets": [
-          { "path": "dist/release/*.tar.gz", "label": "Binaries" },
-          { "path": "dist/release/checksums.txt", "label": "Checksums (SHA-256)" }
+          "dist/release/*.tar.gz",
+          "dist/release/*.tar.gz.sha256"
         ],
         "successComment": false,
         "failComment": false,

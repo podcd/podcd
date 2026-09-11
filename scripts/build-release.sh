@@ -22,11 +22,11 @@ for platform in $PLATFORMS; do
   echo "building $GOOS/$GOARCH"
   GOOS="$GOOS" GOARCH="$GOARCH" CGO_ENABLED=0 go build -ldflags "$LDFLAGS" -o "$workdir/podcd" ./cmd/cli
   GOOS="$GOOS" GOARCH="$GOARCH" CGO_ENABLED=0 go build -ldflags "$LDFLAGS" -o "$workdir/podcd-agent" ./cmd/agent
-  tar -C "$workdir" -czf "$OUT/podcd_${VERSION}_${GOOS}_${GOARCH}.tar.gz" podcd podcd-agent
+  archive="podcd_${VERSION}_${GOOS}_${GOARCH}.tar.gz"
+  tar -C "$workdir" -czf "$OUT/$archive" podcd podcd-agent
+  sha256sum "$OUT/$archive" > "$OUT/$archive.sha256"
   rm -rf "$workdir"
 done
-
-( cd "$OUT" && sha256sum -- *.tar.gz > checksums.txt )
 
 echo "release artifacts:"
 ls -la "$OUT"
