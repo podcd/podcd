@@ -57,6 +57,7 @@ curl -fsSL https://raw.githubusercontent.com/podcd/podcd/refs/heads/main/deploy/
   --repo-url https://github.com/podcd/podcd.git \
   --repo-path examples \
   --user podcd \
+  --host prod-web-01 \
   --allow-user-login
 ```
 
@@ -70,6 +71,15 @@ podcd install -y
 ```
 
 The first form prompts before overwriting an existing service file; `-y` forces the overwrite.
+
+The agent config file is also managed directly by the CLI:
+
+```bash
+podcd config path
+podcd config create --repo-url https://github.com/podcd/podcd.git --repo-path examples --host prod-web-01
+```
+
+This writes the default config to `~/.config/podcd/agent.yaml` unless `PODCD_CONFIG` or `--path` is set.
 
 ### Manual build and bootstrap
 

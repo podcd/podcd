@@ -87,8 +87,7 @@ else
   info "packages already installed"
 fi
 
-# Quadlet is what turns a .container file into a systemd service. Without it
-# podcd cannot do its job, so fail now rather than at the first reconcile.
+# Quadlet is what turns a .container file into a systemd service.
 if [ ! -x /usr/libexec/podman/quadlet ] && [ ! -e /usr/lib/systemd/user-generators/podman-user-generator ]; then
   die "this podman has no quadlet generator (needs podman 4.4+); install a newer podman"
 fi
@@ -96,6 +95,18 @@ fi
 # -------------------------------------------------------------------- user ---
 if id "$RUN_USER" >/dev/null 2>&1; then
   info "user $RUN_USER already exists"
+  current_shell="$(getent passwd "$RUN_USER" | cut -d: -f7)"
+  if [ "$ALLOW_USER_LOGIN" = true ]; then
+    if [ "$current_shell" != "/bin/bash" ]; then
+      usermod --shell /bin/bash "$RUN_USER"
+      info "user $RUN_USER shell updated to /bin/bash because --allow-user-login was set"
+    fi
+  else
+    if [ "$current_shell" != "/usr/sbin/nologin" ]; then
+      usermod --shell /usr/sbin/nologin "$RUN_USER"
+      info "user $RUN_USER shell locked to /usr/sbin/nologin by default"
+    fi
+  fi
 else
   info "creating user $RUN_USER"
   if [ "$ALLOW_USER_LOGIN" = true ]; then
@@ -194,22 +205,23 @@ SERVICE_DIR="$RUN_HOME/.config/systemd/user"
 
 install -d -o "$RUN_USER" -g "$RUN_USER" -m 0755 "$CONFIG_DIR" "$STATE_DIR" "$UNIT_DIR" "$SERVICE_DIR"
 
+if [ -f "$CONFIG_DIR/agent.yaml" ] && grep -q '^\[podcd\]' "$CONFIG_DIR/agent.yaml" 2>/dev/null; then
+  info "rewriting legacy invalid $CONFIG_DIR/agent.yaml"
+  rm -f "$CONFIG_DIR/agent.yaml"
+fi
+
 if [ -f "$CONFIG_DIR/agent.yaml" ]; then
   info "keeping the existing $CONFIG_DIR/agent.yaml (delete it to regenerate)"
 else
-  info "writing $CONFIG_DIR/agent.yaml"
-  {
-    echo "[podcd] # podcd agent configuration. This file says which Git to trust."
-    echo "[podcd] # This file is local on this host."
-    [ -n "$HOST_NAME" ] && echo "[podcd] host: $HOST_NAME"
-    echo "[podcd] interval: $INTERVAL"
-    echo "[podcd] runtime: podman"
-    echo "[podcd] repositories:"
-    echo "[podcd]   - name: $REPO_NAME"
-    echo "[podcd]     url: $REPO_URL"
-    echo "[podcd]     revision: $REVISION"
-    [ -n "$REPO_PATH" ] && echo "[podcd]     path: $REPO_PATH"
-  } > "$CONFIG_DIR/agent.yaml"
+  info "writing $CONFIG_DIR/agent.yaml via podcd config create"
+  as_user /usr/local/bin/podcd config create \
+    --path "$CONFIG_DIR/agent.yaml" \
+    --host "${HOST_NAME:-}" \
+    --repo-url "$REPO_URL" \
+    --repo-name "$REPO_NAME" \
+    --repo-path "${REPO_PATH:-}" \
+    --revision "$REVISION" \
+    --interval "$INTERVAL"
   chown "$RUN_USER:$RUN_USER" "$CONFIG_DIR/agent.yaml"
   chmod 0644 "$CONFIG_DIR/agent.yaml"
 fi

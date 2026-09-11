@@ -41,6 +41,7 @@ commands:
   logs <app>  recent log output for one application
   validate    load Git and compile the configuration for a host
   install     install the podcd-agent systemd user service file
+  config      view or create the agent config file
   run         reconcile in a loop (this is what the systemd service runs)
   version     print the version
 
@@ -78,6 +79,21 @@ func Main(args []string, defaultCmd string) int {
 	}
 	if cmd == "version" {
 		fmt.Println(versionString())
+		return 0
+	}
+
+	if cmd == "install" {
+		if err := cmdInstall(rest); err != nil {
+			fmt.Fprintln(os.Stderr, "error: "+err.Error())
+			return 1
+		}
+		return 0
+	}
+	if cmd == "config" {
+		if err := cmdConfig(rest); err != nil {
+			fmt.Fprintln(os.Stderr, "error: "+err.Error())
+			return 1
+		}
 		return 0
 	}
 
@@ -173,6 +189,8 @@ func dispatch(ctx context.Context, env *environment, cmd string, args []string) 
 		return cmdValidate(ctx, env, args)
 	case "install":
 		return cmdInstall(args)
+	case "config":
+		return cmdConfig(args)
 	case "run", "agent":
 		return env.engine.Run(ctx)
 	default:
@@ -197,6 +215,102 @@ EnvironmentFile=-%h/.config/podcd/agent.env
 [Install]
 WantedBy=default.target
 `
+}
+
+func defaultConfigPath() string {
+	if p := os.Getenv("PODCD_CONFIG"); p != "" {
+		return p
+	}
+	if user := os.Getenv("SUDO_USER"); user != "" && os.Getuid() == 0 {
+		if home := filepath.Join("/home", user); func() bool {
+			_, err := os.Stat(home)
+			return err == nil
+		}() {
+			return filepath.Join(home, ".config", "podcd", "agent.yaml")
+		}
+	}
+	home, err := os.UserHomeDir()
+	if err == nil {
+		return filepath.Join(home, ".config", "podcd", "agent.yaml")
+	}
+	return "/etc/podcd/agent.yaml"
+}
+
+func defaultAgentConfigYAML(host, repoURL, repoName, repoPath, revision, interval string) string {
+	if repoName == "" {
+		repoName = "infrastructure"
+	}
+	if repoURL == "" {
+		repoURL = "https://github.com/podcd/podcd.git"
+	}
+	if revision == "" {
+		revision = "main"
+	}
+	if interval == "" {
+		interval = "60s"
+	}
+	var b strings.Builder
+	fmt.Fprintf(&b, "# The agent's own configuration.\n")
+	fmt.Fprintf(&b, "# It lives on the VM (~/.config/podcd/agent.yaml or /etc/podcd/agent.yaml), not in Git.\n\n")
+	if host == "" {
+		fmt.Fprintf(&b, "host: \"\"\n")
+	} else {
+		fmt.Fprintf(&b, "host: %s\n", host)
+	}
+	fmt.Fprintf(&b, "interval: %s\n", interval)
+	fmt.Fprintf(&b, "jitter: 10s\n\n")
+	fmt.Fprintf(&b, "runtime: podman\n\n")
+	fmt.Fprintf(&b, "repositories:\n")
+	fmt.Fprintf(&b, "  - name: %s\n", repoName)
+	fmt.Fprintf(&b, "    url: %s\n", repoURL)
+	fmt.Fprintf(&b, "    revision: %s\n", revision)
+	if repoPath != "" {
+		fmt.Fprintf(&b, "    path: %s\n", repoPath)
+	}
+	fmt.Fprintf(&b, "\nprune: true\n")
+	fmt.Fprintf(&b, "secretsDir: /etc/podcd/secrets\n")
+	fmt.Fprintf(&b, "logFormat: text\n")
+	return b.String()
+}
+
+func cmdConfig(args []string) error {
+	if len(args) == 0 {
+		fmt.Fprintln(os.Stdout, defaultConfigPath())
+		return nil
+	}
+
+	switch args[0] {
+	case "path":
+		fmt.Fprintln(os.Stdout, defaultConfigPath())
+		return nil
+	case "create":
+		fs := flag.NewFlagSet("config create", flag.ContinueOnError)
+		path := fs.String("path", defaultConfigPath(), "path for the agent config")
+		host := fs.String("host", "", "host override")
+		repoURL := fs.String("repo-url", "https://github.com/podcd/podcd.git", "Git repository URL")
+		repoName := fs.String("repo-name", "infrastructure", "repository name")
+		repoPath := fs.String("repo-path", "", "repository subdirectory to read")
+		revision := fs.String("revision", "main", "branch, tag or SHA")
+		interval := fs.String("interval", "60s", "reconcile interval")
+		force := fs.Bool("force", false, "overwrite an existing config")
+		if err := fs.Parse(args[1:]); err != nil {
+			return err
+		}
+		if _, err := os.Stat(*path); err == nil && !*force {
+			return fmt.Errorf("config already exists at %s; use --force to overwrite", *path)
+		}
+		if err := os.MkdirAll(filepath.Dir(*path), 0o755); err != nil {
+			return fmt.Errorf("create config dir %s: %w", filepath.Dir(*path), err)
+		}
+		content := defaultAgentConfigYAML(*host, *repoURL, *repoName, *repoPath, *revision, *interval)
+		if err := os.WriteFile(*path, []byte(content), 0o644); err != nil {
+			return fmt.Errorf("write config %s: %w", *path, err)
+		}
+		fmt.Fprintln(os.Stdout, *path)
+		return nil
+	default:
+		return fmt.Errorf("unknown config command %q (try: path, create)", args[0])
+	}
 }
 
 func cmdInstall(args []string) error {
