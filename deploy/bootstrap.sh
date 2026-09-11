@@ -11,6 +11,9 @@
 #                       [--revision main] [--repo-path clusters/prod] \
 #                       [--user podcd] [--host prod-web-01] \
 #                       [--binaries ./dist] [--release-version 1.0.0] [--interval 60s]
+#
+# If --user is omitted, the script defaults to the current user when run as a
+# normal user, or to the invoking sudo user when run as root.
 
 set -euo pipefail
 
@@ -22,6 +25,7 @@ RUN_USER=""
 HOST_NAME=""
 BINARY_DIR=""
 RELEASE_VERSION=""
+ALLOW_USER_LOGIN=false
 INTERVAL="60s"
 
 die() { echo "[podcd] bootstrap: $*" >&2; exit 1; }
@@ -37,6 +41,7 @@ while [ $# -gt 0 ]; do
     --host)             HOST_NAME="$2"; shift 2 ;;
     --binaries)         BINARY_DIR="$2"; shift 2 ;;
     --release-version)  RELEASE_VERSION="$2"; shift 2 ;;
+    --allow-user-login) ALLOW_USER_LOGIN=true; shift ;;
     --interval)         INTERVAL="$2"; shift 2 ;;
     -h|--help)          sed -n '2,20p' "$0"; exit 0 ;;
     *)                  die "unknown argument: $1" ;;
@@ -45,7 +50,17 @@ done
 
 [ "$(id -u)" -eq 0 ] || die "run this as root (it installs packages and creates a user)"
 [ -n "$REPO_URL" ] || die "--repo-url is required"
-[ -n "$RUN_USER" ] || die "--user is required"
+if [ -z "$RUN_USER" ]; then
+  if [ -n "${SUDO_USER:-}" ] && [ "$(id -un)" = "root" ]; then
+    RUN_USER="$SUDO_USER"
+    info "no --user supplied; using sudo user $RUN_USER"
+  elif [ "$(id -u)" -ne 0 ]; then
+    RUN_USER="$(id -un)"
+    info "no --user supplied; using current user $RUN_USER"
+  else
+    die "--user is required when running as root; use sudo to default to the invoking user or pass --user explicitly"
+  fi
+fi
 if [ ! -r /etc/os-release ]; then
   die "cannot identify this distribution; this script targets Debian and Ubuntu"
 fi
@@ -83,7 +98,12 @@ if id "$RUN_USER" >/dev/null 2>&1; then
   info "user $RUN_USER already exists"
 else
   info "creating user $RUN_USER"
-  useradd --create-home --shell /usr/sbin/nologin --comment "podcd agent" "$RUN_USER"
+  if [ "$ALLOW_USER_LOGIN" = true ]; then
+    useradd --create-home --shell /bin/bash --comment "podcd agent" "$RUN_USER"
+    info "user $RUN_USER can log in via /bin/bash because --allow-user-login was set"
+  else
+    useradd --create-home --shell /usr/sbin/nologin --comment "podcd agent" "$RUN_USER"
+  fi
 fi
 RUN_HOME="$(getent passwd "$RUN_USER" | cut -d: -f6)"
 RUN_UID="$(id -u "$RUN_USER")"
@@ -137,14 +157,17 @@ fetch_release_binaries() {
 
   url="https://github.com/podcd/podcd/releases/download/${tag_name}/podcd_${version}_${os}_${arch}.tar.gz"
   tmpdir="$(mktemp -d)"
-  trap 'rm -rf "$tmpdir"' RETURN
 
   info "downloading podcd release ${tag_name} from $url"
-  curl -fsSL "$url" -o "$tmpdir/podcd.tar.gz" || die "failed to download podcd release ${tag_name}"
+  curl -fsSL "$url" -o "$tmpdir/podcd.tar.gz" || {
+    rm -rf "$tmpdir"
+    die "failed to download podcd release ${tag_name}"
+  }
   tar -xzf "$tmpdir/podcd.tar.gz" -C "$tmpdir"
 
   install -m 0755 "$tmpdir/podcd" /usr/local/bin/podcd
   install -m 0755 "$tmpdir/podcd-agent" /usr/local/bin/podcd-agent
+  rm -rf "$tmpdir"
   info "installed /usr/local/bin/podcd and /usr/local/bin/podcd-agent from the GitHub release"
 }
 
@@ -200,16 +223,20 @@ if [ ! -f "$CONFIG_DIR/agent.env" ]; then
 fi
 
 # ----------------------------------------------------------------- service ---
-SERVICE_SRC="$(dirname "$0")/podcd-agent.service"
-if [ -f "$SERVICE_SRC" ]; then
-  install -o "$RUN_USER" -g "$RUN_USER" -m 0644 "$SERVICE_SRC" "$SERVICE_DIR/podcd-agent.service"
-else
-  die "podcd-agent.service not found next to this script"
-fi
-
 export XDG_RUNTIME_DIR="/run/user/$RUN_UID"
 as_user() { setpriv --reuid "$RUN_UID" --regid "$(id -g "$RUN_USER")" --init-groups \
   env XDG_RUNTIME_DIR="/run/user/$RUN_UID" DBUS_SESSION_BUS_ADDRESS="unix:path=/run/user/$RUN_UID/bus" "$@"; }
+
+if ! as_user /usr/local/bin/podcd install >/dev/null 2>&1; then
+  # Older builds and some direct local runs may not yet have the install helper.
+  # Fall back to the checked-in unit file when it is present in the repo checkout.
+  SERVICE_SRC="$(dirname "$0")/podcd-agent.service"
+  if [ -f "$SERVICE_SRC" ]; then
+    install -o "$RUN_USER" -g "$RUN_USER" -m 0644 "$SERVICE_SRC" "$SERVICE_DIR/podcd-agent.service"
+  else
+    die "podcd-agent.service not found and the podcd install command failed"
+  fi
+fi
 
 # The user manager may need a moment after enable-linger before it accepts
 # commands; this is the one race in the whole bootstrap.

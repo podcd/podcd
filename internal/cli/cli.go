@@ -12,6 +12,7 @@ import (
 	"log/slog"
 	"os"
 	"os/signal"
+	"path/filepath"
 	"runtime/debug"
 	"sort"
 	"strings"
@@ -39,6 +40,7 @@ commands:
   health      probe the applications this host should be running
   logs <app>  recent log output for one application
   validate    load Git and compile the configuration for a host
+  install     install the podcd-agent systemd user service file
   run         reconcile in a loop (this is what the systemd service runs)
   version     print the version
 
@@ -169,11 +171,72 @@ func dispatch(ctx context.Context, env *environment, cmd string, args []string) 
 		return cmdLogs(ctx, env, args)
 	case "validate":
 		return cmdValidate(ctx, env, args)
+	case "install":
+		return cmdInstall(args)
 	case "run", "agent":
 		return env.engine.Run(ctx)
 	default:
-		return fmt.Errorf("unknown command %q (try: status, plan, reconcile, health, logs, validate, run, version)", cmd)
+		return fmt.Errorf("unknown command %q (try: status, plan, reconcile, health, logs, validate, install, run, version)", cmd)
 	}
+}
+
+func serviceFileContents() string {
+	return `[Unit]
+Description=podcd GitOps agent
+Documentation=https://github.com/podcd/podcd
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+ExecStart=/usr/local/bin/podcd-agent run
+Restart=always
+RestartSec=10
+EnvironmentFile=-%h/.config/podcd/agent.env
+
+[Install]
+WantedBy=default.target
+`
+}
+
+func cmdInstall(args []string) error {
+	fs := flag.NewFlagSet("install", flag.ContinueOnError)
+	outputPath := fs.String("output", "", "destination for the systemd service file")
+	force := fs.Bool("y", false, "overwrite the destination file without prompting")
+	forceLong := fs.Bool("yes", false, "overwrite the destination file without prompting")
+	if err := fs.Parse(args); err != nil {
+		return err
+	}
+
+	dest := *outputPath
+	if dest == "" {
+		home, err := os.UserHomeDir()
+		if err != nil {
+			return fmt.Errorf("determine home directory: %w", err)
+		}
+		dest = filepath.Join(home, ".config", "systemd", "user", "podcd-agent.service")
+	}
+	if err := os.MkdirAll(filepath.Dir(dest), 0o755); err != nil {
+		return fmt.Errorf("create service directory %s: %w", filepath.Dir(dest), err)
+	}
+	if _, err := os.Stat(dest); err == nil {
+		if !*force && !*forceLong {
+			fmt.Fprintf(os.Stderr, "%s already exists. Overwrite? [y/N]: ", dest)
+			var answer string
+			if _, err := fmt.Scanln(&answer); err != nil && !errors.Is(err, io.EOF) {
+				return nil
+			}
+			if !strings.EqualFold(answer, "y") && !strings.EqualFold(answer, "yes") {
+				fmt.Fprintln(os.Stderr, "aborted")
+				return nil
+			}
+		}
+	}
+	if err := os.WriteFile(dest, []byte(serviceFileContents()), 0o644); err != nil {
+		return fmt.Errorf("write service file %s: %w", dest, err)
+	}
+	fmt.Fprintf(os.Stdout, "%s\n", dest)
+	return nil
 }
 
 func cmdStatus(ctx context.Context, env *environment, args []string) error {

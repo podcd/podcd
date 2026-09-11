@@ -40,13 +40,36 @@ This is not Kubernetes, it is a focused GitOps model for Linux hosts that need p
 On a Debian or Ubuntu VM, you can install the latest published release directly with:
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/podcd/podcd/main/deploy/bootstrap.sh | sudo bash -s -- \
+curl -fsSL https://raw.githubusercontent.com/podcd/podcd/refs/heads/main/deploy/bootstrap.sh | sudo bash -s -- \
   --repo-url https://github.com/podcd/podcd.git \
   --repo-path examples \
-  --user podcd 
+  --user podcd
 ```
 
-This downloads the latest release binaries from GitHub, installs Podman, creates an unprivileged `podcd` user, enables lingering so workloads come back after reboot, and starts the agent as a systemd user service.
+This downloads the latest release binaries from GitHub, installs Podman, creates or reuses a dedicated `podcd` service user, enables lingering so workloads come back after reboot, and starts the agent as a systemd user service.
+
+By default, the bootstrap script creates a non-login system account for the agent. The service account is not a human login account; its shell is `/usr/sbin/nologin` unless you explicitly opt in with `--allow-user-login`.
+
+If you want the service user to be able to log in as a shell, use:
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/podcd/podcd/refs/heads/main/deploy/bootstrap.sh | sudo bash -s -- \
+  --repo-url https://github.com/podcd/podcd.git \
+  --repo-path examples \
+  --user podcd \
+  --allow-user-login
+```
+
+If you want a dedicated service account, pass `--user`; the script will create that user if it does not already exist, or reuse it if it does. If you prefer the secure default, omit `--allow-user-login` and leave the account locked down. If you omit `--user` entirely, the script uses the current user (or the invoking `sudo` user when run as root).
+
+If you already have the binary installed, the service can also be written directly with:
+
+```bash
+podcd install
+podcd install -y
+```
+
+The first form prompts before overwriting an existing service file; `-y` forces the overwrite.
 
 ### Manual build and bootstrap
 
@@ -72,6 +95,7 @@ podcd reconcile   # apply the current Git desired state
 podcd health      # probe application health
 podcd logs api    # recent output for one application
 podcd validate    # compile config and check for errors
+podcd install     # write the systemd user service file for the agent
 ```
 
 ## How it works
