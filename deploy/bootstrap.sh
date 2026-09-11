@@ -123,8 +123,11 @@ as_user() {
     --regid "$(id -g "$RUN_USER")" \
     --init-groups \
     env \
-      XDG_RUNTIME_DIR="$XDG_RUNTIME_DIR" \
-      DBUS_SESSION_BUS_ADDRESS="unix:path=$XDG_RUNTIME_DIR/bus" \
+      HOME="$RUN_HOME" \
+      USER="$RUN_USER" \
+      LOGNAME="$RUN_USER" \
+      XDG_RUNTIME_DIR="/run/user/$RUN_UID" \
+      DBUS_SESSION_BUS_ADDRESS="unix:path=/run/user/$RUN_UID/bus" \
       "$@"
 }
 
