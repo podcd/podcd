@@ -1,32 +1,75 @@
-# The agent's own configuration. 
-# It lives on the VM (~/.config/podcd/agent.yaml or /etc/podcd/agent.yaml), not in Git
-# this file is what decides which Git the machine trusts.
+# podcd agent configuration. This file says which Git to trust, and how
+# often to look. It lives on this host, not in Git.
+#
+# Lines starting with # show the default; uncomment one to change it.
 
-# Which Host document this VM is. Omit to use the system hostname.
-host: ""
+# Which Host document this machine is. Empty means the system hostname (with
+# any domain stripped). PODCD_HOST in the environment overrides both.
+# host: ""
 
-# How often to pull and reconcile, plus jitter so a fleet does not hit Git in
+# How often to pull and reconcile.
+# interval: 1m0s
+
+# Random extra delay on top of interval, so a fleet does not hit Git in
 # lockstep.
-interval: 60s
-jitter: 10s
+# jitter: 10s
 
-runtime: podman
+# Wait after a failed reconcile; doubles on each further failure.
+# retryInterval: 15s
 
-# One or more repositories. They are composed into a single desired state;
-# a name defined twice across them is an error, not a race.
+# Cap for the retry backoff.
+# maxRetryInterval: 10m0s
+
+# Container runtime. Only podman (rootless, via Quadlet) is implemented.
+# runtime: podman
+
+# One or more repositories, composed into a single desired state. A name
+# defined twice across them is an error, not a race.
 repositories:
+  # A short name for this repository; it appears in logs and status.
   - name: infrastructure
+    # Where to fetch from: https://, ssh (git@host:path) or a local path.
     url: https://github.com/podcd/podcd-gitops.git
+    # A branch, a tag or a commit. A tag or commit pins the host exactly.
     revision: main
-    # Only this subdirectory is read.
-    # path: clusters/prod
+    # Read only this subdirectory of the repository.
+    # path: ""
+    # Disable host key / TLS verification. Visible here on purpose, rather
+    # than an environment variable nobody sees.
+    # insecure: false
+    # A private repository needs a read credential. The token is a secret
+    # reference (env:, file:, vault:), never a literal in this file; it is
+    # resolved on every fetch. GitLab deploy tokens have their own username.
+    # auth:
+    #   username: gitlab+deploy-token-42
+    #   token: env:GITOPS_TOKEN
+    #   sshKeyPath: ~/.ssh/deploy_key
+    #   sshKnownHostsPath: ~/.ssh/known_hosts
 
-# Remove applications that Git no longer declares. 
-# On by default;
-prune: true
+# Where the agent keeps checkouts, played manifests and state.json.
+# stateDir: /home/podcd/.local/state/podcd
 
-# Root for relative `file:` secret references. `env:` references come from the
-# agent's own environment (see deploy/podcd-agent.service).
-secretsDir: /etc/podcd/secrets
+# Where Quadlet units are written. Must be a directory systemd --user reads.
+# unitDir: /home/podcd/.config/containers/systemd
 
-logFormat: text
+# Root for relative file: secret references.
+# secretsDir: ""
+
+# KEY=value file read for env: references (and loaded by the systemd unit).
+# 0600, never in Git; re-read on every lookup so rotation needs no restart.
+# envFile: /home/podcd/.config/podcd/agent.env
+
+# Remove applications that Git no longer declares. On by default; leaving
+# orphans running is its own kind of drift.
+# prune: true
+
+# text or json.
+# logFormat: text
+
+# HashiCorp Vault, for vault:<mount>/<path>/<key> (or <path>/<key>@<mount>)
+# references. Vault's own credentials are references as well, so they come
+# from the env file rather than from this file.
+# vault:
+#   address: https://vault.example.com
+#   roleId: env:VAULT_ROLE_ID
+#   secretId: env:VAULT_SECRET_ID

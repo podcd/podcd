@@ -7,6 +7,7 @@ import (
 	"testing"
 
 	"github.com/podcd/podcd/deploy"
+	"github.com/podcd/podcd/pkg/config"
 )
 
 // TestEveryCommandOwnsItsFlags guards the bug where a flag was parsed by a
@@ -96,7 +97,7 @@ func TestInstallDoesNotOverwriteWithoutConsent(t *testing.T) {
 	}
 }
 
-func TestConfigCreateWritesACompactFile(t *testing.T) {
+func TestConfigCreateWritesTheFullAnnotatedSpec(t *testing.T) {
 	home := t.TempDir()
 	t.Setenv("HOME", home)
 	t.Setenv("PODCD_CONFIG", "")
@@ -109,17 +110,37 @@ func TestConfigCreateWritesACompactFile(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	text := string(got)
-	for _, want := range []string{"url: https://example.com/repo.git", "path: clusters/prod", "interval: 30s"} {
+	text := "\n" + string(got)
+
+	// What was set is active.
+	for _, want := range []string{"\n    url: https://example.com/repo.git\n", "\n    path: clusters/prod\n", "\ninterval: 30s\n"} {
 		if !strings.Contains(text, want) {
-			t.Errorf("config is missing %q:\n%s", want, text)
+			t.Errorf("config is missing the active line %q:\n%s", want, text)
 		}
 	}
-	// Defaults are not written: the file should not pin this machine's paths.
-	for _, absent := range []string{"stateDir", "unitDir", "retryInterval", "runtime: podman", "prune: true"} {
-		if strings.Contains(text, absent) {
-			t.Errorf("config should not spell out the default %q:\n%s", absent, text)
+	// Every other field is present, as a commented default - documented, but
+	// not pinning this machine's paths or the current defaults into the file.
+	for _, field := range []string{"host", "jitter", "retryInterval", "maxRetryInterval", "runtime", "stateDir", "unitDir", "secretsDir", "envFile", "prune", "logFormat", "vault"} {
+		if !strings.Contains(text, "\n# "+field+":") {
+			t.Errorf("config should show %q as a commented default:\n%s", field, text)
 		}
+		if strings.Contains(text, "\n"+field+":") {
+			t.Errorf("config should not activate the default %q:\n%s", field, text)
+		}
+	}
+	for _, want := range []string{"#   token: env:GITOPS_TOKEN", "#   roleId: env:VAULT_ROLE_ID"} {
+		if !strings.Contains(text, want) {
+			t.Errorf("config should show the %q example:\n%s", want, text)
+		}
+	}
+
+	// It parses back to what was asked for.
+	cfg, err := config.LoadAgentConfig(path)
+	if err != nil {
+		t.Fatalf("the written config does not load: %v", err)
+	}
+	if cfg.Interval.String() != "30s" || cfg.Repositories[0].Path != "clusters/prod" || !cfg.PruneEnabled() {
+		t.Errorf("round trip lost values: %+v", cfg)
 	}
 
 	// A second create refuses to clobber.

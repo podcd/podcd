@@ -40,170 +40,208 @@ This is not Kubernetes, it is a focused GitOps model for Linux hosts that need p
 
 ## Get started
 
-### Quick install
+### Demo deploy
 
-On a Debian or Ubuntu VM, you can install the latest published release directly with:
-
-```bash
-curl -fsSL https://raw.githubusercontent.com/podcd/podcd/refs/heads/main/deploy/bootstrap.sh | sudo bash -s -- \
-  --repo-url https://github.com/podcd/podcd.git \
-  --repo-path examples \
-  --host local \
-  --user podcd
-```
-
-This downloads the latest release binary from GitHub (and verifies its checksum), installs Podman, creates or reuses a dedicated `podcd` service user, enables lingering so workloads come back after reboot, and starts the agent as a systemd user service.
-
-By default, the bootstrap script creates a non-login system account for the agent. The service account is not a human login account; its shell is `/usr/sbin/nologin` unless you explicitly opt in with `--allow-user-login`.
-
-If you want the service user to be able to log in as a shell, use:
+Runs as the user you are logged in as. Nothing here needs root except installing
+Podman itself.
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/podcd/podcd/refs/heads/main/deploy/bootstrap.sh | sudo bash -s -- \
-  --repo-url https://github.com/podcd/podcd.git \
-  --repo-path examples \
-  --user podcd \
-  --host local \
-  --allow-user-login
+# 1. Podman, git, and a user session that survives logout.
+sudo apt-get install -y podman uidmap dbus-user-session git   # Debian/Ubuntu
+sudo dnf install -y podman shadow-utils git                    # RHEL family
+loginctl enable-linger "$USER"
+
+# 2. The binary: a release (assets are podcd_<version>_linux_<arch>.tar.gz,
+#    each with a .sha256 next to it), or `make build` from this repository.
+V=1.2.0
+curl -fsSLO "https://github.com/podcd/podcd/releases/download/v$V/podcd_${V}_linux_amd64.tar.gz"
+curl -fsSLO "https://github.com/podcd/podcd/releases/download/v$V/podcd_${V}_linux_amd64.tar.gz.sha256"
+sha256sum -c "podcd_${V}_linux_amd64.tar.gz.sha256" && tar -xzf "podcd_${V}_linux_amd64.tar.gz"
+sudo install -m 0755 podcd /usr/local/bin/podcd
+
+# 3. Point the agent at the example repository. The `local` Host runs one nginx.
+podcd config create --repo-url https://github.com/podcd/podcd.git --repo-path examples --host local
+
+# 4. See what would happen, then make it happen.
+podcd validate
+podcd plan
+podcd reconcile
+curl -s http://127.0.0.1:8080/ | head -3
 ```
 
-If you want a dedicated service account, pass `--user`; the script will create that user if it does not already exist, or reuse it if it does. If you prefer the secure default, omit `--allow-user-login` and leave the account locked down. If you omit `--user` entirely, the script uses the current user (or the invoking `sudo` user when run as root).
+`reconcile` clones the repository, compiles the `local` host, writes `~/.config/containers/systemd/podcd-local.container`, asks systemd to start it and waits for the health check.
 
-If you already have the binary installed, the service can also be written directly with:
+To keep it running unattended, install the agent as a user service:
 
 ```bash
 podcd install
-podcd install -y
+systemctl --user enable --now podcd-agent.service
+journalctl --user -u podcd-agent -f
 ```
 
-The first form prompts before overwriting an existing service file; `-y` forces the overwrite.
-
-The agent config file is also managed directly by the CLI:
+Tear down when unneeded:
 
 ```bash
-podcd config path
-podcd config create --repo-url https://github.com/podcd/podcd.git --repo-path examples --host local
+systemctl --user disable --now podcd-agent.service
+systemctl --user stop podcd-local.service
+rm ~/.config/containers/systemd/podcd-local.container ~/.config/systemd/user/podcd-agent.service
+systemctl --user daemon-reload
+rm -rf ~/.config/podcd ~/.local/state/podcd
 ```
 
-This writes the default config to `~/.config/podcd/agent.yaml` unless `PODCD_CONFIG` or `--path` is set. Only the values you gave are written; everything else stays at its default. Individual fields can be changed later without editing the file by hand:
+### Production deploy
 
-```bash
-podcd config set host prod-web-02
-podcd config set interval 30s
-podcd config view
-```
+#### 1. The repository
 
-### Shell completion
+Your Git repository is the source of truth:
 
-podcd includes Cobra shell completion for bash, zsh, fish, and PowerShell. The built-in command is:
+- One `Host` document per VM, named after the machine (`podcd config create --host` or the hostname). Group hosts by role; put role-wide settings on the `Group`, environment-wide ones on the `Environment`.
+- Every image pinned by digest. `podcd validate` refuses anything else.
+- Secrets as references (`env:NAME`, `file:path`).
 
-```bash
-podcd completion --help
-```
-
-#### Bash
-
-```bash
-mkdir -p ~/.local/share/bash-completion/completions
-podcd completion bash > ~/.local/share/bash-completion/completions/podcd
-
-# add this to ~/.bashrc if it is not already present
-echo 'source ~/.local/share/bash-completion/completions/podcd' >> ~/.bashrc
-source ~/.bashrc
-```
-
-If you prefer a system-wide install, this also works on many Linux systems:
-
-```bash
-sudo podcd completion bash > /etc/bash_completion.d/podcd
-```
-
-#### Zsh
-
-```bash
-mkdir -p ~/.zsh/completions
-podcd completion zsh > ~/.zsh/completions/_podcd
-
-# add this to ~/.zshrc
-cat <<'EOF' >> ~/.zshrc
-fpath=(~/.zsh/completions $fpath)
-autoload -Uz compinit
-compinit
-EOF
-
-source ~/.zshrc
-```
-
-After reloading your shell, tab completion should work for commands, flags, and arguments such as `podcd conf<TAB>` or `podcd plan --<TAB>`.
-
-The actual agent configuration file looks like this:
+For a private repository, give the agent a read credential in `agent.yaml`.
+A GitHub or GitLab deploy token over HTTPS:
 
 ```yaml
-# ~/.config/podcd/agent.yaml
-host: prod-web-01
-interval: 60s
-jitter: 10s
-runtime: podman
-
 repositories:
   - name: gitops
-    url: https://github.com/your-user/gitops.git
-    revision: main
-    path: .
-
-stateDir: /home/podcd/.local/state/podcd
-unitDir: /home/podcd/.config/containers/systemd
-secretsDir: /home/podcd/.local/share/podcd/secrets
-envFile: /home/podcd/.config/podcd/agent.env
-prune: true
-logFormat: text
+    url: https://gitlab.com/your-user/gitops.git
+    revision: production
+    auth:
+      username: gitlab+deploy-token-42   # GitLab deploy tokens carry their own username;
+      token: env:GITOPS_TOKEN            # PATs and GitHub tokens can omit it
 ```
 
-This is the file the agent reads to decide which Git repository to reconcile.
+Or an SSH deploy key:
 
-### Configure against your own GitOps repository
-
-Point the agent at that repo instead of the example checkout:
+```yaml
+repositories:
+  - name: gitops
+    url: git@github.com:your-user/gitops.git
+    auth:
+      sshKeyPath: /home/podcd/.ssh/deploy_key        # used with IdentitiesOnly
+      sshKnownHostsPath: /home/podcd/.ssh/known_hosts # optional
+```
 
 ```bash
-# As the podcd user
-podcd config create \
-  --path /home/podcd/.config/podcd/agent.yaml \
-  --host vm-prod \
-  --repo-url https://github.com/your-user/podcd-gitops.git \
-  --repo-path . \
-  --revision main
-
-podcd validate
-podcd plan
+sudo -u podcd bash -lc 'ssh-keygen -t ed25519 -N "" -f ~/.ssh/deploy_key && ssh-keyscan github.com >> ~/.ssh/known_hosts'
+# add ~podcd/.ssh/deploy_key.pub as a read-only deploy key
 ```
 
-If you are invoking `podcd` as the service user from another directory, always switch into the user's home first. The current working directory is inherited from the shell, and rootless Podman refuses to run in a directory the `podcd` user cannot access. i.e:
-```bash
-sudo -u podcd bash -lc 'cd /home/podcd && podcd validate'
-sudo -u podcd bash -lc 'cd /home/podcd && podcd plan'
-```
+#### 2. The host
 
-Once the config is in place, install the user service file for that same account and enable the agent:
+One command, as root, per VM. It is idempotent.
 
 ```bash
-# As the podcd user
-cd /home/podcd && podcd install -y
-systemctl --user daemon-reload
-systemctl --user enable --now podcd-agent.service
+curl -fsSL https://raw.githubusercontent.com/podcd/podcd/main/deploy/bootstrap.sh | sudo bash -s -- \
+  --user podcd \
+  --host prod-web-01 \
+  --repo-url git@github.com:you/gitops.git \
+  --revision production \
+  --release-version 1.2.0
 ```
 
-That keeps the service account, its config, and its runtime state all rooted under `/home/podcd` rather than the root account's home directory.
+It detects the distribution (apt on Debian/Ubuntu, dnf on the RHEL family), installs Podman, creates the `podcd` service user (no login shell; add `--allow-user-login` only if you want one), grants it a subordinate uid range, enables lingering so applications come back after a reboot, downloads the release you named and verifies its checksum, writes the agent config, installs the user service and starts it.
 
-### Manual build and bootstrap
+On SELinux-enforcing hosts (the RHEL default) bind mounts need the `Z` (or `z`) option so the container may read them - `volumes: [{source: /srv/data, destination: /data, options: Z}]`;ConfigMap and Secret volumes on Pods are labelled by podman itself.
+
+Everything the agent owns is under its user `/home/podcd`:
+
+```text
+~/.config/podcd/agent.yaml          which Git to trust (this file, not Git, decides)
+~/.config/podcd/agent.env           secrets, 0600, never in Git
+~/.config/containers/systemd/       the Quadlet units podcd wrote
+~/.local/state/podcd/               checkouts, played manifests, state.json
+```
+
+#### 3. Secrets
+
+A secret referenced in Git as `env:DATABASE_PASSWORD` is looked up in the agent's environment, which systemd loads from `~podcd/.config/podcd/agent.env`:
 
 ```bash
-make build
-sudo install -m 0755 dist/podcd /usr/local/bin/podcd
-
+sudo -u podcd bash -lc 'umask 077 && printf "DATABASE_PASSWORD=%s\n" "$(cat /path/to/secret)" >> ~/.config/podcd/agent.env'
 ```
 
-From then on, the host reconciles itself automatically.
+The agent re-reads that file on every lookup, so no restart is needed: rotating a value changes the application's spec hash and the next reconcile restarts the application. `file:` references read files under `secretsDir` instead; use that for values delivered by another tool.
+
+**HashiCorp Vault.** With a `vault:` section in `agent.yaml`, references resolve against Vault (KV v1 or v2), authenticated with AppRole or a token. Both of these name the same value - the key is always the last segment:
+
+```text
+vault:secret/prod/api/DATABASE_PASSWORD     mount first, as in `vault kv get`
+vault:prod/api/DATABASE_PASSWORD@secret     mount after @
+```
+
+```yaml
+vault:
+  address: https://vault.example.com
+  roleId: env:VAULT_ROLE_ID       # from agent.env - Vault credentials are references too
+  secretId: env:VAULT_SECRET_ID
+  # token: env:VAULT_TOKEN        # alternative to AppRole
+  # namespace: team-a             # Vault Enterprise
+  # caCert: /etc/pki/vault-ca.pem
+  # kvVersion: 2
+```
+
+The agent logs in when it first needs a value, re-logs-in when the token is rejected, and caches reads briefly so a reconcile with many keys from one path is one round trip. Only static KV values make sense here: a dynamic credential that changed on every read would restart the application on every reconcile.
+
+#### 4. Status
+
+The service user by default has no login shell, so run commands through `sudo -u`, from its home (rootless Podman refuses to run from a directory it cannot read):
+
+```bash
+sudo -u podcd bash -lc 'cd && podcd status'
+sudo -u podcd bash -lc 'cd && podcd health'
+sudo journalctl _UID="$(id -u podcd)" -u podcd-agent --user -f
+# systemctl --user for another user needs its runtime dir spelled out:
+sudo -u podcd XDG_RUNTIME_DIR="/run/user/$(id -u podcd)" systemctl --user status podcd-agent.service
+```
+
+`status` shows the last successful and failed reconcile and, per application, the unit state, the image and the last health result. `health` exits non-zero if anything is unhealthy, which makes it a usable check for your monitoring; add `-o json` to the commands for a scraper.
+
+### Configuration file
+
+`podcd config create` writes the whole spec: every field is present with a
+comment explaining it, the values you passed are active, and everything else
+is shown as a commented-out default. The field list, the documentation and the
+defaults all come from one place — the tags on the `AgentConfig` struct — so
+the file, `podcd config set` and the validation messages cannot disagree.
+Uncomment a line to change it, or use `podcd config set` and the file is
+regenerated in the same layout. The complete, current output is in
+[examples/agent.yaml](examples/agent.yaml); the parts that matter most:
+
+```yaml
+host: prod-web-01
+# interval: 1m0s
+# jitter: 10s
+
+repositories:
+  - name: infrastructure
+    url: https://gitlab.com/acme/gitops.git
+    revision: production
+    # auth:
+    #   token: env:GITOPS_TOKEN
+
+# stateDir: /home/podcd/.local/state/podcd
+# unitDir: /home/podcd/.config/containers/systemd
+# envFile: /home/podcd/.config/podcd/agent.env
+# prune: true
+
+# vault:
+#   address: https://vault.example.com
+#   roleId: env:VAULT_ROLE_ID
+#   secretId: env:VAULT_SECRET_ID
+```
+
+Fields are addressed by their yaml path:
+
+```bash
+podcd config set revision v1.4.0                 # alias for repositories.0.revision
+podcd config set interval 30s
+podcd config set repositories.0.auth.token env:GITOPS_TOKEN
+# fields that only make sense together are set together and validated once:
+podcd config set vault.address=https://vault.example.com vault.roleId=env:VAULT_ROLE_ID vault.secretId=env:VAULT_SECRET_ID
+podcd config view
+```
 
 ### Useful commands
 
@@ -211,16 +249,25 @@ From then on, the host reconciles itself automatically.
 podcd status      # what is running here and when it last reconciled
 podcd plan        # show changes without making them
 podcd reconcile   # apply the current Git desired state
-podcd health      # probe application health
-podcd logs local  # recent output for one application (--tail N)
+podcd health      # probe application health; non-zero exit if anything is unhealthy
+podcd logs api    # recent output for one application (--tail N)
 podcd validate    # compile config and check for errors
 podcd install     # write the systemd user service file for the agent
 podcd config      # view, create or edit the agent config file
 ```
 
-Command takes `-o json` or `-o yaml` for machine-readable output, and the flags shared by all commands - `--config` (like `--kubeconfig`), `--host` (like `--context`), `--log-level`, `--log-format` - are listed by `podcd options` rather than repeated in every command's help.
+### Shell completion
 
-## How it works
+```bash
+# bash
+podcd completion bash | sudo tee /etc/bash_completion.d/podcd > /dev/null
+# zsh
+mkdir -p ~/.zsh/completions && podcd completion zsh > ~/.zsh/completions/_podcd   # then add ~/.zsh/completions to fpath before compinit
+```
+
+fish and PowerShell: `podcd completion --help`.
+
+## State and History
 
 The agent stores local state in `~/.local/state/podcd/state.json`. This file records the agent identity, last revisions, last successful and failed reconciliation, and per-application history including the previous deployment.
 

@@ -4,64 +4,87 @@ import (
 	"bytes"
 	"errors"
 	"fmt"
+	"io"
 	"os"
 	"os/user"
 	"path/filepath"
-	"strconv"
 	"strings"
 	"time"
 
 	"gopkg.in/yaml.v3"
 )
 
+// The agent configuration is described once, here, on the struct: the yaml
+// tag is the key, the doc tag is the explanation a user sees in the file, and
+// the example tag shows how an optional section is filled in. The rendered
+// agent.yaml, `podcd config set` and the validation messages all derive from
+// these tags, so there is no second list of fields anywhere.
+
 // RepositorySpec is one Git repository the agent pulls.
 type RepositorySpec struct {
-	Name     string `yaml:"name"`
-	URL      string `yaml:"url"`
-	Revision string `yaml:"revision"`       // branch, tag or commit sha
-	Path     string `yaml:"path,omitempty"` // optional subdirectory holding the YAML
-	// Insecure disables host key / TLS verification. Present so it is a visible,
-	// auditable choice rather than an undocumented environment variable.
-	Insecure bool `yaml:"insecure,omitempty"`
+	Name     string    `yaml:"name" doc:"A short name for this repository; it appears in logs and status."`
+	URL      string    `yaml:"url" doc:"Where to fetch from: https://, ssh (git@host:path) or a local path."`
+	Revision string    `yaml:"revision" doc:"A branch, a tag or a commit. A tag or commit pins the host exactly."`
+	Path     string    `yaml:"path,omitempty" doc:"Read only this subdirectory of the repository."`
+	Insecure bool      `yaml:"insecure,omitempty" doc:"Disable host key / TLS verification. Visible here on purpose, rather than an environment variable nobody sees."`
+	Auth     *RepoAuth `yaml:"auth,omitempty" doc:"A private repository needs a read credential. The token is a secret reference (env:, file:, vault:), never a literal in this file; it is resolved on every fetch. GitLab deploy tokens have their own username."`
 }
 
-// AgentConfig is the agent's own configuration:
-// * where Git and who this host is,
-// * how often to reconcile.
-// It lives on the host, not in Git, because it is what tells the host which Git to trust.
+// RepoAuth is a repository's read credential.
+//
+// HTTPS uses a token, which must be a secret reference (env:NAME, file:path,
+// vault:...) because agent.yaml is world-readable. The value is resolved on
+// every fetch and reaches git as an Authorization header via git's
+// configuration-in-environment, scoped to this repository's URL.
+type RepoAuth struct {
+	Username          string `yaml:"username,omitempty" example:"gitlab+deploy-token-42" doc:"Username for HTTPS. Needed for GitLab deploy tokens; access tokens work with the default (x-access-token on github.com, oauth2 elsewhere)."`
+	Token             string `yaml:"token,omitempty" example:"env:GITOPS_TOKEN" doc:"A secret reference to the token, resolved at fetch time."`
+	SSHKeyPath        string `yaml:"sshKeyPath,omitempty" example:"~/.ssh/deploy_key" doc:"Instead of a token: a private key on this host, used with IdentitiesOnly."`
+	SSHKnownHostsPath string `yaml:"sshKnownHostsPath,omitempty" example:"~/.ssh/known_hosts" doc:"Overrides ~/.ssh/known_hosts for host key checks."`
+}
+
+// VaultConfig connects the vault: secret scheme to a HashiCorp Vault.
+//
+// Authentication is AppRole (roleId + secretId) or a token; each of those is
+// itself a secret reference, typically env: values from agent.env, so no Vault
+// credential is ever in a 0644 file.
+type VaultConfig struct {
+	Address   string        `yaml:"address" example:"https://vault.example.com" doc:"The Vault server."`
+	Namespace string        `yaml:"namespace,omitempty" doc:"Vault Enterprise namespace."`
+	CACert    string        `yaml:"caCert,omitempty" doc:"PEM bundle for a private CA."`
+	RoleID    string        `yaml:"roleId,omitempty" example:"env:VAULT_ROLE_ID" doc:"AppRole login: a secret reference to the role id."`
+	SecretID  string        `yaml:"secretId,omitempty" example:"env:VAULT_SECRET_ID" doc:"AppRole login: a secret reference to the secret id."`
+	AuthMount string        `yaml:"authMount,omitempty" default:"approle" doc:"Where the AppRole auth method is mounted."`
+	Token     string        `yaml:"token,omitempty" doc:"Instead of AppRole: a secret reference to a Vault token."`
+	KVVersion int           `yaml:"kvVersion,omitempty" default:"2" doc:"KV secrets engine version, 1 or 2."`
+	CacheTTL  time.Duration `yaml:"cacheTTL,omitempty" default:"30s" doc:"How long a read is reused, so many keys from one path are one round trip."`
+}
+
+// AgentConfig is the agent's own configuration: where Git is, who this host
+// is, how often to reconcile. It lives on the host, not in Git, because it is
+// what tells the host which Git to trust.
 type AgentConfig struct {
-	// Host overrides the detected identity. Empty means "use the hostname".
-	Host string `yaml:"host,omitempty"`
+	Host string `yaml:"host,omitempty" doc:"Which Host document this machine is. Empty means the system hostname (with any domain stripped). PODCD_HOST in the environment overrides both."`
 
-	// Interval between reconcile attempts. Default 60s.
-	Interval time.Duration `yaml:"interval,omitempty"`
-	// Jitter spreads a fleet out so a hundred VMs do not hit Git in lockstep.
-	Jitter time.Duration `yaml:"jitter,omitempty"`
-	// RetryInterval is the wait after a failed reconcile, before backoff. Default 15s.
-	RetryInterval time.Duration `yaml:"retryInterval,omitempty"`
-	// MaxRetryInterval caps the exponential backoff. Default 10m.
-	MaxRetryInterval time.Duration `yaml:"maxRetryInterval,omitempty"`
+	Interval         time.Duration `yaml:"interval,omitempty" doc:"How often to pull and reconcile."`
+	Jitter           time.Duration `yaml:"jitter,omitempty" doc:"Random extra delay on top of interval, so a fleet does not hit Git in lockstep."`
+	RetryInterval    time.Duration `yaml:"retryInterval,omitempty" doc:"Wait after a failed reconcile; doubles on each further failure."`
+	MaxRetryInterval time.Duration `yaml:"maxRetryInterval,omitempty" doc:"Cap for the retry backoff."`
 
-	// Runtime selects the container runtime. Only "podman" is implemented.
-	Runtime string `yaml:"runtime,omitempty"`
+	Runtime string `yaml:"runtime,omitempty" doc:"Container runtime. Only podman (rootless, via Quadlet) is implemented."`
 
-	Repositories []RepositorySpec `yaml:"repositories"`
+	Repositories []RepositorySpec `yaml:"repositories" doc:"One or more repositories, composed into a single desired state. A name defined twice across them is an error, not a race."`
 
-	// StateDir holds the checkouts, the local metadata and the lock.
-	StateDir string `yaml:"stateDir,omitempty"`
-	// UnitDir is where Quadlet units are written. Default ~/.config/containers/systemd.
-	UnitDir string `yaml:"unitDir,omitempty"`
-	// SecretsDir is the root for relative file: secret references.
-	SecretsDir string `yaml:"secretsDir,omitempty"`
-	// EnvFile is the host-local file containing KEY=value secrets for env: references.
-	EnvFile string `yaml:"envFile,omitempty"`
+	StateDir   string `yaml:"stateDir,omitempty" doc:"Where the agent keeps checkouts, played manifests and state.json."`
+	UnitDir    string `yaml:"unitDir,omitempty" doc:"Where Quadlet units are written. Must be a directory systemd --user reads."`
+	SecretsDir string `yaml:"secretsDir,omitempty" doc:"Root for relative file: secret references."`
+	EnvFile    string `yaml:"envFile,omitempty" doc:"KEY=value file read for env: references (and loaded by the systemd unit). 0600, never in Git; re-read on every lookup so rotation needs no restart."`
 
-	// Prune removes managed applications that Git no longer declares. On by
-	// default: leaving orphans running is its own kind of drift.
-	Prune *bool `yaml:"prune,omitempty"`
+	Prune *bool `yaml:"prune,omitempty" doc:"Remove applications that Git no longer declares. On by default; leaving orphans running is its own kind of drift."`
 
-	// LogFormat is "text" (default) or "json".
-	LogFormat string `yaml:"logFormat,omitempty"`
+	LogFormat string `yaml:"logFormat,omitempty" doc:"text or json."`
+
+	Vault *VaultConfig `yaml:"vault,omitempty" doc:"HashiCorp Vault, for vault:<mount>/<path>/<key> (or <path>/<key>@<mount>) references. Vault's own credentials are references as well, so they come from the env file rather than from this file."`
 
 	// Path this config was read from, for diagnostics.
 	Path string `yaml:"-"`
@@ -106,22 +129,28 @@ func (c AgentConfig) KubeDir() string { return filepath.Join(c.StateDir, "kube")
 
 // LoadAgentConfig reads the agent configuration from path, applying defaults.
 func LoadAgentConfig(path string) (AgentConfig, error) {
-	cfg := DefaultAgentConfig()
 	data, err := os.ReadFile(path)
 	if err != nil {
-		return cfg, fmt.Errorf("reading agent config %s: %w", path, err)
+		return DefaultAgentConfig(), fmt.Errorf("reading agent config %s: %w", path, err)
 	}
-	dec := yaml.NewDecoder(bytes.NewReader(data))
-	dec.KnownFields(true)
-	if err := dec.Decode(&cfg); err != nil {
-		return cfg, fmt.Errorf("parsing agent config %s: %w", path, err)
-	}
-	cfg.Path = path
-	cfg.applyDefaults()
-	if err := cfg.Validate(); err != nil {
+	cfg, err := ParseAgentConfig(data)
+	if err != nil {
 		return cfg, fmt.Errorf("agent config %s: %w", path, err)
 	}
+	cfg.Path = path
 	return cfg, nil
+}
+
+// ParseAgentConfig decodes, defaults and validates one configuration document.
+func ParseAgentConfig(data []byte) (AgentConfig, error) {
+	cfg := DefaultAgentConfig()
+	dec := yaml.NewDecoder(bytes.NewReader(data))
+	dec.KnownFields(true)
+	if err := dec.Decode(&cfg); err != nil && !errors.Is(err, io.EOF) {
+		return cfg, err
+	}
+	cfg.applyDefaults()
+	return cfg, cfg.Validate()
 }
 
 // ConfigCandidates lists where the agent config may live, in lookup order:
@@ -150,81 +179,6 @@ func FindAgentConfig() (string, error) {
 		}
 	}
 	return "", fmt.Errorf("no agent config found (looked in: %s)", strings.Join(candidates, ", "))
-}
-
-// WriteAgentConfig writes cfg to path as a compact document: only the fields
-// that differ from the defaults, so a file written by the CLI reads like one a
-// human would write and does not pin this machine's home directory into it.
-func WriteAgentConfig(path string, cfg AgentConfig) error {
-	if err := cfg.Validate(); err != nil {
-		return err
-	}
-	d := DefaultAgentConfig()
-	doc := compactAgentConfig{
-		Host:         cfg.Host,
-		Repositories: cfg.Repositories,
-	}
-	if cfg.Interval != d.Interval {
-		doc.Interval = cfg.Interval.String()
-	}
-	if cfg.Jitter != d.Jitter {
-		doc.Jitter = cfg.Jitter.String()
-	}
-	if cfg.RetryInterval != d.RetryInterval {
-		doc.RetryInterval = cfg.RetryInterval.String()
-	}
-	if cfg.MaxRetryInterval != d.MaxRetryInterval {
-		doc.MaxRetryInterval = cfg.MaxRetryInterval.String()
-	}
-	if cfg.Runtime != d.Runtime {
-		doc.Runtime = cfg.Runtime
-	}
-	if cfg.StateDir != d.StateDir {
-		doc.StateDir = cfg.StateDir
-	}
-	if cfg.UnitDir != d.UnitDir {
-		doc.UnitDir = cfg.UnitDir
-	}
-	if cfg.SecretsDir != d.SecretsDir {
-		doc.SecretsDir = cfg.SecretsDir
-	}
-	if cfg.EnvFile != d.EnvFile {
-		doc.EnvFile = cfg.EnvFile
-	}
-	if !cfg.PruneEnabled() {
-		off := false
-		doc.Prune = &off
-	}
-	if cfg.LogFormat != d.LogFormat {
-		doc.LogFormat = cfg.LogFormat
-	}
-	out, err := yaml.Marshal(doc)
-	if err != nil {
-		return err
-	}
-	header := "# podcd agent configuration. This file says which Git to trust.\n# It lives on this host, not in Git.\n"
-	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
-		return fmt.Errorf("creating %s: %w", filepath.Dir(path), err)
-	}
-	return os.WriteFile(path, append([]byte(header), out...), 0o644)
-}
-
-// compactAgentConfig is AgentConfig with durations as strings and every field
-// optional; it exists only so WriteAgentConfig can leave defaults out.
-type compactAgentConfig struct {
-	Host             string           `yaml:"host,omitempty"`
-	Interval         string           `yaml:"interval,omitempty"`
-	Jitter           string           `yaml:"jitter,omitempty"`
-	RetryInterval    string           `yaml:"retryInterval,omitempty"`
-	MaxRetryInterval string           `yaml:"maxRetryInterval,omitempty"`
-	Runtime          string           `yaml:"runtime,omitempty"`
-	Repositories     []RepositorySpec `yaml:"repositories"`
-	StateDir         string           `yaml:"stateDir,omitempty"`
-	UnitDir          string           `yaml:"unitDir,omitempty"`
-	SecretsDir       string           `yaml:"secretsDir,omitempty"`
-	EnvFile          string           `yaml:"envFile,omitempty"`
-	Prune            *bool            `yaml:"prune,omitempty"`
-	LogFormat        string           `yaml:"logFormat,omitempty"`
 }
 
 func (c *AgentConfig) applyDefaults() {
@@ -265,66 +219,11 @@ func (c *AgentConfig) applyDefaults() {
 			c.Repositories[i].Revision = "main"
 		}
 		c.Repositories[i].URL = expandPath(c.Repositories[i].URL)
+		if a := c.Repositories[i].Auth; a != nil {
+			a.SSHKeyPath = expandPath(a.SSHKeyPath)
+			a.SSHKnownHostsPath = expandPath(a.SSHKnownHostsPath)
+		}
 	}
-}
-
-// SetValue updates a single known field on the config using the same schema and
-// validation rules the loader uses.
-func (c *AgentConfig) SetValue(field, value string) error {
-	switch field {
-	case "host":
-		c.Host = value
-	case "interval":
-		dur, err := time.ParseDuration(value)
-		if err != nil {
-			return fmt.Errorf("parse interval %q: %w", value, err)
-		}
-		c.Interval = dur
-	case "jitter":
-		dur, err := time.ParseDuration(value)
-		if err != nil {
-			return fmt.Errorf("parse jitter %q: %w", value, err)
-		}
-		c.Jitter = dur
-	case "runtime":
-		c.Runtime = value
-	case "log-format":
-		c.LogFormat = value
-	case "state-dir":
-		c.StateDir = value
-	case "unit-dir":
-		c.UnitDir = value
-	case "secrets-dir":
-		c.SecretsDir = value
-	case "env-file":
-		c.EnvFile = value
-	case "prune":
-		b, err := strconv.ParseBool(value)
-		if err != nil {
-			return fmt.Errorf("parse prune %q: %w", value, err)
-		}
-		c.Prune = &b
-	case "repo-url", "repo-name", "repo-path", "revision":
-		// `config set` edits the first repository; a config with none gets
-		// one, and Validate below insists it has a URL.
-		if len(c.Repositories) == 0 {
-			c.Repositories = []RepositorySpec{{Name: "infrastructure", Revision: "main"}}
-		}
-		repo := &c.Repositories[0]
-		switch field {
-		case "repo-url":
-			repo.URL = value
-		case "repo-name":
-			repo.Name = value
-		case "repo-path":
-			repo.Path = value
-		case "revision":
-			repo.Revision = value
-		}
-	default:
-		return fmt.Errorf("unknown config field %q (try: host, interval, jitter, runtime, log-format, state-dir, unit-dir, secrets-dir, env-file, prune, repo-url, repo-name, repo-path, revision)", field)
-	}
-	return c.Validate()
 }
 
 // Validate rejects configurations that cannot work, loudly and all at once.
@@ -354,6 +253,17 @@ func (c AgentConfig) Validate() error {
 		if strings.Contains(r.Path, "..") {
 			problems = append(problems, fmt.Errorf("repository %q: path %q must not escape the repository", r.Name, r.Path))
 		}
+		if a := r.Auth; a != nil {
+			if a.Token != "" && a.SSHKeyPath != "" {
+				problems = append(problems, fmt.Errorf("repository %q: auth has both a token and an ssh key; pick one", r.Name))
+			}
+			if a.Token != "" && !looksLikeReference(a.Token) {
+				problems = append(problems, fmt.Errorf("repository %q: auth.token must be a secret reference such as env:GITOPS_TOKEN, not a literal (agent.yaml is not a secret store)", r.Name))
+			}
+			if a.Token == "" && a.SSHKeyPath == "" {
+				problems = append(problems, fmt.Errorf("repository %q: auth needs a token or an sshKeyPath", r.Name))
+			}
+		}
 	}
 	if c.Runtime != "podman" && c.Runtime != "docker" {
 		problems = append(problems, fmt.Errorf("runtime %q is not known (podman, docker)", c.Runtime))
@@ -361,12 +271,30 @@ func (c AgentConfig) Validate() error {
 	if c.LogFormat != "text" && c.LogFormat != "json" {
 		problems = append(problems, fmt.Errorf("logFormat %q must be text or json", c.LogFormat))
 	}
+	if v := c.Vault; v != nil {
+		if v.Address == "" {
+			problems = append(problems, errors.New("vault: address is required"))
+		}
+		hasAppRole := v.RoleID != "" || v.SecretID != ""
+		switch {
+		case v.Token != "" && hasAppRole:
+			problems = append(problems, errors.New("vault: use either token or roleId+secretId, not both"))
+		case v.Token == "" && (v.RoleID == "" || v.SecretID == ""):
+			problems = append(problems, errors.New("vault: needs roleId and secretId (AppRole) or a token"))
+		}
+		for name, ref := range map[string]string{"roleId": v.RoleID, "secretId": v.SecretID, "token": v.Token} {
+			if ref != "" && !looksLikeReference(ref) {
+				problems = append(problems, fmt.Errorf("vault: %s must be a secret reference such as env:VAULT_%s, not a literal", name, strings.ToUpper(name)))
+			}
+		}
+		if v.KVVersion != 0 && v.KVVersion != 1 && v.KVVersion != 2 {
+			problems = append(problems, fmt.Errorf("vault: kvVersion must be 1 or 2, not %d", v.KVVersion))
+		}
+	}
 	return errors.Join(problems...)
 }
 
-// userHome is the home directory the agent's files belong in. Under sudo that
-// is the invoking user's home, looked up properly rather than guessed as
-// /home/<name>, so `sudo podcd config create` does not write into /root.
+// userHome is the home directory the agent's files belong in.
 func userHome() string {
 	if os.Getuid() == 0 {
 		if name := os.Getenv("SUDO_USER"); name != "" && name != "root" {

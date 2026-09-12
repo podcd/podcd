@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Bootstrap a Debian/Ubuntu VM for podcd.
+# Bootstrap a Linux VM for podcd: Debian/Ubuntu, or the RHEL family (RHEL, CentOS Stream, Rocky, AlmaLinux, Fedora).
 #
 # Idempotent: run it as many times as you like.
 # 
@@ -67,10 +67,17 @@ done
 [[ -r /etc/os-release ]] || die "cannot identify this distribution"
 . /etc/os-release
 
-case "${ID:-}${ID_LIKE:-}" in
-  *debian*|*ubuntu*) ;;
-  *) die "this script only supports Debian/Ubuntu" ;;
+# FAMILY decides the package manager and the package names; everything after
+# packages is the same on both, because it is all systemd, podman and coreutils.
+case " ${ID:-} ${ID_LIKE:-} " in
+  *" debian "*|*" ubuntu "*) FAMILY=debian ;;
+  *" rhel "*|*" fedora "*|*" centos "*|*" rocky "*|*" almalinux "*) FAMILY=rhel ;;
+  *) die "unsupported distribution: ${PRETTY_NAME:-unknown} (Debian/Ubuntu and the RHEL family are supported)" ;;
 esac
+
+# The login shell for a locked-down service account differs by family.
+NOLOGIN=/usr/sbin/nologin
+[[ -x "$NOLOGIN" ]] || NOLOGIN=/sbin/nologin
 
 # ------------------------------------------------------------------------- user
 
@@ -96,7 +103,7 @@ else
   else
     useradd \
       --create-home \
-      --shell /usr/sbin/nologin \
+      --shell "$NOLOGIN" \
       --comment "podcd agent" \
       "$RUN_USER"
   fi
@@ -105,7 +112,7 @@ fi
 if [[ "$ALLOW_USER_LOGIN" == true ]]; then
   usermod --shell /bin/bash "$RUN_USER"
 else
-  usermod --shell /usr/sbin/nologin "$RUN_USER"
+  usermod --shell "$NOLOGIN" "$RUN_USER"
 fi
 
 RUN_HOME="$(getent passwd "$RUN_USER" | cut -d: -f6)"
@@ -133,30 +140,36 @@ as_user() {
 
 # ---------------------------------------------------------------------- packages
 
-PACKAGES=(
-  podman
-  uidmap
-  dbus-user-session
-  systemd-container
-  util-linux
-  git
-  ca-certificates
-)
+# Rootless podman needs newuidmap/newgidmap (uidmap on Debian, shadow-utils on RHEL)
+# or D-Bus session for `systemctl --user`;
+# setpriv comes from util-linux on both.
+case "$FAMILY" in
+  debian)
+    PACKAGES=(podman uidmap dbus-user-session systemd-container util-linux git ca-certificates)
+    pkg_installed() { dpkg-query -W -f='${Status}' "$1" 2>/dev/null | grep -q "ok installed"; }
+    pkg_install() {
+      export DEBIAN_FRONTEND=noninteractive
+      apt-get update -qq
+      apt-get install -y -qq "$@"
+    }
+    ;;
+  rhel)
+    PACKAGES=(podman shadow-utils util-linux git ca-certificates)
+    pkg_installed() { rpm -q "$1" >/dev/null 2>&1; }
+    pkg_install() {
+      if command -v dnf >/dev/null 2>&1; then dnf install -y -q "$@"; else yum install -y -q "$@"; fi
+    }
+    ;;
+esac
 
 MISSING=()
-
 for pkg in "${PACKAGES[@]}"; do
-  if ! dpkg-query -W -f='${Status}' "$pkg" 2>/dev/null \
-      | grep -q "ok installed"; then
-    MISSING+=("$pkg")
-  fi
+  pkg_installed "$pkg" || MISSING+=("$pkg")
 done
 
 if ((${#MISSING[@]})); then
   info "installing packages: ${MISSING[*]}"
-  export DEBIAN_FRONTEND=noninteractive
-  apt-get update -qq
-  apt-get install -y -qq "${MISSING[@]}"
+  pkg_install "${MISSING[@]}"
 else
   info "packages already installed"
 fi
@@ -242,12 +255,20 @@ if [[ -n "$BINARY_DIR" ]]; then
   install -m 0755 "$BINARY_DIR/podcd" /usr/local/bin/podcd
   info "installed podcd from $BINARY_DIR"
 else
-  # The bootstrap depends on `podcd install`, so an old CLI is not usable.
-  if [[ ! -x /usr/local/bin/podcd ]] ||
-     ! /usr/local/bin/podcd install --help >/dev/null 2>&1; then
+  # Download when there is no usable binary, or when a specific release was
+  # asked for and the installed one is not it - re-running the bootstrap with
+  # --release-version is how a host is upgraded.
+  installed=""
+  if [[ -x /usr/local/bin/podcd ]] && /usr/local/bin/podcd install --help >/dev/null 2>&1; then
+    installed="$(/usr/local/bin/podcd version 2>/dev/null | awk '{print $2}')"
+  fi
+  if [[ -z "$installed" ]]; then
+    download_release
+  elif [[ -n "$RELEASE_VERSION" && "${installed#v}" != "${RELEASE_VERSION#v}" ]]; then
+    info "upgrading podcd $installed -> $RELEASE_VERSION"
     download_release
   else
-    info "podcd binaries already installed"
+    info "podcd $installed already installed"
   fi
 fi
 

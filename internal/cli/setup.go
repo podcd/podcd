@@ -65,23 +65,30 @@ func confirm(cmd *cobra.Command, question string) bool {
 	return answer == "y" || answer == "yes"
 }
 
-func newConfigCommand() *cobra.Command {
+func newConfigCommand(f *configFlags) *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "config",
 		Short: "view or create the agent config file",
 		RunE:  func(cmd *cobra.Command, _ []string) error { return cmd.Help() },
 	}
-	cmd.AddCommand(newConfigPathCommand(), newConfigViewCommand(), newConfigCreateCommand(), newConfigSetCommand())
+	cmd.AddCommand(newConfigPathCommand(f), newConfigViewCommand(f), newConfigCreateCommand(f), newConfigSetCommand(f))
 	return cmd
 }
 
-func newConfigPathCommand() *cobra.Command {
+func existingConfig(f *configFlags) (string, error) {
+	if f.config != "" {
+		return f.config, nil
+	}
+	return config.FindAgentConfig()
+}
+
+func newConfigPathCommand(f *configFlags) *cobra.Command {
 	return &cobra.Command{
 		Use:   "path",
 		Short: "print where the agent config is (or would be) read from",
 		Args:  cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, _ []string) error {
-			if found, err := config.FindAgentConfig(); err == nil {
+			if found, err := existingConfig(f); err == nil {
 				fmt.Fprintln(cmd.OutOrStdout(), found)
 				return nil
 			}
@@ -91,7 +98,7 @@ func newConfigPathCommand() *cobra.Command {
 	}
 }
 
-func newConfigViewCommand() *cobra.Command {
+func newConfigViewCommand(f *configFlags) *cobra.Command {
 	return &cobra.Command{
 		Use:   "view [path]",
 		Short: "print the agent config file",
@@ -101,7 +108,7 @@ func newConfigViewCommand() *cobra.Command {
 			if len(args) == 1 {
 				path = args[0]
 			} else {
-				found, err := config.FindAgentConfig()
+				found, err := existingConfig(f)
 				if err != nil {
 					return err
 				}
@@ -117,7 +124,7 @@ func newConfigViewCommand() *cobra.Command {
 	}
 }
 
-func newConfigCreateCommand() *cobra.Command {
+func newConfigCreateCommand(f *configFlags) *cobra.Command {
 	var (
 		path, host, repoURL, repoName, repoPath, revision string
 		interval                                          time.Duration
@@ -128,6 +135,9 @@ func newConfigCreateCommand() *cobra.Command {
 		Short: "write a new agent config file",
 		Args:  cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, _ []string) error {
+			if path == "" {
+				path = f.config
+			}
 			if path == "" {
 				path = config.DefaultConfigPath()
 			}
@@ -159,32 +169,51 @@ func newConfigCreateCommand() *cobra.Command {
 	return cmd
 }
 
-func newConfigSetCommand() *cobra.Command {
+func newConfigSetCommand(f *configFlags) *cobra.Command {
 	var path string
 	cmd := &cobra.Command{
-		Use:   "set <field> <value>",
-		Short: "change one field of the agent config file",
-		Long: "Fields: host, interval, jitter, runtime, log-format, state-dir, unit-dir, secrets-dir,\n" +
-			"env-file, prune, repo-url, repo-name, repo-path, revision (the last four edit the first repository).",
-		Args: cobra.ExactArgs(2),
+		Use:   "set <field> <value> | set <field>=<value> [<field>=<value>...]",
+		Short: "change fields of the agent config file in place",
+		Long: "Edits the file where it is: an existing key has its value replaced on its line, a new\n" +
+			"key is appended to its section, and nothing else - comments included - is touched.\n" +
+			"Fields are yaml paths: host, interval, jitter, prune, logFormat, stateDir, unitDir,\n" +
+			"secretsDir, envFile, repositories.N.url, repositories.N.auth.token, vault.address, ...\n" +
+			"Shorthands for the first repository: repo-url, repo-name, repo-path, revision.\n" +
+			"Several field=value pairs are applied together and validated once, for sections\n" +
+			"whose fields only make sense together:\n" +
+			"  podcd config set vault.address=https://vault.example.com vault.roleId=env:VAULT_ROLE_ID vault.secretId=env:VAULT_SECRET_ID",
+		Args: cobra.MinimumNArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
+			settings, err := parseSettings(args)
+			if err != nil {
+				return err
+			}
 			if path == "" {
-				found, err := config.FindAgentConfig()
+				found, err := existingConfig(f)
 				if err != nil {
 					return err
 				}
 				path = found
 			}
-			cfg, err := config.LoadAgentConfig(path)
-			if err != nil {
-				return err
-			}
-			if err := cfg.SetValue(args[0], args[1]); err != nil {
-				return err
-			}
-			return config.WriteAgentConfig(path, cfg)
+			return config.EditAgentConfig(path, settings...)
 		},
 	}
 	cmd.Flags().StringVar(&path, "path", "", "config file to edit (default: the config path)")
 	return cmd
+}
+
+// parseSettings accepts "field value" or any number of "field=value".
+func parseSettings(args []string) ([]config.Setting, error) {
+	if len(args) == 2 && !strings.Contains(args[0], "=") {
+		return []config.Setting{{Path: args[0], Value: args[1]}}, nil
+	}
+	settings := make([]config.Setting, 0, len(args))
+	for _, a := range args {
+		k, v, ok := strings.Cut(a, "=")
+		if !ok || k == "" {
+			return nil, fmt.Errorf("%q: expected <field> <value> or <field>=<value>", a)
+		}
+		settings = append(settings, config.Setting{Path: k, Value: v})
+	}
+	return settings, nil
 }

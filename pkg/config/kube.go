@@ -29,13 +29,6 @@ const (
 	LabelApp     = "io.podcd.app"
 )
 
-// patchPod applies an override to a Pod as a strategic merge patch - the
-// Kubernetes-native way to say "same pod, but this container's image is X".
-// Lists merge by their declared key (containers by name, ports by
-// containerPort), which is exactly the semantics a Pod author expects.
-//
-// The result is decoded strictly, so a patch cannot smuggle in a field the
-// Pod type does not have.
 func patchPod(pod corev1.Pod, override Override) (corev1.Pod, error) {
 	if len(bytes.TrimSpace(override)) == 0 {
 		return pod, nil
@@ -55,10 +48,6 @@ func patchPod(pod corev1.Pod, override Override) (corev1.Pod, error) {
 	return out, nil
 }
 
-// podToApplication validates a Pod, gathers the ConfigMaps and Secrets it
-// refers to, resolves secret references on the host, and packs everything into
-// one manifest that podman will play. The rest of the agent then treats it
-// exactly like any other application.
 func (ix *Index) podToApplication(ctx context.Context, name string, pod corev1.Pod, sec *secrets.Resolver) (model.Application, error) {
 	var problems []error
 	add := func(format string, args ...any) {
@@ -295,10 +284,6 @@ func collectRefs(pod corev1.Pod) refSet {
 	return r
 }
 
-// kubeHealthcheck derives podcd's probe from the pod's own: the first
-// readiness (else liveness, else startup) probe whose port is published to the
-// host becomes an HTTP or TCP check against that host port. A pod without a
-// reachable probe is judged by systemd alone, like any other application.
 func kubeHealthcheck(pod corev1.Pod) (*model.Healthcheck, error) {
 	for _, c := range pod.Spec.Containers {
 		probe := c.ReadinessProbe

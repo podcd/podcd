@@ -80,13 +80,6 @@ func (r *Resolver) Resolve(ctx context.Context, ref string) (string, error) {
 	return v, nil
 }
 
-// EnvProvider reads secrets from the agent's own environment, then from one
-// KEY=value file (the same file the systemd unit loads with EnvironmentFile=),
-// so `podcd plan` run from a shell sees the same secrets the agent does.
-//
-// There are no other fallback locations: the file is whatever the agent config
-// says it is, so the answer to "where did that value come from?" is always one
-// of two places.
 type EnvProvider struct {
 	File string
 }
@@ -96,9 +89,6 @@ func (EnvProvider) Scheme() string { return "env" }
 
 // Resolve implements Provider.
 func (p EnvProvider) Resolve(_ context.Context, locator string) (string, error) {
-	if v, ok := os.LookupEnv(locator); ok {
-		return v, nil
-	}
 	if p.File != "" {
 		vars, err := readEnvFile(p.File)
 		if err != nil && !os.IsNotExist(err) {
@@ -108,10 +98,16 @@ func (p EnvProvider) Resolve(_ context.Context, locator string) (string, error) 
 			return v, nil
 		}
 	}
-	return "", fmt.Errorf("environment variable %s is not set: %w", locator, ErrNotFound)
+	if v, ok := os.LookupEnv(locator); ok {
+		return v, nil
+	}
+	where := "the environment"
+	if p.File != "" {
+		where = p.File + " or the environment"
+	}
+	return "", fmt.Errorf("%s is not in %s: %w", locator, where, ErrNotFound)
 }
 
-// Secrets not available from a shell, we have to load on cli runs e.g. `podcd plan`, `podcd validate`
 func readEnvFile(path string) (map[string]string, error) {
 	f, err := os.Open(path)
 	if err != nil {

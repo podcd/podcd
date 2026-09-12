@@ -8,15 +8,24 @@ import (
 	"testing"
 )
 
-func TestEnvProviderPrefersTheProcessEnvironment(t *testing.T) {
+func TestEnvProviderFileWinsOverTheProcessEnvironment(t *testing.T) {
+	// Under systemd the process environment holds whatever the file said at start-up.
+	// The file is the source of truth, so it must win otherwise a rotated secret would not be seen until the agent restarts.
 	path := filepath.Join(t.TempDir(), "agent.env")
 	if err := os.WriteFile(path, []byte("TOKEN=from-file\n"), 0o600); err != nil {
 		t.Fatal(err)
 	}
 	t.Setenv("TOKEN", "from-env")
 	got, err := (EnvProvider{File: path}).Resolve(context.Background(), "TOKEN")
-	if err != nil || got != "from-env" {
-		t.Fatalf("Resolve() = %q, %v; want the process environment to win", got, err)
+	if err != nil || got != "from-file" {
+		t.Fatalf("Resolve() = %q, %v; want the file to win", got, err)
+	}
+
+	// A key the file does not have still comes from the environment.
+	t.Setenv("ONLY_IN_ENV", "env-value")
+	got, err = (EnvProvider{File: path}).Resolve(context.Background(), "ONLY_IN_ENV")
+	if err != nil || got != "env-value" {
+		t.Fatalf("Resolve() = %q, %v; want the environment as fallback", got, err)
 	}
 }
 

@@ -68,13 +68,49 @@ func NewEngine(cfg config.AgentConfig, log *slog.Logger) (*Engine, error) {
 		store: state.NewFileStore(cfg.StatePath()),
 		log:   log,
 	}
+	resolver, err := newSecretResolver(cfg)
+	if err != nil {
+		return nil, err
+	}
+	repos, tokenRefs := ReposFromConfig(cfg)
 	e.source = &Source{
-		Repos:   ReposFromConfig(cfg),
-		Host:    ident.Host,
-		Secrets: secrets.Default(cfg.SecretsDir, cfg.EnvFile),
-		Log:     log,
+		Repos:     repos,
+		TokenRefs: tokenRefs,
+		Host:      ident.Host,
+		Secrets:   resolver,
+		Log:       log,
 	}
 	return e, nil
+}
+
+// newSecretResolver builds the env: and file: providers, vault: when configured.
+func newSecretResolver(cfg config.AgentConfig) (*secrets.Resolver, error) {
+	local := secrets.Default(cfg.SecretsDir, cfg.EnvFile)
+	if cfg.Vault == nil {
+		return local, nil
+	}
+	v := cfg.Vault
+	viaLocal := func(ref string) func(context.Context) (string, error) {
+		if ref == "" {
+			return nil
+		}
+		return func(ctx context.Context) (string, error) { return local.Resolve(ctx, ref) }
+	}
+	vault, err := secrets.NewVaultProvider(secrets.VaultOptions{
+		Address:   v.Address,
+		Namespace: v.Namespace,
+		CACert:    v.CACert,
+		RoleID:    viaLocal(v.RoleID),
+		SecretID:  viaLocal(v.SecretID),
+		AuthMount: v.AuthMount,
+		Token:     viaLocal(v.Token),
+		KVVersion: v.KVVersion,
+		CacheTTL:  v.CacheTTL,
+	})
+	if err != nil {
+		return nil, err
+	}
+	return secrets.NewResolver(secrets.EnvProvider{File: cfg.EnvFile}, secrets.FileProvider{Root: cfg.SecretsDir}, vault), nil
 }
 
 // Config returns the agent configuration in use.

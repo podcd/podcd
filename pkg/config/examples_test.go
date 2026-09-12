@@ -8,9 +8,6 @@ import (
 	"github.com/podcd/podcd/pkg/secrets"
 )
 
-// TestExamplesCompile keeps the documentation honest: the example repositories
-// under examples/ are loaded and resolved exactly as the agent would, so an
-// example that stops being valid fails the build instead of misleading someone.
 func TestExamplesCompile(t *testing.T) {
 	ix := NewIndex()
 	if err := ix.LoadTree("infrastructure", "../../examples/infrastructure"); err != nil {
