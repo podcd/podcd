@@ -196,3 +196,68 @@ func TestLocalChangesAreDiscarded(t *testing.T) {
 		t.Fatal("an untracked file survived the checkout")
 	}
 }
+
+func TestRevisionCanBeSwitchedOnAnExistingCheckout(t *testing.T) {
+	ctx := context.Background()
+	upstream := newUpstream(t)
+	run(t, upstream, "tag", "v1")
+	writeFile(t, filepath.Join(upstream, "app.yaml"), "two\n")
+	run(t, upstream, "commit", "--quiet", "-am", "second")
+	run(t, upstream, "checkout", "--quiet", "-b", "canary")
+	writeFile(t, filepath.Join(upstream, "app.yaml"), "canary\n")
+	run(t, upstream, "commit", "--quiet", "-am", "canary")
+	run(t, upstream, "checkout", "--quiet", "main")
+
+	base := t.TempDir()
+	repo := New("infra", upstream, "main", "", base)
+	if _, err := repo.Sync(ctx); err != nil {
+		t.Fatal(err)
+	}
+	for rev, want := range map[string]string{"v1": "one\n", "canary": "canary\n", "main": "two\n"} {
+		repo = New("infra", upstream, rev, "", base)
+		if _, err := repo.Sync(ctx); err != nil {
+			t.Fatalf("switching to %s: %v", rev, err)
+		}
+		if got, _ := os.ReadFile(filepath.Join(repo.Dir, "app.yaml")); string(got) != want {
+			t.Fatalf("at %s the tree holds %q, want %q", rev, got, want)
+		}
+	}
+}
+
+func TestSubdirectoryIsWhatTheAgentReads(t *testing.T) {
+	ctx := context.Background()
+	upstream := newUpstream(t)
+	if err := os.MkdirAll(filepath.Join(upstream, "clusters", "prod"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	writeFile(t, filepath.Join(upstream, "clusters", "prod", "host.yaml"), "prod\n")
+	run(t, upstream, "add", ".")
+	run(t, upstream, "commit", "--quiet", "-m", "subdir")
+
+	repo := New("infra", upstream, "main", "clusters/prod", t.TempDir())
+	if _, err := repo.Sync(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if got, err := os.ReadFile(filepath.Join(repo.TreePath(), "host.yaml")); err != nil || string(got) != "prod\n" {
+		t.Fatalf("tree path should be the subdirectory of the checkout: %q %v", got, err)
+	}
+}
+
+func TestSyncIsSafeToRepeatAfterAnInterruptedClone(t *testing.T) {
+	ctx := context.Background()
+	upstream := newUpstream(t)
+	base := t.TempDir()
+	// A directory that exists but is not a repository: a clone that was cut
+	// off, or a stray file. Sync must recover rather than fail forever.
+	if err := os.MkdirAll(filepath.Join(base, "infra"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	writeFile(t, filepath.Join(base, "infra", "half.txt"), "leftover\n")
+	repo := New("infra", upstream, "main", "", base)
+	if _, err := repo.Sync(ctx); err != nil {
+		t.Fatalf("sync over a half-made directory: %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(repo.Dir, "app.yaml")); err != nil {
+		t.Fatal("the checkout was not made")
+	}
+}

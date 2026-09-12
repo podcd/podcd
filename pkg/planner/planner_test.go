@@ -206,3 +206,71 @@ func TestPlanIsStableAcrossRuns(t *testing.T) {
 		}
 	}
 }
+
+func TestKindChangeIsAnUpdate(t *testing.T) {
+	// A container becomes a pod manifest between commits. Same name, same
+	// service, different unit: it is an update, with the pod described.
+	before := app("api", "img@sha256:a")
+	after := model.Application{Name: "api", Kind: model.KindKube, Images: []string{"img@sha256:b"}, RestartPolicy: "always"}
+	after.SetManifest([]byte("apiVersion: v1\nkind: Pod\nmetadata:\n  name: api\n"))
+	r := &renderer.Renderer{UnitDir: "/units", EnvDir: "/env", KubeDir: "/kube"}
+
+	p, err := Build(desired(after), actual(running(t, before)), r, Options{Prune: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	changes := p.Changes()
+	if len(changes) != 1 || changes[0].Type != model.ActionUpdate || changes[0].App != "api" {
+		t.Fatalf("want one update, got %+v", changes)
+	}
+	if details := strings.Join(changes[0].Details, "\n"); !strings.Contains(details, "+ [Kube]") || !strings.Contains(details, "- [Container]") {
+		t.Errorf("the change should show the unit turning into a kube unit:\n%s", details)
+	}
+}
+
+func TestDriftedManifestIsReappliedEvenWhenTheUnitMatches(t *testing.T) {
+	a := model.Application{Name: "api", Kind: model.KindKube, Images: []string{"img@sha256:b"}, RestartPolicy: "always"}
+	a.SetManifest([]byte("apiVersion: v1\nkind: Pod\nmetadata:\n  name: api\n"))
+	r := &renderer.Renderer{UnitDir: "/units", EnvDir: "/env", KubeDir: "/kube"}
+	u, err := r.Render(a)
+	if err != nil {
+		t.Fatal(err)
+	}
+	cur := model.ActualApp{
+		Name: "api", Managed: true, UnitFile: u.Path, UnitContent: u.Content, SpecHash: u.SpecHash,
+		UnitName: u.ServiceName, UnitState: model.UnitActive,
+		// Inspect marks a unit whose manifest on disk no longer matches.
+		UnitFileHash:    "manifest-drift:" + model.HashBytes(u.Content),
+		ManifestContent: []byte("apiVersion: v1\nkind: Pod\nmetadata:\n  name: api\n  labels: {edited: byhand}\n"),
+	}
+	p, err := Build(desired(a), actual(cur), r, Options{Prune: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	changes := p.Changes()
+	if len(changes) != 1 || changes[0].Type != model.ActionUpdate {
+		t.Fatalf("want an update, got %+v", changes)
+	}
+	if details := strings.Join(changes[0].Details, "\n"); !strings.Contains(details, "edited") {
+		t.Errorf("the manifest diff should show the hand edit:\n%s", details)
+	}
+}
+
+func TestPlanNeverPrintsSecretValues(t *testing.T) {
+	a := app("api", "img@sha256:a")
+	a.SecretEnv = map[string]string{"TOKEN": "hunter2"}
+	cur := running(t, a)
+	rotated := a
+	rotated.SecretEnv = map[string]string{"TOKEN": "hunter3"}
+
+	p, err := Build(desired(rotated), actual(cur), rend(), Options{Prune: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, c := range p.Changes() {
+		text := c.Reason + strings.Join(c.Details, "\n")
+		if strings.Contains(text, "hunter") {
+			t.Fatalf("a secret value reached the plan: %+v", c)
+		}
+	}
+}
