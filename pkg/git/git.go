@@ -237,13 +237,32 @@ func (r *Repository) runIn(ctx context.Context, dir string, args ...string) (str
 // env builds the environment for git, never interactive, never prompting.
 // A missing credential fails the reconcile instead of hanging the agent forever.
 func (r *Repository) env() []string {
-	env := append([]string{}, os.Environ()...)
+	base := os.Environ()
+	env := make([]string, 0, len(base)+8)
+
+	for _, kv := range base {
+		key, _, _ := strings.Cut(kv, "=")
+
+		// Git authentication must never become interactive through an
+		// inherited askpass helper or credential UI.
+		switch key {
+		case "GIT_ASKPASS",
+			"GIT_TERMINAL_PROMPT",
+			"GCM_INTERACTIVE",
+			"SSH_ASKPASS":
+			continue
+		}
+
+		env = append(env, kv)
+	}
+
 	env = append(env,
 		"GIT_TERMINAL_PROMPT=0",
 		"GIT_ASKPASS=",
 		"GCM_INTERACTIVE=never",
 		"LC_ALL=C",
 	)
+
 	ssh := "ssh -o BatchMode=yes -o ConnectTimeout=15"
 	if r.Auth.SSHKeyPath != "" {
 		ssh += " -o IdentitiesOnly=yes -i " + shellQuote(r.Auth.SSHKeyPath)
@@ -256,6 +275,7 @@ func (r *Repository) env() []string {
 		env = append(env, "GIT_SSL_NO_VERIFY=true")
 	}
 	env = append(env, "GIT_SSH_COMMAND="+ssh)
+
 	return r.authConfig(env)
 }
 

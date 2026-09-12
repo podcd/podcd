@@ -11,22 +11,27 @@ import (
 	"testing"
 )
 
-// authHeader finds the Authorization header podcd put into the git
-// environment, whatever GIT_CONFIG index it landed on (the surrounding
-// environment may already carry entries of its own).
 func authHeader(t *testing.T, env []string) (key, value string) {
 	t.Helper()
+
 	for _, kv := range env {
 		k, v, _ := strings.Cut(kv, "=")
-		if strings.HasPrefix(k, "GIT_CONFIG_KEY_") && strings.HasSuffix(v, ".extraheader") {
-			idx := strings.TrimPrefix(k, "GIT_CONFIG_KEY_")
-			for _, kv2 := range env {
-				if val, ok := strings.CutPrefix(kv2, "GIT_CONFIG_VALUE_"+idx+"="); ok {
-					return v, val
-				}
+		if !strings.HasPrefix(k, "GIT_CONFIG_KEY_") {
+			continue
+		}
+		if v != "http.https://gitlab.com/acme/gitops.git.extraheader" &&
+			v != "http.https://github.com/acme/gitops.git.extraheader" {
+			continue
+		}
+
+		idx := strings.TrimPrefix(k, "GIT_CONFIG_KEY_")
+		for _, kv2 := range env {
+			if val, ok := strings.CutPrefix(kv2, "GIT_CONFIG_VALUE_"+idx+"="); ok {
+				return v, val
 			}
 		}
 	}
+
 	return "", ""
 }
 
@@ -45,7 +50,6 @@ func TestTokenTravelsInTheEnvironmentNotTheCommandLineOrDisk(t *testing.T) {
 	if strings.Contains(strings.Join(r.env(), "\n"), "GIT_ASKPASS=/") {
 		t.Error("no askpass program should be involved")
 	}
-
 	r.URL = "https://github.com/acme/gitops.git"
 	if _, v := authHeader(t, r.env()); !strings.HasSuffix(v, base64.StdEncoding.EncodeToString([]byte("x-access-token:glpat-secret"))) {
 		t.Error("github.com should default to the x-access-token username")
