@@ -42,44 +42,24 @@ This is not Kubernetes, it is a focused GitOps model for Linux hosts that need p
 
 ### Demo deploy
 
-Runs as the user you are logged in as. Nothing here needs root except installing
-Podman itself.
+`bootstrap.sh` will attempt to install Podman, enable lingering so the user's services survive logout, downloads a release and verifies its checksum, points the agent at the example repository (whose `local` Host runs one nginx), and starts the agent as a systemd user service.
 
 ```bash
-# 1. Podman, git, and a user session that survives logout.
-sudo apt-get install -y podman uidmap dbus-user-session git   # Debian/Ubuntu
-sudo dnf install -y podman shadow-utils git                    # RHEL family
-loginctl enable-linger "$USER"
+curl -fsSL https://raw.githubusercontent.com/podcd/podcd/main/deploy/bootstrap.sh | sudo bash -s -- \
+  --repo-url https://github.com/podcd/podcd.git --repo-path examples --host local
+```
 
-# 2. The binary: a release (assets are podcd_<version>_linux_<arch>.tar.gz,
-#    each with a .sha256 next to it), or `make build` from this repository.
-V=1.2.0
-curl -fsSLO "https://github.com/podcd/podcd/releases/download/v$V/podcd_${V}_linux_amd64.tar.gz"
-curl -fsSLO "https://github.com/podcd/podcd/releases/download/v$V/podcd_${V}_linux_amd64.tar.gz.sha256"
-sha256sum -c "podcd_${V}_linux_amd64.tar.gz.sha256" && tar -xzf "podcd_${V}_linux_amd64.tar.gz"
-sudo install -m 0755 podcd /usr/local/bin/podcd
+`--user` is omitted, so the script sets up the invoking user. Within a minute:
 
-# 3. Point the agent at the example repository. The `local` Host runs one nginx.
-podcd config create --repo-url https://github.com/podcd/podcd.git --repo-path examples --host local
-
-# 4. See what would happen, then make it happen.
-podcd validate
-podcd plan
-podcd reconcile
+```bash
+podcd status                          # last reconcile, and podcd-local running
 curl -s http://127.0.0.1:8080/ | head -3
+journalctl --user -u podcd-agent -f   # see pull, plan, apply
 ```
 
-`reconcile` clones the repository, compiles the `local` host, writes `~/.config/containers/systemd/podcd-local.container`, asks systemd to start it and waits for the health check.
+To see the loop by hand rather than wait for it, `podcd plan` shows what would change and `podcd reconcile` does it; a second `reconcile` reports `nothing to do`.
 
-To keep it running unattended, install the agent as a user service:
-
-```bash
-podcd install
-systemctl --user enable --now podcd-agent.service
-journalctl --user -u podcd-agent -f
-```
-
-Tear down when unneeded:
+Tear down when done:
 
 ```bash
 systemctl --user disable --now podcd-agent.service
@@ -89,6 +69,45 @@ systemctl --user daemon-reload
 rm -rf ~/.config/podcd ~/.local/state/podcd
 ```
 
+Building from source instead: `make build`, then the same bootstrap with
+`--binaries ./dist`.
+
+### Manual setup
+
+Everything the bootstrap does by hand.
+
+```bash
+# 1.  Packages: rootless Podman 4.4+ (with Quadlet), git
+apt-get install -y podman uidmap dbus-user-session git   # Debian/Ubuntu
+dnf install -y podman shadow-utils git                    # RHEL family
+test -x /usr/libexec/podman/quadlet || echo "this podman has no Quadlet; 4.4+ is required"
+```
+```bash
+# 2.  The service user: no login shell, its own subordinate uid range for rootless containers.
+#     lingering so its services start at boot.
+useradd --create-home --shell /usr/sbin/nologin podcd     # /sbin/nologin on RHEL
+grep -q '^podcd:' /etc/subuid || usermod --add-subuids 200000-265535 --add-subgids 200000-265535 podcd
+loginctl enable-linger podcd
+
+# 3.  The binary, checksum verified.
+V=1.2.0; A=amd64   # or arm64
+curl -fsSLO "https://github.com/podcd/podcd/releases/download/v$V/podcd_${V}_linux_${A}.tar.gz"
+curl -fsSLO "https://github.com/podcd/podcd/releases/download/v$V/podcd_${V}_linux_${A}.tar.gz.sha256"
+sha256sum -c "podcd_${V}_linux_${A}.tar.gz.sha256" && tar -xzf "podcd_${V}_linux_${A}.tar.gz"
+install -m 0755 podcd /usr/local/bin/podcd
+
+# 4.  The agent config and the secrets file
+sudo -Hu podcd podcd config create --host prod-web-01 --repo-url git@github.com:you/gitops.git --revision production
+sudo -Hu podcd bash -c 'umask 077 && touch ~/.config/podcd/agent.env'
+
+# 5.  The user service.
+sudo -Hu podcd podcd install
+sudo -Hu podcd XDG_RUNTIME_DIR="/run/user/$(id -u podcd)" systemctl --user daemon-reload
+sudo -Hu podcd XDG_RUNTIME_DIR="/run/user/$(id -u podcd)" systemctl --user enable --now podcd-agent.service
+```
+
+For the demo variant of this, use your own user in place of `podcd`, skip step 2's `useradd`, and point step 4 at `https://github.com/podcd/podcd.git` with `--repo-path examples --host local`.
+
 ### Production deploy
 
 #### 1. The repository
@@ -96,7 +115,7 @@ rm -rf ~/.config/podcd ~/.local/state/podcd
 Your Git repository is the source of truth:
 
 - One `Host` document per VM, named after the machine (`podcd config create --host` or the hostname). Group hosts by role; put role-wide settings on the `Group`, environment-wide ones on the `Environment`.
-- Every image pinned by digest. `podcd validate` refuses anything else.
+- `podcd validate` requires images to be pinned by digest.
 - Secrets as references (`env:NAME`, `file:path`).
 
 For a private repository, give the agent a read credential in `agent.yaml`.
@@ -130,7 +149,9 @@ sudo -u podcd bash -lc 'ssh-keygen -t ed25519 -N "" -f ~/.ssh/deploy_key && ssh-
 
 #### 2. The host
 
-One command, as root, per VM. It is idempotent.
+The same bootstrap as the demo, with a dedicated service user, your repository and a pinned release.
+
+One command per host; it is idempotent.
 
 ```bash
 curl -fsSL https://raw.githubusercontent.com/podcd/podcd/main/deploy/bootstrap.sh | sudo bash -s -- \
@@ -203,7 +224,7 @@ sudo -u podcd XDG_RUNTIME_DIR="/run/user/$(id -u podcd)" systemctl --user status
 `podcd config create` writes the whole spec: every field is present with a
 comment explaining it, the values you passed are active, and everything else
 is shown as a commented-out default. The field list, the documentation and the
-defaults all come from one place — the tags on the `AgentConfig` struct — so
+defaults all come from one place - the tags on the `AgentConfig` struct - so
 the file, `podcd config set` and the validation messages cannot disagree.
 Uncomment a line to change it, or use `podcd config set` and the file is
 regenerated in the same layout. The complete, current output is in
