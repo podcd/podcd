@@ -10,12 +10,11 @@ GOLANGCILINT_VERSION ?= v2.13.2
 
 all: build
 
-## build: compile both binaries into dist/
+## build: compile the binary into dist/
 build:
 	@mkdir -p $(DIST)
-	go build -ldflags "$(LDFLAGS)" -o $(DIST)/podcd-agent ./cmd/agent
-	go build -ldflags "$(LDFLAGS)" -o $(DIST)/podcd ./cmd/cli
-	@echo "built $(DIST)/podcd and $(DIST)/podcd-agent ($(VERSION))"
+	go build -ldflags "$(LDFLAGS)" -o $(DIST)/podcd ./cmd/podcd
+	@echo "built $(DIST)/podcd ($(VERSION))"
 
 ## test: unit tests. Fast, no containers, no network.
 test:
@@ -37,10 +36,9 @@ fmt:
 lint:
 	GO111MODULE=on $(GO) run github.com/golangci/golangci-lint/v2/cmd/golangci-lint@$(GOLANGCILINT_VERSION) run --timeout 10m --default=none --enable=govet
 
-## install: put the binaries on this machine (needs root).
+## install: put the binary on this machine (needs root).
 install: build
 	install -m 0755 $(DIST)/podcd /usr/local/bin/podcd
-	install -m 0755 $(DIST)/podcd-agent /usr/local/bin/podcd-agent
 
 clean:
 	rm -rf $(DIST)

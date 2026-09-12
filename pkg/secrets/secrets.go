@@ -12,7 +12,6 @@ import (
 	"errors"
 	"fmt"
 	"os"
-	"path/filepath"
 	"sort"
 	"strings"
 )
@@ -42,14 +41,11 @@ func NewResolver(providers ...Provider) *Resolver {
 	return r
 }
 
-// Default returns the resolver used when nothing else is configured:
-// environment variables and files readable by the agent user.
-func Default(secretsDir string, envFiles ...string) *Resolver {
-	explicit := ""
-	if len(envFiles) > 0 {
-		explicit = envFiles[0]
-	}
-	return NewResolver(EnvProvider{Paths: envFilePaths(explicit)}, FileProvider{Root: secretsDir})
+// Default returns the resolver used when nothing else is configured: the
+// agent's environment (optionally backed by one env file), and files readable
+// by the agent user.
+func Default(secretsDir, envFile string) *Resolver {
+	return NewResolver(EnvProvider{File: envFile}, FileProvider{Root: secretsDir})
 }
 
 // Schemes lists the registered schemes, sorted.
@@ -84,10 +80,15 @@ func (r *Resolver) Resolve(ctx context.Context, ref string) (string, error) {
 	return v, nil
 }
 
-// EnvProvider reads secrets from the agent's own environment, typically
-// supplied by a systemd EnvironmentFile that is not in Git.
+// EnvProvider reads secrets from the agent's own environment, then from one
+// KEY=value file (the same file the systemd unit loads with EnvironmentFile=),
+// so `podcd plan` run from a shell sees the same secrets the agent does.
+//
+// There are no other fallback locations: the file is whatever the agent config
+// says it is, so the answer to "where did that value come from?" is always one
+// of two places.
 type EnvProvider struct {
-	Paths []string
+	File string
 }
 
 // Scheme implements Provider.
@@ -98,77 +99,48 @@ func (p EnvProvider) Resolve(_ context.Context, locator string) (string, error) 
 	if v, ok := os.LookupEnv(locator); ok {
 		return v, nil
 	}
-	paths := p.Paths
-	if len(paths) == 0 {
-		paths = envFilePaths("")
-	}
-	if v, ok := lookupEnvFile(locator, paths...); ok {
-		return v, nil
+	if p.File != "" {
+		vars, err := readEnvFile(p.File)
+		if err != nil && !os.IsNotExist(err) {
+			return "", fmt.Errorf("reading %s: %w", p.File, err)
+		}
+		if v, ok := vars[locator]; ok {
+			return v, nil
+		}
 	}
 	return "", fmt.Errorf("environment variable %s is not set: %w", locator, ErrNotFound)
 }
 
-func envFilePaths(configured string) []string {
-	paths := []string{}
-	if envFile := os.Getenv("PODCD_ENV_FILE"); envFile != "" {
-		paths = append(paths, envFile)
+// Secrets not available from a shell, we have to load on cli runs e.g. `podcd plan`, `podcd validate`
+func readEnvFile(path string) (map[string]string, error) {
+	f, err := os.Open(path)
+	if err != nil {
+		return nil, err
 	}
-	if configured != "" {
-		paths = append(paths, configured)
-	}
-	if home, err := os.UserHomeDir(); err == nil {
-		paths = append(paths, filepath.Join(home, ".config", "podcd", "agent.env"))
-	}
-	paths = append(paths, filepath.Join("/etc", "podcd", "agent.env"))
-	seen := map[string]struct{}{}
-	out := make([]string, 0, len(paths))
-	for _, p := range paths {
-		if p == "" {
+	defer f.Close()
+
+	vars := map[string]string{}
+	sc := bufio.NewScanner(f)
+	for sc.Scan() {
+		line := strings.TrimSpace(sc.Text())
+		if line == "" || strings.HasPrefix(line, "#") {
 			continue
 		}
-		if _, ok := seen[p]; ok {
+		line = strings.TrimPrefix(line, "export ")
+		key, value, ok := strings.Cut(line, "=")
+		if !ok {
 			continue
 		}
-		seen[p] = struct{}{}
-		out = append(out, p)
+		vars[strings.TrimSpace(key)] = unquote(strings.TrimSpace(value))
 	}
-	return out
+	return vars, sc.Err()
 }
 
-func lookupEnvFile(locator string, paths ...string) (string, bool) {
-	for _, path := range paths {
-		if path == "" {
-			continue
-		}
-		file, err := os.Open(path)
-		if err != nil {
-			continue
-		}
-		scanner := bufio.NewScanner(file)
-		for scanner.Scan() {
-			line := strings.TrimSpace(scanner.Text())
-			if line == "" || strings.HasPrefix(line, "#") {
-				continue
-			}
-			if strings.HasPrefix(line, "export ") {
-				line = strings.TrimSpace(strings.TrimPrefix(line, "export "))
-			}
-			key, value, ok := strings.Cut(line, "=")
-			if !ok {
-				continue
-			}
-			key = strings.TrimSpace(key)
-			if key == locator {
-				_ = file.Close()
-				return strings.Trim(value, "\"'"), true
-			}
-		}
-		_ = file.Close()
-		if err := scanner.Err(); err != nil {
-			break
-		}
+func unquote(v string) string {
+	if len(v) >= 2 && (v[0] == '"' || v[0] == '\'') && v[len(v)-1] == v[0] {
+		return v[1 : len(v)-1]
 	}
-	return "", false
+	return v
 }
 
 // FileProvider reads secrets from files on the host. Relative locators resolve

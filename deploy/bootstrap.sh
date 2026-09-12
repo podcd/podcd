@@ -192,7 +192,7 @@ loginctl enable-linger "$RUN_USER"
 
 download_release() {
   local version="${RELEASE_VERSION:-latest}"
-  local tag_name os arch url tmpdir
+  local tag_name arch url tmpdir archive
 
   case "$(uname -m)" in
     x86_64|amd64) arch="amd64" ;;
@@ -227,17 +227,20 @@ download_release() {
   trap 'rm -rf "$tmpdir"' RETURN
 
   info "downloading podcd $tag_name"
-  curl -fsSL "$url" -o "$tmpdir/podcd.tar.gz"
-  tar -xzf "$tmpdir/podcd.tar.gz" -C "$tmpdir"
+  archive="$(basename "$url")"
+  curl -fsSL "$url" -o "$tmpdir/$archive"
+  curl -fsSL "$url.sha256" -o "$tmpdir/$archive.sha256" ||
+    die "no checksum published for $archive; refusing to install an unverified binary"
+  ( cd "$tmpdir" && sha256sum -c --quiet "$archive.sha256" ) ||
+    die "checksum mismatch for $archive"
+  tar -xzf "$tmpdir/$archive" -C "$tmpdir"
 
   install -m 0755 "$tmpdir/podcd" /usr/local/bin/podcd
-  install -m 0755 "$tmpdir/podcd-agent" /usr/local/bin/podcd-agent
 }
 
 if [[ -n "$BINARY_DIR" ]]; then
   install -m 0755 "$BINARY_DIR/podcd" /usr/local/bin/podcd
-  install -m 0755 "$BINARY_DIR/podcd-agent" /usr/local/bin/podcd-agent
-  info "installed podcd binaries from $BINARY_DIR"
+  info "installed podcd from $BINARY_DIR"
 else
   # The bootstrap depends on `podcd install`, so an old CLI is not usable.
   if [[ ! -x /usr/local/bin/podcd ]] ||

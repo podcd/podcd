@@ -343,7 +343,7 @@ spec:
 	ix := loadIndex(t, files)
 	got, err := ix.Resolve(context.Background(), ResolveOptions{
 		Host:    "prod-web-01",
-		Secrets: secrets.Default(""),
+		Secrets: secrets.Default("", ""),
 	})
 	if err != nil {
 		t.Fatalf("resolve: %v", err)
@@ -366,7 +366,7 @@ spec:
     API_TOKEN: env:DEFINITELY_NOT_SET_12345
 `
 	ix := loadIndex(t, files)
-	_, err := ix.Resolve(context.Background(), ResolveOptions{Host: "prod-web-01", Secrets: secrets.Default("")})
+	_, err := ix.Resolve(context.Background(), ResolveOptions{Host: "prod-web-01", Secrets: secrets.Default("", "")})
 	if err == nil || !strings.Contains(err.Error(), "secret not found") {
 		t.Fatalf("a missing secret must fail loudly, got: %v", err)
 	}
@@ -385,7 +385,7 @@ spec:
     API_TOKEN: hunter2
 `
 	ix := loadIndex(t, files)
-	_, err := ix.Resolve(context.Background(), ResolveOptions{Host: "prod-web-01", Secrets: secrets.Default("")})
+	_, err := ix.Resolve(context.Background(), ResolveOptions{Host: "prod-web-01", Secrets: secrets.Default("", "")})
 	if err == nil || !strings.Contains(err.Error(), "scheme:locator") {
 		t.Fatalf("a literal secret value must not work, got: %v", err)
 	}

@@ -112,7 +112,7 @@ func newTestEngine(t *testing.T, rt *fakeRuntime, docs string) (*Engine, string)
 		log:   log,
 	}
 	e.ident.Host = "vm-1"
-	e.source = &Source{Repos: ReposFromConfig(cfg), Host: "vm-1", Secrets: secrets.Default(""), Log: log}
+	e.source = &Source{Repos: ReposFromConfig(cfg), Host: "vm-1", Secrets: secrets.Default("", ""), Log: log}
 	return e, repoDir
 }
 

@@ -1,0 +1,249 @@
+package cli
+
+import (
+	"encoding/json"
+	"fmt"
+	"io"
+	"sort"
+	"strings"
+	"text/tabwriter"
+	"time"
+
+	"github.com/spf13/cobra"
+	sigyaml "sigs.k8s.io/yaml"
+
+	"github.com/podcd/podcd/pkg/model"
+	"github.com/podcd/podcd/pkg/reconciler"
+	"github.com/podcd/podcd/pkg/state"
+)
+
+func printStatus(env *environment, st reconciler.Status) {
+	w := tabwriter.NewWriter(env.out, 0, 0, 2, ' ', 0)
+	fmt.Fprintf(w, "host\t%s\t(%s)\n", st.Identity.Host, st.Identity.Source)
+	runtimeNote := "available"
+	if !st.Available {
+		runtimeNote = "UNAVAILABLE: " + st.Why
+	}
+	fmt.Fprintf(w, "runtime\t%s\t(%s)\n", st.Runtime, runtimeNote)
+	fmt.Fprintf(w, "config\t%s\t\n", st.Config)
+	fmt.Fprintf(w, "state\t%s\t\n", env.engine.Store().Path())
+	w.Flush()
+
+	fmt.Fprintln(env.out, "\nrepositories")
+	w = tabwriter.NewWriter(env.out, 0, 0, 2, ' ', 0)
+	for _, r := range st.Repos {
+		rev := ""
+		if st.State.LastSuccess != nil {
+			rev = shortRev(st.State.LastSuccess.Revisions[r.Name])
+		}
+		fmt.Fprintf(w, "  %s\t%s\t%s\t%s\n", r.Name, r.URL, r.Revision, rev)
+	}
+	w.Flush()
+
+	fmt.Fprintln(env.out, "\nlast reconcile")
+	w = tabwriter.NewWriter(env.out, 0, 0, 2, ' ', 0)
+	fmt.Fprintf(w, "  success\t%s\t%s\n", attemptTime(st.State.LastSuccess), attemptDetail(st.State.LastSuccess))
+	fmt.Fprintf(w, "  failure\t%s\t%s\n", attemptTime(st.State.LastFailure), attemptDetail(st.State.LastFailure))
+	if st.State.FailureCount > 0 {
+		fmt.Fprintf(w, "  failing\t%d consecutive failure(s)\t\n", st.State.FailureCount)
+	}
+	w.Flush()
+
+	fmt.Fprintln(env.out, "\napplications")
+	if len(st.Actual.Apps) == 0 {
+		fmt.Fprintln(env.out, "  (none)")
+		return
+	}
+	w = tabwriter.NewWriter(env.out, 0, 0, 2, ' ', 0)
+	fmt.Fprintln(w, "  APP\tUNIT\tCONTAINER\tIMAGE\tHEALTH\tAPPLIED")
+	for _, name := range st.Actual.Names() {
+		a := st.Actual.Apps[name]
+		rec := st.State.Applications[name]
+		owner := ""
+		if !a.Managed {
+			owner = " (not managed by podcd)"
+		}
+		fmt.Fprintf(w, "  %s\t%s%s\t%s\t%s\t%s\t%s\n",
+			name, string(a.UnitState), owner, dash(a.ContainerState),
+			dash(shortImage(firstNonEmpty(rec.Image, a.ContainerImage))),
+			dash(rec.Health), dash(rec.AppliedAt))
+	}
+	w.Flush()
+}
+
+func printPlan(w io.Writer, res reconciler.Result) {
+	fmt.Fprintf(w, "plan for %s at %s\n", res.Desired.Host, res.Desired.RevisionString())
+	for _, r := range res.Offline {
+		fmt.Fprintf(w, "  warning: repository %q could not be refreshed; using the commit already on disk\n", r)
+	}
+	changes := res.Plan.Changes()
+	if len(changes) == 0 {
+		fmt.Fprintf(w, "  no changes (%d application(s) already match Git)\n", len(res.Desired.Applications))
+		return
+	}
+	for _, a := range changes {
+		destructive := ""
+		if a.Destructive {
+			destructive = "  [destructive]"
+		}
+		fmt.Fprintf(w, "  %s %s - %s%s\n", actionSymbol(a.Type), a.App, a.Reason, destructive)
+		for _, d := range a.Details {
+			fmt.Fprintf(w, "      %s\n", d)
+		}
+	}
+	fmt.Fprintf(w, "%d change(s)\n", len(changes))
+}
+
+func printHealth(w io.Writer, results []model.Health) {
+	if len(results) == 0 {
+		return
+	}
+	sorted := append([]model.Health(nil), results...)
+	sort.Slice(sorted, func(i, j int) bool { return sorted[i].App < sorted[j].App })
+	fmt.Fprintln(w, "health")
+	tw := tabwriter.NewWriter(w, 0, 0, 2, ' ', 0)
+	for _, h := range sorted {
+		fmt.Fprintf(tw, "  %s\t%s\t%s\t%s\n", h.App, h.Status, h.Probe, h.Message)
+	}
+	tw.Flush()
+}
+
+func actionSymbol(t model.ActionType) string {
+	switch t {
+	case model.ActionCreate:
+		return "+ create"
+	case model.ActionUpdate:
+		return "~ update"
+	case model.ActionDelete:
+		return "- delete"
+	case model.ActionRestart:
+		return "> restart"
+	default:
+		return "= noop"
+	}
+}
+
+type outputFormat string
+
+func (o *outputFormat) String() string { return string(*o) }
+func (o *outputFormat) Type() string   { return "format" }
+
+func (o *outputFormat) Set(v string) error {
+	switch v {
+	case "json", "yaml":
+		*o = outputFormat(v)
+		return nil
+	}
+	return fmt.Errorf("must be json or yaml")
+}
+
+func (o *outputFormat) addFlag(cmd *cobra.Command) {
+	cmd.Flags().VarP(o, "output", "o", "output format: json or yaml")
+}
+
+// write encodes v in the chosen format. The yaml goes through JSON first so
+// the json tags - and the secret redaction behind them - apply to both.
+func (o outputFormat) write(w io.Writer, v any) error {
+	switch o {
+	case "yaml":
+		j, err := json.Marshal(v)
+		if err != nil {
+			return err
+		}
+		y, err := sigyaml.JSONToYAML(j)
+		if err != nil {
+			return err
+		}
+		_, err = w.Write(y)
+		return err
+	default:
+		enc := json.NewEncoder(w)
+		enc.SetIndent("", "  ")
+		return enc.Encode(v)
+	}
+}
+
+func attemptTime(a *state.Attempt) string {
+	if a == nil || a.At.IsZero() {
+		return "never"
+	}
+	return fmt.Sprintf("%s (%s ago)", a.At.Format(time.RFC3339), time.Since(a.At).Round(time.Second))
+}
+
+func attemptDetail(a *state.Attempt) string {
+	switch {
+	case a == nil:
+		return ""
+	case a.Error != "":
+		return firstLine(a.Error)
+	case len(a.Actions) > 0:
+		return strings.Join(a.Actions, ", ")
+	default:
+		return "no changes"
+	}
+}
+
+func firstLine(s string) string {
+	if i := strings.IndexByte(s, '\n'); i >= 0 {
+		return s[:i] + " ..."
+	}
+	return s
+}
+
+func shortRev(s string) string {
+	if len(s) > 12 {
+		return s[:12]
+	}
+	return s
+}
+
+func shortImage(s string) string {
+	if i := strings.Index(s, "@sha256:"); i > 0 && len(s) > i+20 {
+		return s[:i+20] + "..."
+	}
+	return s
+}
+
+func portList(ports []model.Port) string {
+	if len(ports) == 0 {
+		return "-"
+	}
+	parts := make([]string, 0, len(ports))
+	for _, p := range ports {
+		parts = append(parts, fmt.Sprintf("%d→%d", p.Host, p.Container))
+	}
+	return strings.Join(parts, ",")
+}
+
+func countUnhealthy(results []model.Health) int {
+	n := 0
+	for _, h := range results {
+		if !h.OK() {
+			n++
+		}
+	}
+	return n
+}
+
+func dash(s string) string {
+	if strings.TrimSpace(s) == "" {
+		return "-"
+	}
+	return s
+}
+
+func firstNonEmpty(vals ...string) string {
+	for _, v := range vals {
+		if v != "" {
+			return v
+		}
+	}
+	return ""
+}
+
+func errString(err error) string {
+	if err == nil {
+		return ""
+	}
+	return err.Error()
+}

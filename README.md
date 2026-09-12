@@ -47,11 +47,7 @@ curl -fsSL https://raw.githubusercontent.com/podcd/podcd/refs/heads/main/deploy/
   --user podcd
 ```
 
-This downloads the latest release binaries from GitHub, installs Podman, creates or reuses a dedicated `podcd` service user, enables lingering so workloads come back after reboot, and starts the agent as a systemd user service.
-
-```bash
-sudo podcd
-```
+This downloads the latest release binary from GitHub (and verifies its checksum), installs Podman, creates or reuses a dedicated `podcd` service user, enables lingering so workloads come back after reboot, and starts the agent as a systemd user service.
 
 By default, the bootstrap script creates a non-login system account for the agent. The service account is not a human login account; its shell is `/usr/sbin/nologin` unless you explicitly opt in with `--allow-user-login`.
 
@@ -84,7 +80,13 @@ podcd config path
 podcd config create --repo-url https://github.com/podcd/podcd.git --repo-path examples --host local
 ```
 
-This writes the default config to `~/.config/podcd/agent.yaml` unless `PODCD_CONFIG` or `--path` is set.
+This writes the default config to `~/.config/podcd/agent.yaml` unless `PODCD_CONFIG` or `--path` is set. Only the values you gave are written; everything else stays at its default. Individual fields can be changed later without editing the file by hand:
+
+```bash
+podcd config set host prod-web-02
+podcd config set interval 30s
+podcd config view
+```
 
 ### Shell completion
 
@@ -156,7 +158,7 @@ This is the file the agent reads to decide which Git repository to reconcile.
 
 ### Configure against your own GitOps repository
 
-If your desired state lives in your own `podcd-gitops.git` repository, point the agent at that repo instead of the example checkout:
+Point the agent at that repo instead of the example checkout:
 
 ```bash
 # As the podcd user
@@ -192,8 +194,7 @@ That keeps the service account, its config, and its runtime state all rooted und
 
 ```bash
 make build
-mv dist/podcd-agent /usr/local/bin
-mv dist/podcd /usr/local/bin
+sudo install -m 0755 dist/podcd /usr/local/bin/podcd
 
 ```
 
@@ -206,10 +207,13 @@ podcd status      # what is running here and when it last reconciled
 podcd plan        # show changes without making them
 podcd reconcile   # apply the current Git desired state
 podcd health      # probe application health
-podcd logs local  # recent output for one application
+podcd logs local  # recent output for one application (--tail N)
 podcd validate    # compile config and check for errors
 podcd install     # write the systemd user service file for the agent
+podcd config      # view, create or edit the agent config file
 ```
+
+Command takes `-o json` or `-o yaml` for machine-readable output, and the flags shared by all commands - `--config` (like `--kubeconfig`), `--host` (like `--context`), `--log-level`, `--log-format` - are listed by `podcd options` rather than repeated in every command's help.
 
 ## How it works
 
@@ -253,7 +257,8 @@ kind: Application
 metadata:
   name: local
 spec:
-  image: docker.io/library/nginx:latest
+  # A moving tag is rejected unless the application sets `allowMutableImage: true`
+  image: docker.io/library/nginx@sha256:72ba65eb42c10344912a84ff42408db7d34f2feb642204570ab8fc5ffd29f1d3
   ports:
     - host: 8080
       container: 80
@@ -267,7 +272,8 @@ spec:
 
 ### Pod manifests
 
-Pod definitions follow the same rules as applications. They are validated for things such as:
+A host's application list can also name a plain Kubernetes `Pod`.
+Pods are validated by the same rules as applications:
 
 - immutable image references unless explicitly allowed
 - referenced ConfigMaps and Secrets that must exist or be optional
@@ -282,7 +288,7 @@ metadata:
 spec:
   containers:
     - name: collector
-      image: docker.io/library/nginx:latest
+      image: docker.io/library/nginx@sha256:72ba65eb42c10344912a84ff42408db7d34f2feb642204570ab8fc5ffd29f1d3
       envFrom:
         - configMapRef: { name: metrics-config }
       ports:
@@ -330,19 +336,25 @@ Each failure names the offending file and explains the issue clearly.
 
 ### Multiple repositories
 
+Repositories are composed into one desired state. A name defined twice across them is an error, not a race; `revision` may be a branch, a tag or a commit.
+
 ```yaml
 repositories:
   - name: infrastructure
     url: https://github.com/podcd/podcd.git
     revision: main
     path: examples
+  - name: applications
+    url: https://github.com/your-user/applications.git
+    revision: v1.4.0
 ```
 
 ## Testing
 
 ```bash
-make test           # unit tests
-make test-e2e       # podman, quadlet, systemd validation on the local machine
+make test           # unit tests; also runs podman's Quadlet generator over rendered units
+make test-e2e       # real podman, quadlet and systemd on this machine (starts containers)
+make lint           # golangci-lint
 ```
 
 ## Security

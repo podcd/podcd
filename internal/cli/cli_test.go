@@ -5,110 +5,222 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"github.com/podcd/podcd/deploy"
 )
 
-func TestCmdInstallWritesSystemdService(t *testing.T) {
+// TestEveryCommandOwnsItsFlags guards the bug where a flag was parsed by a
+// hand-rolled flag.FlagSet after cobra had already rejected (or silently
+// consumed) it. Every flag a command reads must be declared on that command.
+func TestEveryCommandOwnsItsFlags(t *testing.T) {
+	root := newRootCommand()
+	want := map[string][]string{
+		"status":    {"output"},
+		"plan":      {"output"},
+		"reconcile": {"output", "dry-run", "no-prune"},
+		"health":    {"output"},
+		"logs":      {"tail"},
+		"validate":  {"output"},
+		"version":   {"output"},
+		"install":   {"output", "yes"},
+	}
+	for name, flags := range want {
+		cmd, _, err := root.Find([]string{name})
+		if err != nil || cmd.Name() != name {
+			t.Fatalf("command %q not found: %v", name, err)
+		}
+		for _, f := range flags {
+			if cmd.Flags().Lookup(f) == nil {
+				t.Errorf("%s: flag --%s is not declared on the command", name, f)
+			}
+		}
+	}
+	if plan, _, _ := root.Find([]string{"plan"}); plan.Flags().ShorthandLookup("o") == nil {
+		t.Error("plan: -o shorthand is missing")
+	}
+	if logs, _, _ := root.Find([]string{"logs"}); logs.Flags().ShorthandLookup("n") != nil {
+		t.Error("logs: -n must not be a flag")
+	}
+	for _, g := range []string{"config", "host", "log-level", "log-format"} {
+		if root.PersistentFlags().Lookup(g) == nil {
+			t.Errorf("global flag --%s is missing", g)
+		}
+	}
+}
+
+func TestInstallWritesTheEmbeddedServiceFile(t *testing.T) {
 	home := t.TempDir()
 	t.Setenv("HOME", home)
 
-	if err := cmdInstall(nil); err != nil {
-		t.Fatalf("cmdInstall() error = %v", err)
+	if code := Main([]string{"install"}); code != 0 {
+		t.Fatalf("install exit code = %d", code)
 	}
-
 	dest := filepath.Join(home, ".config", "systemd", "user", "podcd-agent.service")
-	content, err := os.ReadFile(dest)
+	got, err := os.ReadFile(dest)
 	if err != nil {
-		t.Fatalf("reading installed service: %v", err)
+		t.Fatal(err)
 	}
-	text := string(content)
-	if !strings.Contains(text, "ExecStart=/usr/local/bin/podcd-agent run") {
-		t.Fatalf("service file does not contain the podcd agent command:\n%s", text)
+	if string(got) != string(deploy.AgentService) {
+		t.Fatal("the installed unit is not the file in deploy/")
 	}
-	if !strings.Contains(text, "WorkingDirectory=%h") {
-		t.Fatalf("service file does not set the working directory to the service user's home:\n%s", text)
-	}
-	if !strings.Contains(text, "WantedBy=default.target") {
-		t.Fatalf("service file is missing the systemd install target:\n%s", text)
+	for _, want := range []string{"ExecStart=/usr/local/bin/podcd run", "WorkingDirectory=%h", "WantedBy=default.target"} {
+		if !strings.Contains(string(got), want) {
+			t.Errorf("service file is missing %q", want)
+		}
 	}
 }
 
-func TestMainInstallWithoutConfig(t *testing.T) {
+func TestInstallDoesNotOverwriteWithoutConsent(t *testing.T) {
 	home := t.TempDir()
 	t.Setenv("HOME", home)
-	t.Setenv("PODCD_CONFIG", "")
-
-	if code := Main([]string{"install"}, ""); code != 0 {
-		t.Fatalf("Main(install) exit code = %d; expected 0", code)
-	}
-
 	dest := filepath.Join(home, ".config", "systemd", "user", "podcd-agent.service")
-	if _, err := os.Stat(dest); err != nil {
-		t.Fatalf("install command did not write service file: %v", err)
+	if err := os.MkdirAll(filepath.Dir(dest), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(dest, []byte("mine\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	// stdin is not a terminal here, so the prompt reads EOF: that is a "no".
+	if code := Main([]string{"install"}); code != 0 {
+		t.Fatalf("install exit code = %d", code)
+	}
+	if got, _ := os.ReadFile(dest); string(got) != "mine\n" {
+		t.Fatal("install overwrote an existing unit without consent")
+	}
+	if code := Main([]string{"install", "-y"}); code != 0 {
+		t.Fatalf("install -y exit code = %d", code)
+	}
+	if got, _ := os.ReadFile(dest); string(got) == "mine\n" {
+		t.Fatal("install -y did not overwrite")
 	}
 }
 
-func TestMainConfigCreateWritesDefaultConfig(t *testing.T) {
+func TestConfigCreateWritesACompactFile(t *testing.T) {
 	home := t.TempDir()
 	t.Setenv("HOME", home)
 	t.Setenv("PODCD_CONFIG", "")
 
-	if code := Main([]string{"config", "create", "--repo-url", "https://github.com/example/repo.git", "--repo-path", "clusters/prod"}, ""); code != 0 {
-		t.Fatalf("Main(config create) exit code = %d; expected 0", code)
+	if code := Main([]string{"config", "create", "--repo-url", "https://example.com/repo.git", "--repo-path", "clusters/prod", "--interval", "30s"}); code != 0 {
+		t.Fatalf("config create exit code = %d", code)
+	}
+	path := filepath.Join(home, ".config", "podcd", "agent.yaml")
+	got, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	text := string(got)
+	for _, want := range []string{"url: https://example.com/repo.git", "path: clusters/prod", "interval: 30s"} {
+		if !strings.Contains(text, want) {
+			t.Errorf("config is missing %q:\n%s", want, text)
+		}
+	}
+	// Defaults are not written: the file should not pin this machine's paths.
+	for _, absent := range []string{"stateDir", "unitDir", "retryInterval", "runtime: podman", "prune: true"} {
+		if strings.Contains(text, absent) {
+			t.Errorf("config should not spell out the default %q:\n%s", absent, text)
+		}
 	}
 
-	path := filepath.Join(home, ".config", "podcd", "agent.yaml")
-	content, err := os.ReadFile(path)
-	if err != nil {
-		t.Fatalf("reading created config: %v", err)
-	}
-	text := string(content)
-	if !strings.Contains(text, "url: https://github.com/example/repo.git") {
-		t.Fatalf("default config did not include the repo URL:\n%s", text)
-	}
-	if !strings.Contains(text, "path: clusters/prod") {
-		t.Fatalf("default config did not include the repo path:\n%s", text)
+	// A second create refuses to clobber.
+	if code := Main([]string{"config", "create", "--repo-url", "https://example.com/other.git"}); code == 0 {
+		t.Fatal("config create overwrote an existing file without --force")
 	}
 }
 
-func TestMainConfigSetUpdatesConfigFile(t *testing.T) {
+func TestConfigCreateRequiresARepository(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	t.Setenv("PODCD_CONFIG", "")
+	if code := Main([]string{"config", "create"}); code == 0 {
+		t.Fatal("config create without --repo-url must fail")
+	}
+}
+
+func TestConfigSetUpdatesOneField(t *testing.T) {
 	home := t.TempDir()
 	t.Setenv("HOME", home)
-	t.Setenv("PODCD_CONFIG", "")
+	path := filepath.Join(home, "agent.yaml")
+	t.Setenv("PODCD_CONFIG", path)
 
-	path := filepath.Join(home, ".config", "podcd", "agent.yaml")
-	if code := Main([]string{"config", "create", "--path", path, "--host", "old-host"}, ""); code != 0 {
-		t.Fatalf("Main(config create) exit code = %d; expected 0", code)
+	if code := Main([]string{"config", "create", "--host", "old-host", "--repo-url", "https://example.com/a.git"}); code != 0 {
+		t.Fatalf("config create exit code = %d", code)
 	}
-	if code := Main([]string{"config", "set", "host", "new-host", "--path", path}, ""); code != 0 {
-		t.Fatalf("Main(config set host) exit code = %d; expected 0", code)
+	for _, args := range [][]string{
+		{"config", "set", "host", "new-host"},
+		{"config", "set", "repo-url", "https://example.com/new.git"},
+		{"config", "set", "prune", "false"},
+	} {
+		if code := Main(args); code != 0 {
+			t.Fatalf("%v exit code = %d", args, code)
+		}
 	}
-	if code := Main([]string{"config", "set", "repo-url", "https://github.com/example/new.git", "--path", path}, ""); code != 0 {
-		t.Fatalf("Main(config set repo-url) exit code = %d; expected 0", code)
+	got, _ := os.ReadFile(path)
+	for _, want := range []string{"host: new-host", "url: https://example.com/new.git", "prune: false"} {
+		if !strings.Contains(string(got), want) {
+			t.Errorf("config is missing %q:\n%s", want, got)
+		}
 	}
-
-	content, err := os.ReadFile(path)
-	if err != nil {
-		t.Fatalf("reading config after set: %v", err)
+	if code := Main([]string{"config", "set", "interval", "not-a-duration"}); code == 0 {
+		t.Fatal("an invalid value must be rejected")
 	}
-	text := string(content)
-	if !strings.Contains(text, "host: new-host") {
-		t.Fatalf("set host did not persist to config:\n%s", text)
-	}
-	if !strings.Contains(text, "https://github.com/example/new.git") {
-		t.Fatalf("set repo-url did not persist to config:\n%s", text)
+	if code := Main([]string{"config", "set", "nonsense", "x"}); code == 0 {
+		t.Fatal("an unknown field must be rejected")
 	}
 }
 
-func TestMainConfigCreateHelpDoesNotCrash(t *testing.T) {
-	code := Main([]string{"config", "create", "--help"}, "")
-	if code != 0 {
-		t.Fatalf("Main(config create --help) exit code = %d; expected 0", code)
+func TestOutputFormatIsValidatedAtParseTime(t *testing.T) {
+	if code := Main([]string{"version", "-o", "xml"}); code == 0 {
+		t.Fatal("-o xml must be rejected")
+	}
+	for _, format := range []string{"json", "yaml"} {
+		if code := Main([]string{"version", "-o", format}); code != 0 {
+			t.Errorf("version -o %s exit code = %d", format, code)
+		}
 	}
 }
 
-func TestMainConfigSetHelpDoesNotCrash(t *testing.T) {
-	code := Main([]string{"config", "set", "--help"}, "")
-	if code != 0 {
-		t.Fatalf("Main(config set --help) exit code = %d; expected 0", code)
+func TestHelpHidesGlobalFlags(t *testing.T) {
+	root := newRootCommand()
+	var buf strings.Builder
+	root.SetOut(&buf)
+	root.SetArgs([]string{"install", "--help"})
+	if err := root.Execute(); err != nil {
+		t.Fatal(err)
+	}
+	help := buf.String()
+	if strings.Contains(help, "Global Flags") || strings.Contains(help, "--log-level") {
+		t.Fatalf("install --help should not list the global flags:\n%s", help)
+	}
+	if !strings.Contains(help, "--yes") || !strings.Contains(help, `"podcd options"`) {
+		t.Fatalf("install --help should list its own flags and point at podcd options:\n%s", help)
+	}
+
+	buf.Reset()
+	root.SetArgs([]string{"options"})
+	if err := root.Execute(); err != nil {
+		t.Fatal(err)
+	}
+	for _, g := range []string{"--config", "--host", "--log-level", "--log-format"} {
+		if !strings.Contains(buf.String(), g) {
+			t.Errorf("podcd options should document %s:\n%s", g, buf.String())
+		}
+	}
+	// The flags are still accepted before an unrelated subcommand.
+	if code := Main([]string{"--log-level", "debug", "version"}); code != 0 {
+		t.Errorf("a global flag before a subcommand must still parse, got exit %d", code)
+	}
+}
+
+func TestHelpNeverFails(t *testing.T) {
+	for _, args := range [][]string{
+		{"--help"}, {"config", "--help"}, {"config", "create", "--help"},
+		{"config", "set", "--help"}, {"install", "--help"}, {"reconcile", "--help"},
+	} {
+		if code := Main(args); code != 0 {
+			t.Errorf("%v exit code = %d", args, code)
+		}
+	}
+	if code := Main(nil); code != 0 {
+		t.Errorf("bare podcd should print help and exit 0, got %d", code)
 	}
 }

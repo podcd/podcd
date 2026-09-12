@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"os/user"
 	"path/filepath"
 	"strconv"
 	"strings"
@@ -123,23 +124,107 @@ func LoadAgentConfig(path string) (AgentConfig, error) {
 	return cfg, nil
 }
 
-// FindAgentConfig returns the first configuration file that exists, looking at
-// $PODCD_CONFIG, then the user config dir, then /etc/podcd.
-func FindAgentConfig() (string, error) {
+// ConfigCandidates lists where the agent config may live, in lookup order:
+// $PODCD_CONFIG, the user's config dir, then /etc/podcd.
+func ConfigCandidates() []string {
 	var candidates []string
 	if p := os.Getenv("PODCD_CONFIG"); p != "" {
 		candidates = append(candidates, p)
 	}
-	if home, err := os.UserHomeDir(); err == nil {
+	if home := userHome(); home != "" {
 		candidates = append(candidates, filepath.Join(home, ".config", "podcd", "agent.yaml"))
 	}
-	candidates = append(candidates, "/etc/podcd/agent.yaml")
+	return append(candidates, "/etc/podcd/agent.yaml")
+}
+
+// DefaultConfigPath is where `podcd config create` writes: the first candidate,
+// whether or not it exists yet.
+func DefaultConfigPath() string { return ConfigCandidates()[0] }
+
+// FindAgentConfig returns the first configuration file that exists.
+func FindAgentConfig() (string, error) {
+	candidates := ConfigCandidates()
 	for _, c := range candidates {
 		if _, err := os.Stat(c); err == nil {
 			return c, nil
 		}
 	}
 	return "", fmt.Errorf("no agent config found (looked in: %s)", strings.Join(candidates, ", "))
+}
+
+// WriteAgentConfig writes cfg to path as a compact document: only the fields
+// that differ from the defaults, so a file written by the CLI reads like one a
+// human would write and does not pin this machine's home directory into it.
+func WriteAgentConfig(path string, cfg AgentConfig) error {
+	if err := cfg.Validate(); err != nil {
+		return err
+	}
+	d := DefaultAgentConfig()
+	doc := compactAgentConfig{
+		Host:         cfg.Host,
+		Repositories: cfg.Repositories,
+	}
+	if cfg.Interval != d.Interval {
+		doc.Interval = cfg.Interval.String()
+	}
+	if cfg.Jitter != d.Jitter {
+		doc.Jitter = cfg.Jitter.String()
+	}
+	if cfg.RetryInterval != d.RetryInterval {
+		doc.RetryInterval = cfg.RetryInterval.String()
+	}
+	if cfg.MaxRetryInterval != d.MaxRetryInterval {
+		doc.MaxRetryInterval = cfg.MaxRetryInterval.String()
+	}
+	if cfg.Runtime != d.Runtime {
+		doc.Runtime = cfg.Runtime
+	}
+	if cfg.StateDir != d.StateDir {
+		doc.StateDir = cfg.StateDir
+	}
+	if cfg.UnitDir != d.UnitDir {
+		doc.UnitDir = cfg.UnitDir
+	}
+	if cfg.SecretsDir != d.SecretsDir {
+		doc.SecretsDir = cfg.SecretsDir
+	}
+	if cfg.EnvFile != d.EnvFile {
+		doc.EnvFile = cfg.EnvFile
+	}
+	if !cfg.PruneEnabled() {
+		off := false
+		doc.Prune = &off
+	}
+	if cfg.LogFormat != d.LogFormat {
+		doc.LogFormat = cfg.LogFormat
+	}
+	out, err := yaml.Marshal(doc)
+	if err != nil {
+		return err
+	}
+	header := "# podcd agent configuration. This file says which Git to trust.\n# It lives on this host, not in Git.\n"
+	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+		return fmt.Errorf("creating %s: %w", filepath.Dir(path), err)
+	}
+	return os.WriteFile(path, append([]byte(header), out...), 0o644)
+}
+
+// compactAgentConfig is AgentConfig with durations as strings and every field
+// optional; it exists only so WriteAgentConfig can leave defaults out.
+type compactAgentConfig struct {
+	Host             string           `yaml:"host,omitempty"`
+	Interval         string           `yaml:"interval,omitempty"`
+	Jitter           string           `yaml:"jitter,omitempty"`
+	RetryInterval    string           `yaml:"retryInterval,omitempty"`
+	MaxRetryInterval string           `yaml:"maxRetryInterval,omitempty"`
+	Runtime          string           `yaml:"runtime,omitempty"`
+	Repositories     []RepositorySpec `yaml:"repositories"`
+	StateDir         string           `yaml:"stateDir,omitempty"`
+	UnitDir          string           `yaml:"unitDir,omitempty"`
+	SecretsDir       string           `yaml:"secretsDir,omitempty"`
+	EnvFile          string           `yaml:"envFile,omitempty"`
+	Prune            *bool            `yaml:"prune,omitempty"`
+	LogFormat        string           `yaml:"logFormat,omitempty"`
 }
 
 func (c *AgentConfig) applyDefaults() {
@@ -220,12 +305,10 @@ func (c *AgentConfig) SetValue(field, value string) error {
 		}
 		c.Prune = &b
 	case "repo-url", "repo-name", "repo-path", "revision":
+		// `config set` edits the first repository; a config with none gets
+		// one, and Validate below insists it has a URL.
 		if len(c.Repositories) == 0 {
-			c.Repositories = []RepositorySpec{{
-				Name:     "infrastructure",
-				URL:      "https://github.com/podcd/podcd.git",
-				Revision: "main",
-			}}
+			c.Repositories = []RepositorySpec{{Name: "infrastructure", Revision: "main"}}
 		}
 		repo := &c.Repositories[0]
 		switch field {
@@ -241,10 +324,7 @@ func (c *AgentConfig) SetValue(field, value string) error {
 	default:
 		return fmt.Errorf("unknown config field %q (try: host, interval, jitter, runtime, log-format, state-dir, unit-dir, secrets-dir, env-file, prune, repo-url, repo-name, repo-path, revision)", field)
 	}
-	if err := c.Validate(); err != nil {
-		return err
-	}
-	return nil
+	return c.Validate()
 }
 
 // Validate rejects configurations that cannot work, loudly and all at once.
@@ -284,6 +364,24 @@ func (c AgentConfig) Validate() error {
 	return errors.Join(problems...)
 }
 
+// userHome is the home directory the agent's files belong in. Under sudo that
+// is the invoking user's home, looked up properly rather than guessed as
+// /home/<name>, so `sudo podcd config create` does not write into /root.
+func userHome() string {
+	if os.Getuid() == 0 {
+		if name := os.Getenv("SUDO_USER"); name != "" && name != "root" {
+			if u, err := user.Lookup(name); err == nil && u.HomeDir != "" {
+				return u.HomeDir
+			}
+		}
+	}
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return ""
+	}
+	return home
+}
+
 func defaultStateDir() string {
 	if d := os.Getenv("XDG_STATE_HOME"); d != "" {
 		return filepath.Join(d, "podcd")
@@ -302,8 +400,7 @@ func defaultEnvFilePath() string {
 	if p := os.Getenv("PODCD_CONFIG"); p != "" {
 		return filepath.Join(filepath.Dir(p), "agent.env")
 	}
-	home, err := os.UserHomeDir()
-	if err == nil {
+	if home := userHome(); home != "" {
 		return filepath.Join(home, ".config", "podcd", "agent.env")
 	}
 	return "/etc/podcd/agent.env"

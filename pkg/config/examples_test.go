@@ -54,6 +54,4 @@ func TestExamplesCompile(t *testing.T) {
 	}
 }
 
-// fakeSecrets is the provider set the agent uses by default: environment and
-// files on the host, never anything read out of Git.
-func fakeSecrets() *secrets.Resolver { return secrets.Default("") }
+func fakeSecrets() *secrets.Resolver { return secrets.Default("", "") }

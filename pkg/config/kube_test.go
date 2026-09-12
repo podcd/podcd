@@ -52,7 +52,7 @@ func resolvePod(t *testing.T, files map[string]string, host string) (string, err
 	if err := ix.LoadTree("test", writeTree(t, files)); err != nil {
 		return "", err
 	}
-	got, err := ix.Resolve(context.Background(), ResolveOptions{Host: host, Secrets: secrets.Default("")})
+	got, err := ix.Resolve(context.Background(), ResolveOptions{Host: host, Secrets: secrets.Default("", "")})
 	if err != nil {
 		return "", err
 	}
