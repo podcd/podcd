@@ -6,7 +6,18 @@ DIST    := dist
 GO ?= go
 GOLANGCILINT_VERSION ?= v2.13.2
 
-.PHONY: all build test test-e2e vet fmt lint clean install
+# A failing `go test` must fail the pipeline it is tee'd through.
+SHELL := bash
+.SHELLFLAGS := -o pipefail -c
+
+# Coverage and test-report output. CI uploads these; locally `make cover`
+# opens the HTML report. The race detector needs cgo, so it is on wherever a
+# C compiler is (CI, most workstations) and skipped where there is none.
+RACE      := $(if $(filter 1,$(shell $(GO) env CGO_ENABLED)),-race,)
+TESTCOVER ?= $(RACE) -covermode=atomic -coverprofile=coverage.out -coverpkg=./...
+GOJUNITREPORT_VERSION ?= v2.1.0
+
+.PHONY: all build test test-report cover test-e2e vet fmt lint clean install
 
 all: build
 
@@ -16,9 +27,20 @@ build:
 	go build -ldflags "$(LDFLAGS)" -o $(DIST)/podcd ./cmd/podcd
 	@echo "built $(DIST)/podcd ($(VERSION))"
 
-## test: unit tests. Fast, no containers, no network.
+## test: unit tests with the race detector and coverage. Fast, no containers, no network.
 test:
-	go test ./...
+	$(GO) test $(TESTCOVER) ./...
+
+## test-report: the same tests, with a JUnit file (junit.xml) for CI to publish.
+test-report:
+	$(GO) test $(TESTCOVER) -v -json ./... 2>&1 | tee test.json | \
+		$(GO) run github.com/jstemmer/go-junit-report/v2@$(GOJUNITREPORT_VERSION) -parser gojson -out junit.xml
+	@scripts/coverage-summary.sh coverage.out
+
+## cover: coverage per package, then the HTML report in the browser.
+cover: test
+	@scripts/coverage-summary.sh coverage.out
+	$(GO) tool cover -html=coverage.out
 
 ## test-e2e: the real thing - rootless podman, quadlet, systemd, on this machine.
 ## It writes unit files into ~/.config/containers/systemd and cleans up after itself.
@@ -41,4 +63,4 @@ install: build
 	install -m 0755 $(DIST)/podcd /usr/local/bin/podcd
 
 clean:
-	rm -rf $(DIST)
+	rm -rf $(DIST) coverage.out coverage.html junit.xml test.json

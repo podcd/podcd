@@ -1,0 +1,5 @@
+blank_issues_enabled: false
+contact_links:
+  - name: Question
+    url: https://github.com/podcd/podcd/discussions/new?category=q-a
+    about: Ask how to do something, or whether podcd fits your setup.
