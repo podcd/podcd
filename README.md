@@ -169,7 +169,7 @@ Everything the agent owns is under its user `/home/podcd`:
 ~/.local/state/podcd/               checkouts, played manifests, state.json
 ```
 
-##### 2.1 Manual setup
+##### 2.2 Manual setup
 
 ```bash
 # 1.  Packages: rootless Podman 4.4+ (with Quadlet), git
