@@ -1,10 +1,11 @@
 package cli
 
 import (
+	"cmp"
 	"encoding/json"
 	"fmt"
 	"io"
-	"sort"
+	"slices"
 	"strings"
 	"text/tabwriter"
 	"time"
@@ -18,7 +19,7 @@ import (
 )
 
 func printStatus(env *environment, st reconciler.Status) {
-	w := tabwriter.NewWriter(env.out, 0, 0, 2, ' ', 0)
+	w := table(env.out)
 	fmt.Fprintf(w, "host\t%s\t(%s)\n", st.Identity.Host, st.Identity.Source)
 	runtimeNote := "available"
 	if !st.Available {
@@ -30,18 +31,18 @@ func printStatus(env *environment, st reconciler.Status) {
 	w.Flush()
 
 	fmt.Fprintln(env.out, "\nrepositories")
-	w = tabwriter.NewWriter(env.out, 0, 0, 2, ' ', 0)
+	w = table(env.out)
 	for _, r := range st.Repos {
 		rev := ""
 		if st.State.LastSuccess != nil {
-			rev = shortRev(st.State.LastSuccess.Revisions[r.Name])
+			rev = model.ShortRev(st.State.LastSuccess.Revisions[r.Name])
 		}
 		fmt.Fprintf(w, "  %s\t%s\t%s\t%s\n", r.Name, r.URL, r.Revision, rev)
 	}
 	w.Flush()
 
 	fmt.Fprintln(env.out, "\nlast reconcile")
-	w = tabwriter.NewWriter(env.out, 0, 0, 2, ' ', 0)
+	w = table(env.out)
 	fmt.Fprintf(w, "  success\t%s\t%s\n", attemptTime(st.State.LastSuccess), attemptDetail(st.State.LastSuccess))
 	fmt.Fprintf(w, "  failure\t%s\t%s\n", attemptTime(st.State.LastFailure), attemptDetail(st.State.LastFailure))
 	if st.State.FailureCount > 0 {
@@ -54,7 +55,7 @@ func printStatus(env *environment, st reconciler.Status) {
 		fmt.Fprintln(env.out, "  (none)")
 		return
 	}
-	w = tabwriter.NewWriter(env.out, 0, 0, 2, ' ', 0)
+	w = table(env.out)
 	fmt.Fprintln(w, "  APP\tUNIT\tCONTAINER\tIMAGE\tHEALTH\tAPPLIED")
 	for _, name := range st.Actual.Names() {
 		a := st.Actual.Apps[name]
@@ -65,7 +66,7 @@ func printStatus(env *environment, st reconciler.Status) {
 		}
 		fmt.Fprintf(w, "  %s\t%s%s\t%s\t%s\t%s\t%s\n",
 			name, string(a.UnitState), owner, dash(a.ContainerState),
-			dash(shortImage(firstNonEmpty(rec.Image, a.ContainerImage))),
+			dash(shortImage(cmp.Or(rec.Image, a.ContainerImage))),
 			dash(rec.Health), dash(rec.AppliedAt))
 	}
 	w.Flush()
@@ -98,15 +99,18 @@ func printHealth(w io.Writer, results []model.Health) {
 	if len(results) == 0 {
 		return
 	}
-	sorted := append([]model.Health(nil), results...)
-	sort.Slice(sorted, func(i, j int) bool { return sorted[i].App < sorted[j].App })
+	sorted := slices.Clone(results)
+	slices.SortFunc(sorted, func(a, b model.Health) int { return cmp.Compare(a.App, b.App) })
 	fmt.Fprintln(w, "health")
-	tw := tabwriter.NewWriter(w, 0, 0, 2, ' ', 0)
+	tw := table(w)
 	for _, h := range sorted {
 		fmt.Fprintf(tw, "  %s\t%s\t%s\t%s\n", h.App, h.Status, h.Probe, h.Message)
 	}
 	tw.Flush()
 }
+
+// table is the aligned two-space-gap writer every listing uses.
+func table(w io.Writer) *tabwriter.Writer { return tabwriter.NewWriter(w, 0, 0, 2, ' ', 0) }
 
 func actionSymbol(t model.ActionType) string {
 	switch t {
@@ -190,13 +194,6 @@ func firstLine(s string) string {
 	return s
 }
 
-func shortRev(s string) string {
-	if len(s) > 12 {
-		return s[:12]
-	}
-	return s
-}
-
 func shortImage(s string) string {
 	if i := strings.Index(s, "@sha256:"); i > 0 && len(s) > i+20 {
 		return s[:i+20] + "..."
@@ -230,15 +227,6 @@ func dash(s string) string {
 		return "-"
 	}
 	return s
-}
-
-func firstNonEmpty(vals ...string) string {
-	for _, v := range vals {
-		if v != "" {
-			return v
-		}
-	}
-	return ""
 }
 
 func errString(err error) string {

@@ -10,25 +10,73 @@ permissions:
   contents: read
 
 jobs:
-  build-test:
+  lint:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+      - run: go vet ./...
+      - name: gofmt check
+        run: test -z "$(gofmt -l .)"
+      - run: make lint
 
+  build-test:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      checks: write        # the test report on the PR
+      pull-requests: write # the test summary comment
+    steps:
+      - uses: actions/checkout@v4
       - uses: actions/setup-go@v5
         with:
           go-version-file: go.mod
 
-      - run: go vet ./...
-
-      - name: gofmt check
-        run: test -z "$(gofmt -l .)"
-
-      - run: make lint
-
       - run: make build
 
-      - run: make test
+      - name: unit tests (race, coverage, junit)
+        run: make test-report
+
+      - name: coverage summary
+        if: always()
+        run: |
+          {
+            echo '## Unit test coverage'
+            scripts/coverage-summary.sh coverage.out --markdown
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: publish test report
+        uses: mikepenz/action-junit-report@v5
+        if: always()
+        with:
+          report_paths: junit.xml
+          check_name: unit tests
+          detailed_summary: true
+          include_passed: false
+
+      # Optional: set CODECOV_TOKEN in the repository secrets to get coverage
+      # trends and per-PR diffs on codecov.io. Without it this step is a no-op.
+      - uses: codecov/codecov-action@v4
+        if: always() && env.CODECOV_TOKEN != ''
+        env:
+          CODECOV_TOKEN: ${{ secrets.CODECOV_TOKEN }}
+        with:
+          token: ${{ secrets.CODECOV_TOKEN }}
+          files: coverage.out
+          flags: unit
+          fail_ci_if_error: false
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: test-results
+          path: |
+            coverage.out
+            junit.xml
+            test.json
+          retention-days: 14
 
   # Rootless podman + systemd --user on a hosted GitHub runner is inherently
   # a bit fragile (lingering, dbus session, XDG_RUNTIME_DIR). This job is
@@ -40,14 +88,10 @@ jobs:
     continue-on-error: true
     steps:
       - uses: actions/checkout@v4
-
       - uses: actions/setup-go@v5
         with:
           go-version-file: go.mod
-
       - name: install podman
         run: sudo apt-get update -qq && sudo apt-get install -y -qq podman uidmap dbus-user-session
-
       - run: make build
-
       - run: make test-e2e

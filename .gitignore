@@ -14,6 +14,10 @@ contrib/spec/podman.spec
 contrib/systemd/system/*.service
 *.coverprofile
 coverprofile
+/coverage.out
+/coverage.html
+/junit.xml
+/test.json
 /.coverage
 /docs/*.[158]
 /docs/*.[158].gz

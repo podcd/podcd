@@ -197,7 +197,7 @@ spec:
 	}
 }
 
-func TestUnpinnedImageIsRejected(t *testing.T) {
+func TestImageMayBeATag(t *testing.T) {
 	files := baseFiles()
 	files["apps/api.yaml"] = `
 apiVersion: gitops.podcd.io/v1
@@ -208,16 +208,18 @@ spec:
   image: example.com/api:latest
 `
 	ix := loadIndex(t, files)
-	_, err := ix.Resolve(context.Background(), ResolveOptions{Host: "prod-web-01"})
-	if err == nil {
-		t.Fatal("an image without a digest must be rejected")
+	got, err := ix.Resolve(context.Background(), ResolveOptions{Host: "prod-web-01"})
+	if err != nil {
+		t.Fatalf("a tag is an acceptable image reference: %v", err)
 	}
-	if !strings.Contains(err.Error(), "not pinned to a digest") {
-		t.Errorf("error should explain the digest rule, got: %v", err)
+	if got.Applications[0].Image != "example.com/api:latest" {
+		t.Errorf("image = %q", got.Applications[0].Image)
 	}
 }
 
-func TestUnpinnedImageAllowedWithOptOut(t *testing.T) {
+func TestAllowMutableImageIsNotAField(t *testing.T) {
+	// The field that used to relax the digest rule is gone with the rule, and
+	// is rejected like any other unknown field.
 	files := baseFiles()
 	files["apps/api.yaml"] = `
 apiVersion: gitops.podcd.io/v1
@@ -228,13 +230,9 @@ spec:
   image: example.com/api:latest
   allowMutableImage: true
 `
-	ix := loadIndex(t, files)
-	got, err := ix.Resolve(context.Background(), ResolveOptions{Host: "prod-web-01"})
-	if err != nil {
-		t.Fatalf("explicit opt-out should be accepted: %v", err)
-	}
-	if !got.Applications[0].AllowMutableImage {
-		t.Error("allowMutableImage did not survive resolution")
+	dir := writeTree(t, files)
+	if err := NewIndex().LoadTree("repo", dir); err == nil || !strings.Contains(err.Error(), "allowMutableImage") {
+		t.Fatalf("allowMutableImage should be rejected as an unknown field, got %v", err)
 	}
 }
 

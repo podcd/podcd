@@ -2,6 +2,7 @@ package config
 
 import (
 	"bytes"
+	"cmp"
 	"errors"
 	"fmt"
 	"io"
@@ -12,6 +13,8 @@ import (
 	"time"
 
 	"gopkg.in/yaml.v3"
+
+	"github.com/podcd/podcd/pkg/secrets"
 )
 
 // The agent configuration is described once, here, on the struct.
@@ -186,31 +189,17 @@ func (c *AgentConfig) applyDefaults() {
 	if c.MaxRetryInterval <= 0 {
 		c.MaxRetryInterval = d.MaxRetryInterval
 	}
-	if c.Runtime == "" {
-		c.Runtime = d.Runtime
-	}
-	if c.StateDir == "" {
-		c.StateDir = d.StateDir
-	}
-	if c.UnitDir == "" {
-		c.UnitDir = d.UnitDir
-	}
-	if c.EnvFile == "" {
-		c.EnvFile = d.EnvFile
-	}
-	if c.LogFormat == "" {
-		c.LogFormat = d.LogFormat
-	}
-	c.StateDir = expandPath(c.StateDir)
-	c.UnitDir = expandPath(c.UnitDir)
+	c.Runtime = cmp.Or(c.Runtime, d.Runtime)
+	c.LogFormat = cmp.Or(c.LogFormat, d.LogFormat)
+	c.StateDir = expandPath(cmp.Or(c.StateDir, d.StateDir))
+	c.UnitDir = expandPath(cmp.Or(c.UnitDir, d.UnitDir))
+	c.EnvFile = expandPath(cmp.Or(c.EnvFile, d.EnvFile))
 	c.SecretsDir = expandPath(c.SecretsDir)
-	c.EnvFile = expandPath(c.EnvFile)
 	for i := range c.Repositories {
-		if c.Repositories[i].Revision == "" {
-			c.Repositories[i].Revision = "main"
-		}
-		c.Repositories[i].URL = expandPath(c.Repositories[i].URL)
-		if a := c.Repositories[i].Auth; a != nil {
+		r := &c.Repositories[i]
+		r.Revision = cmp.Or(r.Revision, "main")
+		r.URL = expandPath(r.URL)
+		if a := r.Auth; a != nil {
 			a.SSHKeyPath = expandPath(a.SSHKeyPath)
 			a.SSHKnownHostsPath = expandPath(a.SSHKnownHostsPath)
 		}
@@ -219,70 +208,70 @@ func (c *AgentConfig) applyDefaults() {
 
 // Validate rejects configurations that cannot work, loudly and all at once.
 func (c AgentConfig) Validate() error {
-	var problems []error
+	var p problems
 	if len(c.Repositories) == 0 {
-		problems = append(problems, errors.New("no repositories configured: the agent has nothing to reconcile against"))
+		p.add("no repositories configured: the agent has nothing to reconcile against")
 	}
 	seen := map[string]bool{}
 	for i, r := range c.Repositories {
 		switch {
 		case r.Name == "":
-			problems = append(problems, fmt.Errorf("repository %d has no name", i))
+			p.add("repository %d has no name", i)
 		case !validName(r.Name):
-			problems = append(problems, fmt.Errorf("repository name %q must be lowercase letters, digits and dashes", r.Name))
+			p.add("repository name %q must be lowercase letters, digits and dashes", r.Name)
 		case seen[r.Name]:
-			problems = append(problems, fmt.Errorf("repository %q is listed twice", r.Name))
+			p.add("repository %q is listed twice", r.Name)
 		default:
 			seen[r.Name] = true
 		}
 		if r.URL == "" {
-			problems = append(problems, fmt.Errorf("repository %q has no url", r.Name))
+			p.add("repository %q has no url", r.Name)
 		}
 		if filepath.IsAbs(r.Path) {
-			problems = append(problems, fmt.Errorf("repository %q: path %q must be relative to the repository root", r.Name, r.Path))
+			p.add("repository %q: path %q must be relative to the repository root", r.Name, r.Path)
 		}
 		if strings.Contains(r.Path, "..") {
-			problems = append(problems, fmt.Errorf("repository %q: path %q must not escape the repository", r.Name, r.Path))
+			p.add("repository %q: path %q must not escape the repository", r.Name, r.Path)
 		}
 		if a := r.Auth; a != nil {
 			if a.Token != "" && a.SSHKeyPath != "" {
-				problems = append(problems, fmt.Errorf("repository %q: auth has both a token and an ssh key; pick one", r.Name))
+				p.add("repository %q: auth has both a token and an ssh key; pick one", r.Name)
 			}
-			if a.Token != "" && !looksLikeReference(a.Token) {
-				problems = append(problems, fmt.Errorf("repository %q: auth.token must be a secret reference such as env:GITOPS_TOKEN, not a literal (agent.yaml is not a secret store)", r.Name))
+			if a.Token != "" && !secrets.IsReference(a.Token) {
+				p.add("repository %q: auth.token must be a secret reference such as env:GITOPS_TOKEN, not a literal (agent.yaml is not a secret store)", r.Name)
 			}
 			if a.Token == "" && a.SSHKeyPath == "" {
-				problems = append(problems, fmt.Errorf("repository %q: auth needs a token or an sshKeyPath", r.Name))
+				p.add("repository %q: auth needs a token or an sshKeyPath", r.Name)
 			}
 		}
 	}
 	if c.Runtime != "podman" && c.Runtime != "docker" {
-		problems = append(problems, fmt.Errorf("runtime %q is not known (podman, docker)", c.Runtime))
+		p.add("runtime %q is not known (podman, docker)", c.Runtime)
 	}
 	if c.LogFormat != "text" && c.LogFormat != "json" {
-		problems = append(problems, fmt.Errorf("logFormat %q must be text or json", c.LogFormat))
+		p.add("logFormat %q must be text or json", c.LogFormat)
 	}
 	if v := c.Vault; v != nil {
 		if v.Address == "" {
-			problems = append(problems, errors.New("vault: address is required"))
+			p.add("vault: address is required")
 		}
 		hasAppRole := v.RoleID != "" || v.SecretID != ""
 		switch {
 		case v.Token != "" && hasAppRole:
-			problems = append(problems, errors.New("vault: use either token or roleId+secretId, not both"))
+			p.add("vault: use either token or roleId+secretId, not both")
 		case v.Token == "" && (v.RoleID == "" || v.SecretID == ""):
-			problems = append(problems, errors.New("vault: needs roleId and secretId (AppRole) or a token"))
+			p.add("vault: needs roleId and secretId (AppRole) or a token")
 		}
 		for name, ref := range map[string]string{"roleId": v.RoleID, "secretId": v.SecretID, "token": v.Token} {
-			if ref != "" && !looksLikeReference(ref) {
-				problems = append(problems, fmt.Errorf("vault: %s must be a secret reference such as env:VAULT_%s, not a literal", name, strings.ToUpper(name)))
+			if ref != "" && !secrets.IsReference(ref) {
+				p.add("vault: %s must be a secret reference such as env:VAULT_%s, not a literal", name, strings.ToUpper(name))
 			}
 		}
 		if v.KVVersion != 0 && v.KVVersion != 1 && v.KVVersion != 2 {
-			problems = append(problems, fmt.Errorf("vault: kvVersion must be 1 or 2, not %d", v.KVVersion))
+			p.add("vault: kvVersion must be 1 or 2, not %d", v.KVVersion)
 		}
 	}
-	return errors.Join(problems...)
+	return p.err()
 }
 
 // userHome is the home directory the agent's files belong in.

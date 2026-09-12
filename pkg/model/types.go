@@ -6,11 +6,16 @@ package model
 
 import (
 	"encoding/json"
-	"sort"
+	"fmt"
+	"maps"
+	"slices"
+	"strconv"
+	"strings"
 	"time"
 )
 
 // Port is a published port mapping.
+// In YAML it is an object or the shorthand "[hostIP:]host:container[/proto]".
 type Port struct {
 	Host      int    `json:"host"`
 	Container int    `json:"container"`
@@ -18,11 +23,94 @@ type Port struct {
 	HostIP    string `json:"hostIP,omitempty"`   // empty means all interfaces
 }
 
+// UnmarshalJSON accepts either an object or the shorthand.
+func (p *Port) UnmarshalJSON(data []byte) error {
+	s, ok, err := shorthand(data)
+	if err != nil || !ok {
+		type plain Port
+		return json.Unmarshal(data, (*plain)(p))
+	}
+	spec := s
+	if i := strings.LastIndex(spec, "/"); i >= 0 {
+		p.Protocol = spec[i+1:]
+		spec = spec[:i]
+	}
+	parts := strings.Split(spec, ":")
+	if len(parts) == 3 {
+		p.HostIP = parts[0]
+		parts = parts[1:]
+	}
+	if len(parts) > 2 {
+		return fmt.Errorf("port %q: expected [hostIP:]host:container[/proto]", s)
+	}
+	nums := make([]int, 0, 2)
+	for _, n := range parts {
+		v, err := strconv.Atoi(strings.TrimSpace(n))
+		if err != nil {
+			return fmt.Errorf("port %q: %q is not a number", s, n)
+		}
+		nums = append(nums, v)
+	}
+	p.Host, p.Container = nums[0], nums[len(nums)-1]
+	return nil
+}
+
+// String renders the port the way podman publishes it: [hostIP:]host:container[/proto].
+func (p Port) String() string {
+	var sb strings.Builder
+	if p.HostIP != "" {
+		sb.WriteString(p.HostIP + ":")
+	}
+	sb.WriteString(strconv.Itoa(p.Host) + ":" + strconv.Itoa(p.Container))
+	if p.Protocol != "" && p.Protocol != "tcp" {
+		sb.WriteString("/" + p.Protocol)
+	}
+	return sb.String()
+}
+
 // Volume is a bind mount or named volume.
+// In YAML it is an object or the shorthand "source:destination[:options]".
 type Volume struct {
 	Source      string `json:"source"`
 	Destination string `json:"destination"`
 	Options     string `json:"options,omitempty"` // e.g. ro,Z
+}
+
+// UnmarshalJSON accepts either an object or the shorthand.
+func (v *Volume) UnmarshalJSON(data []byte) error {
+	s, ok, err := shorthand(data)
+	if err != nil || !ok {
+		type plain Volume
+		return json.Unmarshal(data, (*plain)(v))
+	}
+	parts := strings.Split(s, ":")
+	switch len(parts) {
+	case 2:
+		v.Source, v.Destination = parts[0], parts[1]
+	case 3:
+		v.Source, v.Destination, v.Options = parts[0], parts[1], parts[2]
+	default:
+		return fmt.Errorf("volume %q: expected source:destination[:options]", s)
+	}
+	return nil
+}
+
+// String renders the mount the way podman takes it: source:destination[:options].
+func (v Volume) String() string {
+	if v.Options != "" {
+		return v.Source + ":" + v.Destination + ":" + v.Options
+	}
+	return v.Source + ":" + v.Destination
+}
+
+// shorthand reports whether a JSON value is a string, and returns it.
+func shorthand(data []byte) (string, bool, error) {
+	if len(data) == 0 || data[0] != '"' {
+		return "", false, nil
+	}
+	var s string
+	err := json.Unmarshal(data, &s)
+	return s, true, err
 }
 
 // HTTPProbe checks an HTTP endpoint published by the container.
@@ -116,10 +204,6 @@ type Application struct {
 	Healthcheck *Healthcheck `json:"healthcheck,omitempty"`
 	Resources   Resources    `json:"resources,omitempty"`
 
-	// AllowMutableImage permits an image reference without a digest.
-	// It is a deliberate, visible opt-out, not a default.
-	AllowMutableImage bool `json:"allowMutableImage,omitempty"`
-
 	// Provenance, for humans debugging on the host.
 	SourceRepo string   `json:"sourceRepo,omitempty"`
 	Origins    []string `json:"origins,omitempty"`
@@ -186,29 +270,25 @@ func (d DesiredState) Names() []string {
 	for _, a := range d.Applications {
 		names = append(names, a.Name)
 	}
-	sort.Strings(names)
+	slices.Sort(names)
 	return names
 }
 
 // RevisionString renders the pinned revisions as a stable single-line string.
 func (d DesiredState) RevisionString() string {
-	names := make([]string, 0, len(d.Revisions))
-	for n := range d.Revisions {
-		names = append(names, n)
+	parts := make([]string, 0, len(d.Revisions))
+	for _, n := range slices.Sorted(maps.Keys(d.Revisions)) {
+		parts = append(parts, n+"="+ShortRev(d.Revisions[n]))
 	}
-	sort.Strings(names)
-	out := ""
-	for i, n := range names {
-		if i > 0 {
-			out += " "
-		}
-		rev := d.Revisions[n]
-		if len(rev) > 12 {
-			rev = rev[:12]
-		}
-		out += n + "=" + rev
+	return strings.Join(parts, " ")
+}
+
+// ShortRev abbreviates a commit sha for display.
+func ShortRev(s string) string {
+	if len(s) > 12 {
+		return s[:12]
 	}
-	return out
+	return s
 }
 
 // UnitState is what systemd reports about a unit.
@@ -256,14 +336,7 @@ type ActualState struct {
 }
 
 // Names returns the observed application names, sorted.
-func (s ActualState) Names() []string {
-	names := make([]string, 0, len(s.Apps))
-	for n := range s.Apps {
-		names = append(names, n)
-	}
-	sort.Strings(names)
-	return names
-}
+func (s ActualState) Names() []string { return slices.Sorted(maps.Keys(s.Apps)) }
 
 // ActionType is the kind of change the planner decided on.
 type ActionType string

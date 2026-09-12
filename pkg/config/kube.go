@@ -2,11 +2,12 @@ package config
 
 import (
 	"bytes"
+	"cmp"
 	"context"
 	"encoding/json"
-	"errors"
 	"fmt"
-	"sort"
+	"maps"
+	"slices"
 	"strings"
 
 	corev1 "k8s.io/api/core/v1"
@@ -15,12 +16,6 @@ import (
 
 	"github.com/podcd/podcd/pkg/model"
 	"github.com/podcd/podcd/pkg/secrets"
-)
-
-// Annotations a Pod may carry to talk to podcd.
-const (
-	// AnnotationAllowMutableImage is the Pod equivalent of allowMutableImage.
-	AnnotationAllowMutableImage = "gitops.podcd.io/allow-mutable-image"
 )
 
 // Labels podcd stamps on every pod it plays, so it can recognise its own work.
@@ -49,103 +44,86 @@ func patchPod(pod corev1.Pod, override Override) (corev1.Pod, error) {
 }
 
 func (ix *Index) podToApplication(ctx context.Context, name string, pod corev1.Pod, sec *secrets.Resolver) (model.Application, error) {
-	var problems []error
-	add := func(format string, args ...any) {
-		problems = append(problems, fmt.Errorf("pod %q: "+format, append([]any{name}, args...)...))
-	}
+	p := problems{prefix: fmt.Sprintf("pod %q: ", name)}
 
 	if !validName(name) {
-		add("name must be lowercase letters, digits and dashes")
+		p.add("name must be lowercase letters, digits and dashes")
 	}
 	if len(pod.Spec.Containers) == 0 {
-		add("has no containers")
+		p.add("has no containers")
 	}
 
-	allowMutable := strings.EqualFold(pod.Annotations[AnnotationAllowMutableImage], "true")
 	app := model.Application{
-		Name:              name,
-		Kind:              model.KindKube,
-		RestartPolicy:     kubeRestartPolicy(pod.Spec.RestartPolicy),
-		AllowMutableImage: allowMutable,
+		Name:          name,
+		Kind:          model.KindKube,
+		RestartPolicy: kubeRestartPolicy(pod.Spec.RestartPolicy),
 	}
 
-	containers := append(append([]corev1.Container(nil), pod.Spec.InitContainers...), pod.Spec.Containers...)
 	seenNames := map[string]bool{}
-	for _, c := range containers {
+	for _, c := range allContainers(pod) {
 		if c.Name == "" {
-			add("a container has no name")
+			p.add("a container has no name")
 		} else if seenNames[c.Name] {
-			add("container %q is defined twice", c.Name)
+			p.add("container %q is defined twice", c.Name)
 		}
 		seenNames[c.Name] = true
-		switch {
-		case c.Image == "":
-			add("container %q has no image", c.Name)
-		case !strings.Contains(c.Image, "@sha256:") && !allowMutable:
-			add("container %q image %q is not pinned to a digest; use image@sha256:... or annotate the pod with %s: \"true\"",
-				c.Name, c.Image, AnnotationAllowMutableImage)
+		if c.Image == "" {
+			p.add("container %q has no image", c.Name)
 		}
 		app.Images = append(app.Images, c.Image)
-		for _, p := range c.Ports {
-			if p.HostPort == 0 {
+		for _, cp := range c.Ports {
+			if cp.HostPort == 0 {
 				continue
 			}
-			proto := strings.ToLower(string(p.Protocol))
-			if proto == "" {
-				proto = "tcp"
-			}
 			app.Ports = append(app.Ports, model.Port{
-				Host: int(p.HostPort), Container: int(p.ContainerPort), Protocol: proto, HostIP: p.HostIP,
+				Host:      int(cp.HostPort),
+				Container: int(cp.ContainerPort),
+				Protocol:  cmp.Or(strings.ToLower(string(cp.Protocol)), "tcp"),
+				HostIP:    cp.HostIP,
 			})
 		}
 	}
 	if len(app.Images) > 0 {
 		app.Image = app.Images[len(app.Images)-1] // the main container comes last
 	}
-	sort.Slice(app.Ports, func(i, j int) bool { return portLess(app.Ports[i], app.Ports[j]) })
+	slices.SortFunc(app.Ports, comparePorts)
 
 	// ConfigMaps and Secrets the pod refers to must exist in Git, unless the
-	// reference is marked optional. Missing ones would only fail inside
-	// podman, later, with a worse message.
+	// reference is marked optional.
+	// Missing ones would only fail inside podman, later, with a worse message.
 	refs := collectRefs(pod)
 	var configMaps []corev1.ConfigMap
-	for _, cmName := range sortedKeys(refs.configMaps) {
+	for _, cmName := range slices.Sorted(maps.Keys(refs.configMaps)) {
 		doc, ok := ix.ConfigMaps[cmName]
 		if !ok {
-			if refs.configMaps[cmName] {
-				continue // optional
+			if !refs.configMaps[cmName] {
+				p.add("refers to ConfigMap %q, which is not defined", cmName)
 			}
-			add("refers to ConfigMap %q, which is not defined", cmName)
 			continue
 		}
-		configMaps = append(configMaps, doc.ConfigMap)
+		configMaps = append(configMaps, doc.Spec)
 	}
 	var secretDocs []corev1.Secret
-	for _, secName := range sortedKeys(refs.secrets) {
+	for _, secName := range slices.Sorted(maps.Keys(refs.secrets)) {
 		doc, ok := ix.Secrets[secName]
 		if !ok {
-			if refs.secrets[secName] {
-				continue
+			if !refs.secrets[secName] {
+				p.add("refers to Secret %q, which is not defined", secName)
 			}
-			add("refers to Secret %q, which is not defined", secName)
 			continue
 		}
-		resolved, err := resolveSecret(ctx, doc.Secret, sec)
+		resolved, err := resolveSecret(ctx, doc.Spec, sec)
 		if err != nil {
-			add("%v", err)
+			p.add("%v", err)
 			continue
 		}
 		secretDocs = append(secretDocs, resolved)
 	}
 
-	if hc, err := kubeHealthcheck(pod); err != nil {
-		add("%v", err)
-	} else {
-		app.Healthcheck = hc
-	}
+	app.Healthcheck = kubeHealthcheck(pod)
 
-	if len(problems) > 0 {
-		return model.Application{}, errors.Join(problems...)
+	if err := p.err(); err != nil {
+		return model.Application{}, err
 	}
 
 	// Stamp the pod so Inspect can tell it is ours. Labels on the pod are
@@ -162,6 +140,11 @@ func (ix *Index) podToApplication(ctx context.Context, name string, pod corev1.P
 	}
 	app.SetManifest(manifest)
 	return app, nil
+}
+
+// allContainers lists init containers then regular containers.
+func allContainers(pod corev1.Pod) []corev1.Container {
+	return slices.Concat(pod.Spec.InitContainers, pod.Spec.Containers)
 }
 
 // renderManifest writes the documents podman will play, in a fixed order, so
@@ -206,7 +189,7 @@ func resolveSecret(ctx context.Context, in corev1.Secret, sec *secrets.Resolver)
 	if sec == nil && len(in.StringData) > 0 {
 		return out, fmt.Errorf("Secret %q needs a secret provider, but none is configured", in.Name)
 	}
-	for _, k := range sortedKeys(in.StringData) {
+	for _, k := range slices.Sorted(maps.Keys(in.StringData)) {
 		v, err := sec.Resolve(ctx, in.StringData[k])
 		if err != nil {
 			return out, fmt.Errorf("Secret %q key %s: %w", in.Name, k, err)
@@ -216,36 +199,34 @@ func resolveSecret(ctx context.Context, in corev1.Secret, sec *secrets.Resolver)
 	return out, nil
 }
 
-// refSet collects referenced names; the bool is "optional".
+// refSet collects referenced names; the bool is "optional". A name that is
+// referenced both optionally and not stays required.
 type refSet struct {
 	configMaps map[string]bool
 	secrets    map[string]bool
 }
 
-func (r *refSet) configMap(name string, optional *bool) {
+func mark(into map[string]bool, name string, optional *bool) {
 	if name == "" {
 		return
 	}
-	r.configMaps[name] = r.configMaps[name] || (optional != nil && *optional)
-}
-
-func (r *refSet) secret(name string, optional *bool) {
-	if name == "" {
-		return
+	opt := optional != nil && *optional
+	if seen, ok := into[name]; ok {
+		opt = opt && seen
 	}
-	r.secrets[name] = r.secrets[name] || (optional != nil && *optional)
+	into[name] = opt
 }
 
 // collectRefs walks every place a Pod can name a ConfigMap or a Secret.
 func collectRefs(pod corev1.Pod) refSet {
 	r := refSet{configMaps: map[string]bool{}, secrets: map[string]bool{}}
-	for _, c := range append(append([]corev1.Container(nil), pod.Spec.InitContainers...), pod.Spec.Containers...) {
+	for _, c := range allContainers(pod) {
 		for _, e := range c.EnvFrom {
 			if e.ConfigMapRef != nil {
-				r.configMap(e.ConfigMapRef.Name, e.ConfigMapRef.Optional)
+				mark(r.configMaps, e.ConfigMapRef.Name, e.ConfigMapRef.Optional)
 			}
 			if e.SecretRef != nil {
-				r.secret(e.SecretRef.Name, e.SecretRef.Optional)
+				mark(r.secrets, e.SecretRef.Name, e.SecretRef.Optional)
 			}
 		}
 		for _, e := range c.Env {
@@ -253,38 +234,40 @@ func collectRefs(pod corev1.Pod) refSet {
 				continue
 			}
 			if e.ValueFrom.ConfigMapKeyRef != nil {
-				r.configMap(e.ValueFrom.ConfigMapKeyRef.Name, e.ValueFrom.ConfigMapKeyRef.Optional)
+				mark(r.configMaps, e.ValueFrom.ConfigMapKeyRef.Name, e.ValueFrom.ConfigMapKeyRef.Optional)
 			}
 			if e.ValueFrom.SecretKeyRef != nil {
-				r.secret(e.ValueFrom.SecretKeyRef.Name, e.ValueFrom.SecretKeyRef.Optional)
+				mark(r.secrets, e.ValueFrom.SecretKeyRef.Name, e.ValueFrom.SecretKeyRef.Optional)
 			}
 		}
 	}
 	for _, v := range pod.Spec.Volumes {
 		if v.ConfigMap != nil {
-			r.configMap(v.ConfigMap.Name, v.ConfigMap.Optional)
+			mark(r.configMaps, v.ConfigMap.Name, v.ConfigMap.Optional)
 		}
 		if v.Secret != nil {
-			r.secret(v.Secret.SecretName, v.Secret.Optional)
+			mark(r.secrets, v.Secret.SecretName, v.Secret.Optional)
 		}
 		if v.Projected != nil {
 			for _, s := range v.Projected.Sources {
 				if s.ConfigMap != nil {
-					r.configMap(s.ConfigMap.Name, s.ConfigMap.Optional)
+					mark(r.configMaps, s.ConfigMap.Name, s.ConfigMap.Optional)
 				}
 				if s.Secret != nil {
-					r.secret(s.Secret.Name, s.Secret.Optional)
+					mark(r.secrets, s.Secret.Name, s.Secret.Optional)
 				}
 			}
 		}
 	}
 	for _, ips := range pod.Spec.ImagePullSecrets {
-		r.secret(ips.Name, nil)
+		mark(r.secrets, ips.Name, nil)
 	}
 	return r
 }
 
-func kubeHealthcheck(pod corev1.Pod) (*model.Healthcheck, error) {
+// kubeHealthcheck derives the health check from the first readiness, liveness
+// or startup probe that targets a published port; nil when there is none.
+func kubeHealthcheck(pod corev1.Pod) *model.Healthcheck {
 	for _, c := range pod.Spec.Containers {
 		probe := c.ReadinessProbe
 		if probe == nil {
@@ -307,16 +290,16 @@ func kubeHealthcheck(pod corev1.Pod) (*model.Healthcheck, error) {
 				Host:   hostIP,
 				Path:   probe.HTTPGet.Path,
 				Scheme: strings.ToLower(string(probe.HTTPGet.Scheme)),
-			}}, nil
+			}}
 		case probe.TCPSocket != nil:
 			hostPort, hostIP, ok := hostPortFor(c, probe.TCPSocket.Port.IntValue(), probe.TCPSocket.Port.String())
 			if !ok {
 				continue
 			}
-			return &model.Healthcheck{TCP: &model.TCPProbe{Port: hostPort, Host: hostIP}}, nil
+			return &model.Healthcheck{TCP: &model.TCPProbe{Port: hostPort, Host: hostIP}}
 		}
 	}
-	return nil, nil
+	return nil
 }
 
 // hostPortFor maps a probe's container port (number or name) to the host port
