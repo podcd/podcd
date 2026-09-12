@@ -104,8 +104,8 @@ repositories:
     url: https://gitlab.com/your-user/gitops.git
     revision: main
     auth:
-      username: gitlab+deploy-token-42   # GitLab deploy tokens carry their own username;
-      token: env:GITOPS_TOKEN            # PATs and GitHub tokens can omit it
+      username: gitlab+deploy-token-42   # GitLab deploy tokens have usernames; PATs and GitHub tokens can omit this
+      token: env:GITOPS_TOKEN
 ```
 
 Or an SSH deploy key:
