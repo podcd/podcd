@@ -14,11 +14,9 @@ import (
 	"gopkg.in/yaml.v3"
 )
 
-// The agent configuration is described once, here, on the struct: the yaml
-// tag is the key, the doc tag is the explanation a user sees in the file, and
-// the example tag shows how an optional section is filled in. The rendered
-// agent.yaml, `podcd config set` and the validation messages all derive from
-// these tags, so there is no second list of fields anywhere.
+// The agent configuration is described once, here, on the struct.
+// The yaml tag is the key, the doc tag is the explanation a user sees in the file, and the example tag shows how an optional section is filled in.
+// The rendered agent.yaml, `podcd config set`, and the validation messages all derive from these tags, so there is no second list of fields anywhere.
 
 // RepositorySpec is one Git repository the agent pulls.
 type RepositorySpec struct {
@@ -32,10 +30,8 @@ type RepositorySpec struct {
 
 // RepoAuth is a repository's read credential.
 //
-// HTTPS uses a token, which must be a secret reference (env:NAME, file:path,
-// vault:...) because agent.yaml is world-readable. The value is resolved on
-// every fetch and reaches git as an Authorization header via git's
-// configuration-in-environment, scoped to this repository's URL.
+// HTTPS uses a token, which must be a secret reference (env:NAME, file:path, vault:...) because agent.yaml is world-readable.
+// The value is resolved on every fetch and reaches git as an Authorization header via git's configuration-in-environment, scoped to this repository's URL.
 type RepoAuth struct {
 	Username          string `yaml:"username,omitempty" example:"gitlab+deploy-token-42" doc:"Username for HTTPS. Needed for GitLab deploy tokens; access tokens work with the default (x-access-token on github.com, oauth2 elsewhere)."`
 	Token             string `yaml:"token,omitempty" example:"env:GITOPS_TOKEN" doc:"A secret reference to the token, resolved at fetch time."`
@@ -45,9 +41,8 @@ type RepoAuth struct {
 
 // VaultConfig connects the vault: secret scheme to a HashiCorp Vault.
 //
-// Authentication is AppRole (roleId + secretId) or a token; each of those is
-// itself a secret reference, typically env: values from agent.env, so no Vault
-// credential is ever in a 0644 file.
+// Authentication is AppRole (roleId + secretId) or a token.
+// Each of those is itself a secret reference, typically env: values from agent.env, so no Vault credential is ever in a 0644 file.
 type VaultConfig struct {
 	Address   string        `yaml:"address" example:"https://vault.example.com" doc:"The Vault server."`
 	Namespace string        `yaml:"namespace,omitempty" doc:"Vault Enterprise namespace."`
@@ -60,9 +55,8 @@ type VaultConfig struct {
 	CacheTTL  time.Duration `yaml:"cacheTTL,omitempty" default:"30s" doc:"How long a read is reused, so many keys from one path are one round trip."`
 }
 
-// AgentConfig is the agent's own configuration: where Git is, who this host
-// is, how often to reconcile. It lives on the host, not in Git, because it is
-// what tells the host which Git to trust.
+// AgentConfig is the agent's own configuration: where Git is, who this host is, how often to reconcile.
+// It lives on the host, not in Git, because it is what tells the host which Git to trust.
 type AgentConfig struct {
 	Host string `yaml:"host,omitempty" doc:"Which Host document this machine is. Empty means the system hostname (with any domain stripped). PODCD_HOST in the environment overrides both."`
 
@@ -114,8 +108,7 @@ func (c AgentConfig) PruneEnabled() bool { return c.Prune == nil || *c.Prune }
 // ReposDir is where repository checkouts live.
 func (c AgentConfig) ReposDir() string { return filepath.Join(c.StateDir, "repos") }
 
-// LockPath is the reconcile lock, so two agents (or an agent and a human
-// running `podcd reconcile`) never apply at the same time.
+// LockPath is the reconcile lock, so two agents (or an agent and a human running `podcd reconcile`) never apply at the same time.
 func (c AgentConfig) LockPath() string { return filepath.Join(c.StateDir, "reconcile.lock") }
 
 // StatePath is the local metadata file.
@@ -153,8 +146,7 @@ func ParseAgentConfig(data []byte) (AgentConfig, error) {
 	return cfg, cfg.Validate()
 }
 
-// ConfigCandidates lists where the agent config may live, in lookup order:
-// $PODCD_CONFIG, the user's config dir, then /etc/podcd.
+// ConfigCandidates lists where the agent config may live, in lookup order: $PODCD_CONFIG, the user's config dir, then /etc/podcd.
 func ConfigCandidates() []string {
 	var candidates []string
 	if p := os.Getenv("PODCD_CONFIG"); p != "" {
@@ -166,8 +158,7 @@ func ConfigCandidates() []string {
 	return append(candidates, "/etc/podcd/agent.yaml")
 }
 
-// DefaultConfigPath is where `podcd config create` writes: the first candidate,
-// whether or not it exists yet.
+// DefaultConfigPath is where `podcd config create` writes: the first candidate, whether or not it exists yet.
 func DefaultConfigPath() string { return ConfigCandidates()[0] }
 
 // FindAgentConfig returns the first configuration file that exists.
@@ -345,8 +336,7 @@ func defaultUnitDir() string {
 	return filepath.Join(home, ".config", "containers", "systemd")
 }
 
-// expandPath expands a leading ~ and any $VARs, so configs can be written once
-// for a fleet without knowing the agent user's home directory.
+// expandPath expands a leading ~ and any $VARs, so configs can be written once for a fleet without knowing the agent user's home directory.
 func expandPath(p string) string {
 	if p == "" {
 		return p

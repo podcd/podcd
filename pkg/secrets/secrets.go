@@ -1,9 +1,8 @@
-// Package secrets resolves secret references found in Git into values that
-// never were in Git.
+// Package secrets resolves secret references found in Git into values that never were in Git.
 //
-// A reference looks like "scheme:locator", e.g. "env:API_TOKEN" or
-// "file:/etc/podcd/secrets/api-token". The MVP ships env- and file-backed
-// providers; Vault, KMS, SOPS and friends implement the same interface later.
+// A reference looks like "scheme:locator", e.g. "env:API_TOKEN" or "file:/etc/podcd/secrets/api-token".
+// The MVP ships env- and file-backed providers.
+// Vault, KMS, SOPS and friends implement the same interface later.
 package secrets
 
 import (
@@ -41,9 +40,7 @@ func NewResolver(providers ...Provider) *Resolver {
 	return r
 }
 
-// Default returns the resolver used when nothing else is configured: the
-// agent's environment (optionally backed by one env file), and files readable
-// by the agent user.
+// Default returns the resolver used when nothing else is configured: the agent's environment (optionally backed by one env file), and files readable by the agent user.
 func Default(secretsDir, envFile string) *Resolver {
 	return NewResolver(EnvProvider{File: envFile}, FileProvider{Root: secretsDir})
 }
@@ -60,8 +57,7 @@ func (r *Resolver) Schemes() []string {
 
 // Resolve looks up one "scheme:locator" reference.
 //
-// A reference with no scheme is rejected rather than treated as a literal: a
-// plaintext secret in Git must never work by accident.
+// A reference with no scheme is rejected rather than treated as a literal, a plaintext secret in Git must never work by accident.
 func (r *Resolver) Resolve(ctx context.Context, ref string) (string, error) {
 	scheme, locator, ok := strings.Cut(ref, ":")
 	if !ok || scheme == "" || locator == "" {
@@ -139,8 +135,8 @@ func unquote(v string) string {
 	return v
 }
 
-// FileProvider reads secrets from files on the host. Relative locators resolve
-// under Root; absolute paths are used as given.
+// FileProvider reads secrets from files on the host.
+// Relative locators resolve under Root, absolute paths are used as given.
 type FileProvider struct {
 	Root string
 }

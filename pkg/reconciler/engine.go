@@ -22,8 +22,7 @@ import (
 	"github.com/podcd/podcd/pkg/state"
 )
 
-// healthWaiter is implemented by runtimes that can wait for an application to
-// become healthy after a change.
+// healthWaiter is implemented by runtimes that can wait for an application to become healthy after a change.
 type healthWaiter interface {
 	WaitHealthy(ctx context.Context, app model.Application) model.Health
 }
@@ -177,8 +176,7 @@ func (e *Engine) Plan(ctx context.Context) (Result, error) {
 
 // Reconcile makes the host match Git, then checks that the result works.
 //
-// The lock is held for the whole apply, so a human running `podcd reconcile`
-// and the agent's own loop cannot fight over the same unit files.
+// The lock is held for the whole apply, so a human running `podcd reconcile` and the agent's own loop cannot fight over the same unit files.
 func (e *Engine) Reconcile(ctx context.Context, opts Options) (Result, error) {
 	started := time.Now()
 	res := Result{Started: started}
@@ -266,8 +264,7 @@ func (e *Engine) apply(ctx context.Context, plan model.Plan, desired model.Desir
 
 		switch action.Type {
 		case model.ActionDelete:
-			// Say it before doing it: a destructive change must never be a
-			// surprise found later in a journal.
+			// Say it before doing it, a destructive change must never be a surprise found later in a journal.
 			e.log.Warn("removing application", "app", action.App, "reason", action.Reason)
 			if err := e.rt.Remove(ctx, action.App); err != nil {
 				return applied, fmt.Errorf("removing %s: %w", action.App, err)
@@ -296,8 +293,7 @@ func (e *Engine) apply(ctx context.Context, plan model.Plan, desired model.Desir
 	return applied, nil
 }
 
-// checkHealth probes every desired application, waiting only on the ones that
-// just changed.
+// checkHealth probes every desired application, waiting only on the ones that just changed.
 func (e *Engine) checkHealth(ctx context.Context, desired model.DesiredState, applied []model.Action, st *state.State) ([]model.Health, error) {
 	changed := map[string]bool{}
 	for _, a := range applied {

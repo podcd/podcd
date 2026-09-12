@@ -20,10 +20,9 @@ import (
 
 // Index is every document the agent loaded, addressed by name and kind.
 //
-// Names are global across repositories on purpose: two repositories defining
-// the same Application is an ambiguity, and ambiguity is an error here, not a
-// coin flip. Applications and Pods share one namespace too, because a host
-// lists both under `applications:`.
+// Names are global across repositories on purpose.
+// Two repositories defining the same Application is an ambiguity, and ambiguity is an error here, not a coin flip.
+// Applications and Pods share one namespace too, because a host lists both under `applications:`.
 type Index struct {
 	Applications map[string]ApplicationDoc
 	Groups       map[string]GroupDoc
@@ -53,9 +52,9 @@ func (ix *Index) HostNames() []string { return sortedKeys(ix.Hosts) }
 
 // LoadTree walks one repository checkout and adds every document it finds.
 //
-// Files are visited in sorted path order so that load order never depends on
-// the filesystem. Only .yaml and .yml are read; everything else (READMEs,
-// scripts, Containerfiles) is ignored. Dot-directories are skipped.
+// Files are visited in sorted path order, so load order never depends on the filesystem.
+// Only .yaml and .yml are read, everything else (READMEs, scripts, Containerfiles) is ignored.
+// Dot-directories are skipped.
 func (ix *Index) LoadTree(repo, root string) error {
 	var files []string
 	err := filepath.WalkDir(root, func(path string, d fs.DirEntry, err error) error {
@@ -100,9 +99,8 @@ func (ix *Index) LoadTree(repo, root string) error {
 
 // loadFile decodes one possibly multi-document YAML file into the index.
 //
-// yaml.v3 splits the stream and keeps line numbers; each document is then
-// re-encoded and decoded strictly against its real Go type, so an unknown
-// field is an error whichever family the document belongs to.
+// yaml.v3 splits the stream and keeps line numbers.
+// Each document is then re-encoded and decoded strictly against its real Go type, so an unknown field is an error whichever family the document belongs to.
 func (ix *Index) loadFile(repo, path string, data []byte) error {
 	dec := yaml.NewDecoder(strings.NewReader(string(data)))
 	for i := 0; ; i++ {
@@ -263,12 +261,10 @@ func (ix *Index) addCore(env document, raw []byte, src Source) error {
 	return nil
 }
 
-// checkSecretIsReferenceOnly enforces the one rule that does not bend: a
-// Secret in Git carries references to values, never the values.
+// checkSecretIsReferenceOnly enforces the one rule that does not bend: a Secret in Git carries references to values, never the values.
 //
-// `data` is base64 of plaintext and is refused outright. `stringData` values
-// must look like "scheme:locator"; they are resolved on the host at reconcile
-// time by the secrets provider.
+// `data` is base64 of plaintext and is refused outright.
+// `stringData` values must look like "scheme:locator", they are resolved on the host at reconcile time by the secrets provider.
 func checkSecretIsReferenceOnly(sec corev1.Secret, src Source) error {
 	if len(sec.Data) > 0 {
 		keys := make([]string, 0, len(sec.Data))
@@ -306,9 +302,8 @@ func looksLikeReference(v string) bool {
 	return true
 }
 
-// strictDecode decodes a YAML document against its real Go type and rejects
-// unknown fields. A misspelled key is a mistake worth failing on: silently
-// ignoring `imagee:` would leave a host running the wrong thing.
+// strictDecode decodes a YAML document against its real Go type and rejects unknown fields.
+// A misspelled key is a mistake worth failing on: silently ignoring `imagee:` would leave a host running the wrong thing.
 func strictDecode(raw []byte, out any, src Source, kind string) error {
 	if err := sigyaml.UnmarshalStrict(raw, out); err != nil {
 		return fmt.Errorf("%s: kind %s: %w", src, kind, err)

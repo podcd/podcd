@@ -1,10 +1,8 @@
-// Package config parses the documents that live in Git and compiles them,
-// deterministically, into a canonical desired state for one host.
+// Package config parses the documents that live in Git and compiles them, deterministically, into a canonical desired state for one host.
 //
-// Two families of document are understood. podcd's own kinds
-// (gitops.podcd.io/v1: Application, Group, Environment, Host) and a thin
-// slice of Kubernetes core/v1 (Pod, ConfigMap, Secret), so a pod manifest
-// people already have can be run here through `podman kube play`.
+// Two families of document are understood.
+// podcd's own kinds (gitops.podcd.io/v1: Application, Group, Environment, Host).
+// A thin slice of Kubernetes core/v1 (Pod, ConfigMap, Secret), so a pod manifest people already have can be run here through `podman kube play`.
 package config
 
 import (
@@ -35,8 +33,8 @@ const (
 	KindSecret    = "Secret"
 )
 
-// document is the envelope every file is first decoded into. It is the
-// Kubernetes envelope, so both families share one header and one decoder.
+// document is the envelope every file is first decoded into.
+// It is the Kubernetes envelope, so both families share one header and one decoder.
 type document struct {
 	metav1.TypeMeta   `json:",inline"`
 	metav1.ObjectMeta `json:"metadata"`
@@ -196,8 +194,7 @@ type ResourcesSpec struct {
 //   - slices (ports, volumes, networks, command): replaced wholesale, never appended
 //   - healthcheck, resources: replaced wholesale when present
 //
-// Slices replace rather than merge because appending has no sane semantics for
-// a port list and hides what is actually running.
+// Slices replace rather than merge, appending has no sane semantics for a port list and hides what is actually running.
 type AppSpec struct {
 	Image      string   `json:"image,omitempty"`
 	Command    []string `json:"command,omitempty"`
@@ -222,9 +219,8 @@ type AppSpec struct {
 	AllowMutableImage *bool `json:"allowMutableImage,omitempty"`
 }
 
-// Override is a partial change to one workload, kept raw until resolution
-// because how it is applied depends on what it targets: an Application takes
-// an AppSpec merge, a Pod takes a strategic merge patch.
+// Override is a partial change to one workload, kept raw until resolution.
+// How it is applied depends on what it targets: an Application takes an AppSpec merge, a Pod takes a strategic merge patch.
 type Override json.RawMessage
 
 // UnmarshalJSON keeps the raw bytes.
@@ -290,8 +286,8 @@ type HostDoc struct {
 	Source   Source
 }
 
-// PodDoc is a Kubernetes core/v1 Pod, decoded strictly against the real type so
-// a misspelled field fails here rather than being silently ignored by podman.
+// PodDoc is a Kubernetes core/v1 Pod, decoded strictly against the real type.
+// A misspelled field fails here rather than being silently ignored by podman.
 type PodDoc struct {
 	Pod    corev1.Pod
 	Source Source
@@ -303,8 +299,8 @@ type ConfigMapDoc struct {
 	Source    Source
 }
 
-// SecretDoc is a Kubernetes core/v1 Secret. Its values must be references
-// (env:NAME, file:path), never plaintext; the loader enforces that.
+// SecretDoc is a Kubernetes core/v1 Secret.
+// Its values must be references (env:NAME, file:path), never plaintext, the loader enforces that.
 type SecretDoc struct {
 	Secret corev1.Secret
 	Source Source

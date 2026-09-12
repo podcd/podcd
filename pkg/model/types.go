@@ -1,8 +1,7 @@
 // Package model holds the canonical desired/actual/plan types.
 // Everything the agent reasons about lives here.
-// Raw Podman output and raw user YAML are both translated into these types before anything is compared
-
-// ! The planner never diffs a string from `podman inspect` against a string a human typed into Git.
+// Raw Podman output and raw user YAML both get translated into these types before anything is compared.
+// The planner never diffs a string from `podman inspect` against a string a human typed into Git.
 package model
 
 import (
@@ -56,8 +55,7 @@ type Healthcheck struct {
 	TCP  *TCPProbe  `json:"tcp,omitempty"`
 	Exec *ExecProbe `json:"exec,omitempty"`
 
-	// Retries and interval used while waiting for an app to become healthy
-	// after it is applied.
+	// Retries and interval to use while waiting for an app to become healthy after it is applied.
 	Retries  int    `json:"retries,omitempty"`
 	Interval string `json:"interval,omitempty"`
 }
@@ -68,30 +66,31 @@ type Resources struct {
 	CPU    string `json:"cpu,omitempty"`    // e.g. 150% -> CPUQuota
 }
 
-// Workload kinds. A container is one Quadlet .container unit; a kube workload
-// is a pod manifest played by podman through a Quadlet .kube unit.
+// Workload kinds.
+// A container is one Quadlet .container unit.
+// A kube workload is a pod manifest played by podman through a Quadlet .kube unit.
 const (
 	KindContainer = "container"
 	KindKube      = "kube"
 )
 
-// Application is a fully resolved application: the result of compiling
-// environment + group + host + application definitions for one host. Nothing in
-// here is inherited or templated any more; it is what should exist on this host.
+// Application is a fully resolved application.
+// It is the result of compiling environment + group + host + application definitions for one host.
+// Nothing here is inherited or templated any more, it is what should exist on this host.
 type Application struct {
 	Name string `json:"name"`
 
 	// Kind is KindContainer (the default when empty) or KindKube.
 	Kind string `json:"kind,omitempty"`
 
-	// Manifest is the multi-document YAML played by podman for a kube
-	// workload: the Pod, its ConfigMaps and its Secrets with values resolved.
-	// It may contain secrets, so it never appears in JSON output; ManifestHash
-	// stands in for it everywhere, including in the spec hash.
+	// Manifest is the multi-document YAML played by podman for a kube workload.
+	// It holds the Pod, its ConfigMaps, and its Secrets with values resolved.
+	// It may contain secrets, so it never appears in JSON output.
+	// ManifestHash stands in for it everywhere, including in the spec hash.
 	Manifest     []byte `json:"-"`
 	ManifestHash string `json:"manifestHash,omitempty"`
-	// Images lists every image a kube workload runs, for reporting. Image
-	// holds the first one so the common code paths have something to show.
+	// Images lists every image a kube workload runs, for reporting.
+	// Image holds the first one, so the common code paths have something to show.
 	Images []string `json:"images,omitempty"`
 
 	Image      string   `json:"image"`
@@ -100,8 +99,8 @@ type Application struct {
 
 	Env map[string]string `json:"env,omitempty"`
 
-	// SecretEnv holds resolved secret values. It is redacted by MarshalJSON and
-	// is never written to a unit file; the renderer puts it in a 0600 env file.
+	// SecretEnv holds resolved secret values.
+	// It is redacted by MarshalJSON and never written to a unit file, the renderer puts it in a 0600 env file.
 	SecretEnv map[string]string `json:"secretEnv,omitempty"`
 
 	Ports    []Port            `json:"ports,omitempty"`
@@ -117,8 +116,8 @@ type Application struct {
 	Healthcheck *Healthcheck `json:"healthcheck,omitempty"`
 	Resources   Resources    `json:"resources,omitempty"`
 
-	// AllowMutableImage permits an image reference without a digest. It is a
-	// deliberate, visible opt-out, not a default.
+	// AllowMutableImage permits an image reference without a digest.
+	// It is a deliberate, visible opt-out, not a default.
 	AllowMutableImage bool `json:"allowMutableImage,omitempty"`
 
 	// Provenance, for humans debugging on the host.
@@ -126,8 +125,8 @@ type Application struct {
 	Origins    []string `json:"origins,omitempty"`
 }
 
-// ImageList returns every image the workload runs: one for a container, one
-// per container for a pod.
+// ImageList returns every image the workload runs.
+// One for a container, one per container for a pod.
 func (a Application) ImageList() []string {
 	if len(a.Images) > 0 {
 		return a.Images
@@ -141,22 +140,20 @@ func (a Application) ImageList() []string {
 // IsKube reports whether the workload is a pod manifest rather than a container.
 func (a Application) IsKube() bool { return a.Kind == KindKube }
 
-// SetManifest stores a kube manifest and its hash together, so the two can
-// never disagree.
+// SetManifest stores a kube manifest and its hash together, so the two can never disagree.
 func (a *Application) SetManifest(manifest []byte) {
 	a.Manifest = manifest
 	a.ManifestHash = HashBytes(manifest)
 }
 
-// MarshalJSON redacts secret values so that logs, `podcd plan` output and the
-// local state file never carry them.
+// MarshalJSON redacts secret values, so logs, `podcd plan` output, and the local state file never carry them.
 func (a Application) MarshalJSON() ([]byte, error) {
 	type alias Application // avoid recursion
 	clone := alias(a)
 	if len(a.SecretEnv) > 0 {
 		redacted := make(map[string]string, len(a.SecretEnv))
 		for k := range a.SecretEnv {
-			redacted[k] = "«redacted»"
+			redacted[k] = "[redacted]"
 		}
 		clone.SecretEnv = redacted
 	}
@@ -234,11 +231,11 @@ type ActualApp struct {
 
 	UnitFile     string `json:"unitFile,omitempty"`
 	UnitFileHash string `json:"unitFileHash,omitempty"` // sha256 of the on-disk unit
-	// UnitContent is the raw unit as read from disk. It stays out of the state
-	// file, but it lets the planner explain a change without re-reading disk.
+	// UnitContent is the raw unit as read from disk.
+	// It stays out of the state file, but lets the planner explain a change without re-reading disk.
 	UnitContent []byte `json:"-"`
-	// ManifestContent is the played manifest of a kube workload as read from
-	// disk. Same rules as UnitContent: for explaining changes, never stored.
+	// ManifestContent is the played manifest of a kube workload as read from disk.
+	// Same rules as UnitContent: used for explaining changes, never stored.
 	ManifestContent []byte `json:"-"`
 	SpecHash        string `json:"specHash,omitempty"` // marker written by the renderer
 	SecretsHash     string `json:"secretsHash,omitempty"`

@@ -1,9 +1,8 @@
-// Package podman runs applications as rootless Podman containers managed by
-// systemd through Quadlet.
+// Package podman runs applications as rootless Podman containers managed by systemd through Quadlet.
 //
-// The agent writes .container files and asks systemd to start them. It never
-// runs `podman run`: systemd owns the process, Podman owns the container, and
-// the agent owns neither. Podman is only asked questions.
+// The agent writes .container files and asks systemd to start them.
+// It never runs `podman run`: systemd owns the process, Podman owns the container, and the agent owns neither.
+// Podman is only asked questions.
 package podman
 
 import (
@@ -29,8 +28,8 @@ import (
 type Options struct {
 	UnitDir string
 	EnvDir  string
-	// KubeDir holds the manifests played by .kube units. Like EnvDir it can
-	// contain resolved secrets and is never the unit directory.
+	// KubeDir holds the manifests played by .kube units.
+	// Like EnvDir it can contain resolved secrets and is never the unit directory.
 	KubeDir string
 
 	// PodmanBin and SystemctlBin default to the names on PATH.
@@ -75,8 +74,8 @@ func New(opts Options) *Runtime {
 	return r
 }
 
-// Renderer exposes the renderer this runtime writes with, so the planner
-// compares against exactly the bytes the runtime would produce.
+// Renderer exposes the renderer this runtime writes with.
+// So the planner compares against exactly the bytes the runtime would produce.
 func (r *Runtime) Renderer() *renderer.Renderer { return r.rend }
 
 // Name implements runtime.Runtime.
@@ -91,8 +90,8 @@ func (r *Runtime) Available(ctx context.Context) (bool, string) {
 		return false, fmt.Sprintf("systemctl is not installed (%v)", err)
 	}
 	if _, err := r.systemctlRun(ctx, "is-system-running"); err != nil {
-		// is-system-running exits non-zero for "degraded", which is fine; only
-		// a total absence of a user manager is fatal.
+		// is-system-running exits non-zero for "degraded", that is fine.
+		// Only a total absence of a user manager is fatal.
 		if !strings.Contains(err.Error(), "degraded") && !strings.Contains(err.Error(), "starting") {
 			return false, "no systemd user manager: " + err.Error()
 		}
@@ -103,8 +102,7 @@ func (r *Runtime) Available(ctx context.Context) (bool, string) {
 	return true, ""
 }
 
-// Inspect reads the real state of the host: the unit files on disk, what
-// systemd thinks of them, and what Podman actually has running.
+// Inspect reads the real state of the host: the unit files on disk, what systemd thinks of them, and what Podman actually has running.
 func (r *Runtime) Inspect(ctx context.Context) (model.ActualState, error) {
 	state := model.ActualState{Runtime: r.Name(), Apps: map[string]model.ActualApp{}}
 
@@ -130,8 +128,8 @@ func (r *Runtime) Inspect(ctx context.Context) (model.ActualState, error) {
 			name = m.App
 		}
 		if prev, ok := state.Apps[name]; ok {
-			// A .container and a .kube for the same name would both claim
-			// podcd-<name>.service. Refuse to guess which one systemd picked.
+			// A .container and a .kube for the same name would both claim podcd-<name>.service.
+			// Refuse to guess which one systemd picked.
 			return state, fmt.Errorf("application %q has two unit files: %s and %s; remove one", name, prev.UnitFile, path)
 		}
 		cur := model.ActualApp{
@@ -145,9 +143,8 @@ func (r *Runtime) Inspect(ctx context.Context) (model.ActualState, error) {
 			UnitName:     renderer.ServiceName(name),
 			UnitState:    model.UnitUnknown,
 		}
-		// A kube unit is only as current as the manifest it points at. If
-		// that file was edited or deleted, the unit must be re-applied even
-		// though its own bytes still match.
+		// A kube unit is only as current as the manifest it points at.
+		// If that file was edited or deleted, the unit must be re-applied even though its own bytes still match.
 		if m.Kind == model.KindKube && m.Managed {
 			if manifestPath := yamlPathOf(content); manifestPath != "" {
 				data, err := os.ReadFile(manifestPath)
@@ -160,8 +157,8 @@ func (r *Runtime) Inspect(ctx context.Context) (model.ActualState, error) {
 		state.Apps[name] = cur
 	}
 
-	// Containers we own but have no unit for: a half-removed application, or a
-	// unit file someone deleted by hand. They are still ours to clean up.
+	// Containers we own but have no unit for: a half-removed application, or a unit file someone deleted by hand.
+	// They are still ours to clean up.
 	containers, err := r.listContainers(ctx)
 	if err != nil {
 		return state, err
@@ -295,9 +292,8 @@ func parseShowBlocks(out string) map[string]map[string]string {
 
 // Apply writes the unit for one application and makes systemd run it.
 //
-// It is safe to call on an application that is already correct: writing the
-// same bytes and restarting is the worst it can do, and the planner makes sure
-// it is not called in that case.
+// It is safe to call on an application that is already correct.
+// Writing the same bytes and restarting is the worst it can do, and the planner makes sure it is not called in that case.
 func (r *Runtime) Apply(ctx context.Context, app model.Application) error {
 	unit, err := r.rend.Render(app)
 	if err != nil {
@@ -322,8 +318,8 @@ func (r *Runtime) Apply(ctx context.Context, app model.Application) error {
 		_ = os.Remove(filepath.Join(r.kubeDir, app.Name+".yaml"))
 	}
 
-	// An application can change kind between commits. Both kinds claim the
-	// same service name, so the other kind's unit file must go first.
+	// An application can change kind between commits.
+	// Both kinds claim the same service name, so the other kind's unit file must go first.
 	other := renderer.FileName(app.Name)
 	if !unit.IsKube() {
 		other = renderer.KubeFileName(app.Name)
@@ -347,8 +343,8 @@ func (r *Runtime) Apply(ctx context.Context, app model.Application) error {
 
 // Remove stops an application and deletes its definition.
 //
-// Volumes are deliberately left alone. Removing an application from Git is a
-// configuration change; deleting its data is not, and podcd will not do it.
+// Volumes are deliberately left alone.
+// Removing an application from Git is a configuration change, deleting its data is not, and podcd will not do it.
 func (r *Runtime) Remove(ctx context.Context, app string) error {
 	service := renderer.ServiceName(app)
 	if _, err := r.systemctlRun(ctx, "stop", service); err != nil {
@@ -371,9 +367,9 @@ func (r *Runtime) Remove(ctx context.Context, app string) error {
 	if err := r.daemonReload(ctx); err != nil {
 		return err
 	}
-	// Quadlet normally removes the container (or plays the pod down) on stop;
-	// if something interrupted that, the names must still be free for the
-	// next reconcile. Volumes are untouched either way.
+	// Quadlet normally removes the container (or plays the pod down) on stop.
+	// If something interrupted that, the names must still be free for the next reconcile.
+	// Volumes are untouched either way.
 	_, _ = r.podmanRun(ctx, "rm", "--force", "--time", "10", renderer.ContainerName(app))
 	_, _ = r.podmanRun(ctx, "pod", "rm", "--force", "--time", "10", app)
 	return nil
@@ -437,8 +433,8 @@ func (r *Runtime) daemonReload(ctx context.Context) error {
 	return nil
 }
 
-// diagnose adds the tail of the unit's journal to an error, because "job
-// failed" on its own has never helped anybody at 3am.
+// diagnose adds the tail of the unit's journal to an error.
+// "Job failed" on its own has never helped anybody at 3am.
 func (r *Runtime) diagnose(ctx context.Context, app string) string {
 	logs, err := r.Logs(ctx, app, 15)
 	if err != nil || strings.TrimSpace(logs) == "" {
@@ -481,9 +477,7 @@ func (r *Runtime) run(ctx context.Context, bin string, args ...string) (string, 
 	return stdout.String(), nil
 }
 
-// sessionEnv makes sure systemctl --user can find the user's session bus even
-// when the agent was started from cron, a shell over a serial console, or a
-// systemd service without a full session environment.
+// sessionEnv makes sure systemctl --user can find the user's session bus, even when the agent was started from cron, a shell over a serial console, or a systemd service without a full session environment.
 func sessionEnv() []string {
 	env := os.Environ()
 	uid := os.Getuid()

@@ -1,14 +1,4 @@
 // Package docker is a placeholder for Docker support.
-//
-// It exists to keep the runtime boundary honest: the Podman implementation must
-// not be the only thing that can satisfy runtime.Runtime. Every method returns
-// runtime.ErrNotImplemented rather than pretending, because a deployment tool
-// that half-works is worse than one that says no.
-//
-// When this is built for real it will follow the same shape as the Podman
-// runtime: render declarative files (a compose project or systemd units around
-// `docker create`), let a supervisor own the process, and only ever ask Docker
-// questions.
 package docker
 
 import (

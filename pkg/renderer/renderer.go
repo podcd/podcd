@@ -1,10 +1,7 @@
-// Package renderer compiles a canonical Application into the Quadlet unit that
-// systemd will run.
+// Package renderer compiles a canonical Application into the Quadlet unit that systemd will run.
 //
-// Rendering is pure and deterministic: the same Application always produces the
-// same bytes. That is what makes reconciliation idempotent - "has this changed?"
-// is answered by comparing rendered bytes to the file on disk, not by trying to
-// interpret what Podman reports.
+// Rendering is pure and deterministic, the same Application always produces the same bytes.
+// That is what makes reconciliation idempotent: "has this changed?" is answered by comparing rendered bytes to the file on disk, not by asking Podman.
 package renderer
 
 import (
@@ -22,22 +19,22 @@ import (
 // Prefix marks every unit podcd owns. Units without it are left strictly alone.
 const Prefix = "podcd-"
 
-// Marker comments written at the top of every generated unit. They are how the
-// agent recognises its own work on the next run.
+// Marker comments written at the top of every generated unit.
+// They are how the agent recognises its own work on the next run.
 const (
 	markerManaged = "# Managed by podcd - do not edit. Change Git instead."
 	markerApp     = "# podcd-app: "
 	markerSpec    = "# podcd-spec-hash: "
 	markerSecrets = "# podcd-secrets-hash: "
 	markerVersion = "# podcd-renderer: "
-	// markerManifest records the hash of the played manifest, so the unit
-	// bytes alone say whether a kube workload changed.
+	// markerManifest records the hash of the played manifest.
+	// The unit bytes alone say whether a kube workload changed.
 	markerManifest = "# podcd-manifest-hash: "
 	markerKind     = "# podcd-kind: "
 )
 
-// Version is bumped when the rendered output format changes, so that existing
-// units are rewritten even though the application spec did not change.
+// Version is bumped when the rendered output format changes.
+// That way existing units get rewritten even when the application spec did not change.
 const Version = "1"
 
 // Renderer turns applications into unit files under UnitDir.
@@ -46,8 +43,8 @@ type Renderer struct {
 	UnitDir string
 	// EnvDir is where 0600 secret env files are written. It must not be in Git.
 	EnvDir string
-	// KubeDir is where played manifests for kube workloads are written. They
-	// can contain resolved secrets, so it is not the unit directory.
+	// KubeDir is where played manifests for kube workloads are written.
+	// They can contain resolved secrets, so it is not the unit directory.
 	KubeDir string
 }
 
@@ -94,10 +91,9 @@ func FileNameFor(app model.Application) string {
 // ContainerName returns the container name podman will use.
 func ContainerName(app string) string { return Prefix + app }
 
-// AppFromFileName returns the application name for a managed unit file, and
-// whether the file is one of ours by name. Both .container and .kube files
-// qualify; they map to the same service name, so one application can only
-// ever be one of them.
+// AppFromFileName returns the application name for a managed unit file, and whether it is one of ours by name.
+// Both .container and .kube files qualify, they map to the same service name.
+// So one application can only ever be one of them.
 func AppFromFileName(name string) (string, bool) {
 	if !strings.HasPrefix(name, Prefix) {
 		return "", false
@@ -151,9 +147,8 @@ func (r *Renderer) Render(app model.Application) (Unit, error) {
 	return u, nil
 }
 
-// renderKube produces a .kube unit and the manifest it plays. podman does the
-// pod interpretation; the unit only says where the YAML is and how systemd
-// should supervise the result.
+// renderKube produces a .kube unit and the manifest it plays.
+// podman does the pod interpretation, the unit only says where the YAML is and how systemd should supervise it.
 func (r *Renderer) renderKube(app model.Application) (Unit, error) {
 	if len(app.Manifest) == 0 {
 		return Unit{}, fmt.Errorf("pod %q has no manifest", app.Name)
@@ -189,7 +184,7 @@ func (r *Renderer) renderKube(app model.Application) (Unit, error) {
 	fmt.Fprintf(&b, "Yaml=%s\n", u.ManifestPath)
 	b.WriteString("\n")
 
-	// Quadlet generates `podman kube play --replace` and `podman kube down`;
+	// Quadlet generates `podman kube play --replace` and `podman kube down`.
 	// Restart= applies to the service container that stands for the pod.
 	b.WriteString("[Service]\n")
 	switch app.RestartPolicy {
@@ -277,8 +272,8 @@ func (r *Renderer) renderUnit(app model.Application, u Unit) ([]byte, error) {
 	if len(app.Command) > 0 {
 		fmt.Fprintf(&b, "Exec=%s\n", commandLine(app.Command))
 	}
-	// Entrypoint and WorkingDir have no Quadlet key in podman 4.x, so they go
-	// through PodmanArgs. One line, fixed order, so the output stays stable.
+	// Entrypoint and WorkingDir have no Quadlet key in podman 4.x, so they go through PodmanArgs.
+	// One line, fixed order, so the output stays stable.
 	if extra := podmanArgs(app); extra != "" {
 		fmt.Fprintf(&b, "PodmanArgs=%s\n", extra)
 	}
@@ -295,8 +290,8 @@ func (r *Renderer) renderUnit(app model.Application, u Unit) ([]byte, error) {
 	if app.StopTimeout > 0 {
 		fmt.Fprintf(&b, "TimeoutStopSec=%d\n", app.StopTimeout)
 	}
-	// Resource limits belong to systemd, not to the container runtime: the unit
-	// is the thing systemd supervises, and cgroup limits survive a restart.
+	// Resource limits belong to systemd, not the container runtime.
+	// The unit is what systemd supervises, and cgroup limits survive a restart.
 	if app.Resources.Memory != "" {
 		fmt.Fprintf(&b, "MemoryMax=%s\n", app.Resources.Memory)
 	}
@@ -305,8 +300,8 @@ func (r *Renderer) renderUnit(app model.Application, u Unit) ([]byte, error) {
 	}
 	b.WriteString("\n")
 
-	// WantedBy makes the application come back after a reboot. With lingering
-	// enabled for the agent user, that is all "survives reboot" requires.
+	// WantedBy makes the application come back after a reboot.
+	// With lingering enabled for the agent user, that is all "survives reboot" needs.
 	b.WriteString("[Install]\n")
 	b.WriteString("WantedBy=default.target\n")
 
@@ -382,15 +377,14 @@ func publishPort(p model.Port) string {
 
 // podmanArgs renders the settings Quadlet has no key for.
 //
-// Podman's Quadlet gained Entrypoint= and WorkingDir= keys only in 5.x. Passing
-// them as raw podman flags works on every version that has Quadlet at all, and
-// keeps one code path instead of two that diverge by podman release.
+// Podman's Quadlet only gained Entrypoint= and WorkingDir= keys in 5.x.
+// Passing them as raw podman flags works on every version that has Quadlet at all.
+// That keeps one code path instead of two that diverge by podman release.
 func podmanArgs(app model.Application) string {
 	var args []string
 	if len(app.Entrypoint) > 0 {
-		// podman wants a JSON array for a multi-word entrypoint. The whole flag
-		// is quoted as one unit value so the inner quotes and any spaces survive
-		// systemd's parser intact.
+		// podman wants a JSON array for a multi-word entrypoint.
+		// The whole flag is quoted as one unit value so the inner quotes and spaces survive systemd's parser.
 		encoded, err := json.Marshal(app.Entrypoint)
 		if err == nil {
 			args = append(args, unitQuote("--entrypoint="+string(encoded)))
@@ -411,8 +405,8 @@ func commandLine(args []string) string {
 	return strings.Join(out, " ")
 }
 
-// quoteIfNeeded quotes a unit value only when it has to be quoted, so that
-// simple values stay readable to whoever is debugging on the host at 3am.
+// quoteIfNeeded quotes a unit value only when it has to be quoted.
+// Simple values stay readable to whoever is debugging on the host at 3am.
 func quoteIfNeeded(s string) string {
 	if s == "" {
 		return `""`
@@ -425,8 +419,8 @@ func quoteIfNeeded(s string) string {
 
 // unitQuote wraps a value in double quotes the way systemd reads them.
 //
-// strconv.Quote is not usable here: it escapes non-ASCII into \u sequences that
-// systemd does not decode, which would corrupt any value with an accent in it.
+// strconv.Quote does not work here: it escapes non-ASCII into \u sequences systemd cannot decode.
+// That would corrupt any value with an accent in it.
 // systemd only needs \\ and \" escaped inside double quotes.
 func unitQuote(s string) string {
 	r := strings.NewReplacer(`\`, `\\`, `"`, `\"`)

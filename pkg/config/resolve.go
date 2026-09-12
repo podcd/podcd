@@ -26,10 +26,8 @@ type ResolveOptions struct {
 
 // Resolve compiles the index into the desired state for one host.
 //
-// Precedence, lowest to highest: the Application document, the Environment's
-// override for it, each Group's override (in the order the Host lists its
-// groups), then the Host's own override. The output is sorted, so the same
-// commit always compiles to the same bytes.
+// Precedence, lowest to highest: the Application document, the Environment's override for it, each Group's override (in the order the Host lists its groups), then the Host's own override.
+// The output is sorted, so the same commit always compiles to the same bytes.
 func (ix *Index) Resolve(ctx context.Context, opts ResolveOptions) (model.DesiredState, error) {
 	var zero model.DesiredState
 	if opts.Host == "" {

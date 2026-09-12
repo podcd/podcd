@@ -16,7 +16,8 @@ import (
 	"time"
 )
 
-// Consider using https://github.com/hashicorp/vault-client-go after it's out of beta.
+// Consider using https://github.com/hashicorp/vault-client-go once it is out of beta.
+
 // VaultOptions configures a VaultProvider.
 type VaultOptions struct {
 	Address   string
@@ -37,9 +38,8 @@ type VaultOptions struct {
 	HTTPClient *http.Client
 }
 
-// VaultProvider resolves vault: references against a HashiCorp Vault KV
-// engine, authenticating with AppRole or a token. See ParseVaultRef for the
-// reference syntax.
+// VaultProvider resolves vault: references against a HashiCorp Vault KV engine, authenticating with AppRole or a token.
+// See ParseVaultRef for the reference syntax.
 type VaultProvider struct {
 	opts   VaultOptions
 	client *http.Client
@@ -55,7 +55,7 @@ type cacheEntry struct {
 	expires time.Time
 }
 
-// NewVaultProvider builds a provider
+// NewVaultProvider builds a provider.
 func NewVaultProvider(opts VaultOptions) (*VaultProvider, error) {
 	if opts.Address == "" {
 		return nil, errors.New("vault: address is required")
@@ -95,8 +95,7 @@ func NewVaultProvider(opts VaultOptions) (*VaultProvider, error) {
 // Scheme implements Provider.
 func (*VaultProvider) Scheme() string { return "vault" }
 
-// VaultRef is a parsed vault: reference: which KV mount, which secret under
-// it, and which key of that secret.
+// VaultRef is a parsed vault: reference: which KV mount, which secret under it, and which key of that secret.
 type VaultRef struct {
 	Mount string
 	Path  string
@@ -106,17 +105,16 @@ type VaultRef struct {
 // String renders the mount/path/key form.
 func (r VaultRef) String() string { return r.Mount + "/" + r.Path + "/" + r.Key }
 
-// ParseVaultRef reads the locator of a vault: reference. Two spellings are
-// accepted, and both of the following name the same value:
+// ParseVaultRef reads the locator of a vault: reference.
+// Two spellings are accepted, and both of the following name the same value:
 //
 //	secret/prod/api/DATABASE_PASSWORD     mount first, key last, as in `vault kv get`
 //	prod/api/DATABASE_PASSWORD@secret     mount after @, key last
 //
-// The last path segment is always the key and, without "@mount", the first is
-// always the mount; the remainder is the secret's path. The rules are fixed
-// rather than searched, and there is deliberately no default mount, which
-// would make "secret/prod/api/KEY" mean two different things depending on
-// configuration.
+// The last path segment is always the key.
+// Without "@mount", the first segment is always the mount, the remainder is the secret's path.
+// The rules are fixed rather than searched.
+// There is deliberately no default mount, that would make "secret/prod/api/KEY" mean two different things depending on configuration.
 func ParseVaultRef(locator string) (VaultRef, error) {
 	const usage = "use mount/path/key or path/key@mount"
 	var ref VaultRef

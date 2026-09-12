@@ -1,7 +1,4 @@
 // Package planner turns (desired, actual) into an explicit list of changes.
-//
-// Nothing here touches the system. That separation is what makes `podcd plan`
-// trustworthy: the plan you read is exactly the plan that would be applied.
 package planner
 
 import (
@@ -16,8 +13,8 @@ import (
 
 // Options tunes planning decisions that are policy rather than fact.
 type Options struct {
-	// Prune removes managed applications Git no longer declares. When false,
-	// orphans are still reported - as no-ops with a reason - never hidden.
+	// Prune removes managed applications Git no longer declares.
+	// When false, orphans are still reported as no-ops with a reason, never hidden.
 	Prune bool
 }
 
@@ -50,8 +47,7 @@ func Build(desired model.DesiredState, actual model.ActualState, rend *renderer.
 			})
 
 		case !cur.Managed:
-			// Somebody else owns this unit. Guessing would be how you delete
-			// someone's database.
+			// Somebody else owns this unit, guessing would be how you delete someone's database.
 			return model.Plan{}, fmt.Errorf("application %q: unit %s exists but is not managed by podcd; "+
 				"remove it by hand or restore its podcd header before reconciling", app.Name, cur.UnitFile)
 
@@ -124,9 +120,8 @@ func Build(desired model.DesiredState, actual model.ActualState, rend *renderer.
 	return plan, nil
 }
 
-// rank orders the plan so removals happen before creations. Freeing a host port
-// before something else tries to bind it is the difference between a clean
-// rename and a crash loop.
+// rank orders the plan so removals happen before creations.
+// Freeing a host port before something else tries to bind it is the difference between a clean rename and a crash loop.
 func rank(t model.ActionType) int {
 	switch t {
 	case model.ActionDelete:
@@ -168,8 +163,7 @@ func updateReason(cur model.ActualApp, unit renderer.Unit) string {
 	return "unit file differs from the rendered unit (edited by hand, or written by an older podcd)"
 }
 
-// changeDetails explains an update: the unit lines that change and, for a kube
-// workload, the manifest lines that change.
+// changeDetails explains an update: the unit lines that change and, for a kube workload, the manifest lines that change.
 func changeDetails(cur model.ActualApp, unit renderer.Unit) []string {
 	details := unitDiff(contentLines(string(cur.UnitContent)), contentLines(string(unit.Content)))
 	if unit.IsKube() {
@@ -178,9 +172,8 @@ func changeDetails(cur model.ActualApp, unit renderer.Unit) []string {
 	return details
 }
 
-// manifestLines prepares a played manifest for diffing. Secret documents are
-// replaced by a one-line placeholder: their values are exactly what a plan
-// printed to a terminal must never show.
+// manifestLines prepares a played manifest for diffing.
+// Secret documents are replaced by a one-line placeholder: their values are exactly what a plan printed to a terminal must never show.
 func manifestLines(manifest []byte) []string {
 	if len(manifest) == 0 {
 		return nil
@@ -203,8 +196,7 @@ func manifestLines(manifest []byte) []string {
 	return out
 }
 
-// unitDiff reports the lines that would change, so a destructive or surprising
-// edit is visible before it is applied rather than after.
+// unitDiff reports the lines that would change, so a destructive or surprising edit is visible before it is applied rather than after.
 func unitDiff(oldLines, newLines []string) []string {
 	if len(oldLines) == 0 {
 		return nil
@@ -240,9 +232,8 @@ func unitDiff(oldLines, newLines []string) []string {
 	return details
 }
 
-// contentLines drops blank lines, podcd's marker comments and the derived
-// spec-hash label: a changed hash is a consequence of the change, not an
-// explanation of it, and it would bury the line a human actually needs to see.
+// contentLines drops blank lines, podcd's marker comments, and the derived spec-hash label.
+// A changed hash is a consequence of the change, not an explanation of it, and it would bury the line a human actually needs to see.
 func contentLines(s string) []string {
 	var out []string
 	for _, l := range strings.Split(s, "\n") {

@@ -1,9 +1,7 @@
-// Package state records what the agent did, so a human (or a future control
-// plane) can ask what happened without re-deriving it.
+// Package state records what the agent did, so a human (or a future control plane) can ask what happened without re-deriving it.
 //
-// This is metadata, never the source of truth. If the file is deleted the agent
-// recomputes everything from Git and the host on the next reconcile; the only
-// thing lost is history.
+// This is metadata, never the source of truth.
+// If the file is deleted the agent recomputes everything from Git and the host on the next reconcile, the only thing lost is history.
 package state
 
 import (
@@ -21,9 +19,8 @@ const Version = 1
 
 // Store reads and writes agent metadata.
 //
-// It is an interface so the JSON file can become SQLite later without anything
-// else changing. It is a JSON file today because one small readable file beats
-// a database before the first container runs.
+// It is an interface so the JSON file can become SQLite later without anything else changing.
+// It is a JSON file today because one small readable file beats a database before the first container runs.
 type Store interface {
 	Load() (State, error)
 	Save(State) error
@@ -51,8 +48,7 @@ type AppRecord struct {
 	HealthMessage string `json:"healthMessage,omitempty"`
 	HealthAt      string `json:"healthAt,omitempty"`
 
-	// Previous deployment, kept so a human can see what changed and what to
-	// roll back to.
+	// Previous deployment, kept so a human can see what changed and what to roll back to.
 	PreviousImage    string `json:"previousImage,omitempty"`
 	PreviousSpecHash string `json:"previousSpecHash,omitempty"`
 	PreviousRevision string `json:"previousRevision,omitempty"`
@@ -73,8 +69,7 @@ type State struct {
 	Applications map[string]AppRecord `json:"applications,omitempty"`
 }
 
-// RecordApplied updates an application's record after a successful apply,
-// keeping the previous deployment's identifiers.
+// RecordApplied updates an application's record after a successful apply, keeping the previous deployment's identifiers.
 func (s *State) RecordApplied(app model.Application, revision string, at time.Time) {
 	if s.Applications == nil {
 		s.Applications = map[string]AppRecord{}
