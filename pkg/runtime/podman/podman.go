@@ -6,10 +6,9 @@
 package podman
 
 import (
-	"bytes"
+	"cmp"
 	"context"
 	"encoding/json"
-	"errors"
 	"fmt"
 	"os"
 	"os/exec"
@@ -19,6 +18,7 @@ import (
 	"time"
 
 	"github.com/podcd/podcd/internal/atomicfile"
+	"github.com/podcd/podcd/internal/subprocess"
 	"github.com/podcd/podcd/pkg/health"
 	"github.com/podcd/podcd/pkg/model"
 	"github.com/podcd/podcd/pkg/renderer"
@@ -43,8 +43,6 @@ type Options struct {
 // Runtime is the rootless Podman + Quadlet + systemd --user implementation.
 type Runtime struct {
 	unitDir string
-	envDir  string
-	kubeDir string
 
 	podman     string
 	systemctl  string
@@ -59,15 +57,10 @@ type Runtime struct {
 func New(opts Options) *Runtime {
 	r := &Runtime{
 		unitDir:    opts.UnitDir,
-		envDir:     opts.EnvDir,
-		kubeDir:    opts.KubeDir,
-		podman:     orDefault(opts.PodmanBin, "podman"),
-		systemctl:  orDefault(opts.SystemctlBin, "systemctl"),
+		podman:     cmp.Or(opts.PodmanBin, "podman"),
+		systemctl:  cmp.Or(opts.SystemctlBin, "systemctl"),
 		journalctl: "journalctl",
-		timeout:    opts.Timeout,
-	}
-	if r.timeout <= 0 {
-		r.timeout = 2 * time.Minute
+		timeout:    cmp.Or(opts.Timeout, 2*time.Minute),
 	}
 	r.rend = &renderer.Renderer{UnitDir: opts.UnitDir, EnvDir: opts.EnvDir, KubeDir: opts.KubeDir}
 	r.checker = &health.Checker{Exec: r.execProbe}
@@ -304,9 +297,9 @@ func (r *Runtime) Apply(ctx context.Context, app model.Application) error {
 		if err := atomicfile.Write(unit.EnvFilePath, unit.EnvFile, 0o600); err != nil {
 			return fmt.Errorf("writing secret env file for %s: %w", app.Name, err)
 		}
-	} else if r.envDir != "" {
+	} else {
 		// The application stopped using secrets: do not leave the old values behind.
-		_ = os.Remove(filepath.Join(r.envDir, app.Name+".env"))
+		_ = removeIfExists(r.rend.EnvFilePath(app.Name))
 	}
 
 	if unit.IsKube() {
@@ -314,8 +307,8 @@ func (r *Runtime) Apply(ctx context.Context, app model.Application) error {
 		if err := atomicfile.Write(unit.ManifestPath, unit.Manifest, 0o600); err != nil {
 			return fmt.Errorf("writing manifest for %s: %w", app.Name, err)
 		}
-	} else if r.kubeDir != "" {
-		_ = os.Remove(filepath.Join(r.kubeDir, app.Name+".yaml"))
+	} else {
+		_ = removeIfExists(r.rend.ManifestPath(app.Name))
 	}
 
 	// An application can change kind between commits.
@@ -324,7 +317,7 @@ func (r *Runtime) Apply(ctx context.Context, app model.Application) error {
 	if !unit.IsKube() {
 		other = renderer.KubeFileName(app.Name)
 	}
-	if err := os.Remove(filepath.Join(r.unitDir, other)); err != nil && !os.IsNotExist(err) {
+	if err := removeIfExists(filepath.Join(r.unitDir, other)); err != nil {
 		return fmt.Errorf("removing stale unit for %s: %w", app.Name, err)
 	}
 
@@ -354,16 +347,12 @@ func (r *Runtime) Remove(ctx context.Context, app string) error {
 		}
 	}
 	for _, f := range []string{renderer.FileName(app), renderer.KubeFileName(app)} {
-		if err := os.Remove(filepath.Join(r.unitDir, f)); err != nil && !os.IsNotExist(err) {
+		if err := removeIfExists(filepath.Join(r.unitDir, f)); err != nil {
 			return fmt.Errorf("removing unit for %s: %w", app, err)
 		}
 	}
-	if r.envDir != "" {
-		_ = os.Remove(filepath.Join(r.envDir, app+".env"))
-	}
-	if r.kubeDir != "" {
-		_ = os.Remove(filepath.Join(r.kubeDir, app+".yaml"))
-	}
+	_ = removeIfExists(r.rend.EnvFilePath(app))
+	_ = removeIfExists(r.rend.ManifestPath(app))
 	if err := r.daemonReload(ctx); err != nil {
 		return err
 	}
@@ -372,6 +361,17 @@ func (r *Runtime) Remove(ctx context.Context, app string) error {
 	// Volumes are untouched either way.
 	_, _ = r.podmanRun(ctx, "rm", "--force", "--time", "10", renderer.ContainerName(app))
 	_, _ = r.podmanRun(ctx, "pod", "rm", "--force", "--time", "10", app)
+	return nil
+}
+
+// removeIfExists deletes a file; a missing file, or no path at all, is not an error.
+func removeIfExists(path string) error {
+	if path == "" {
+		return nil
+	}
+	if err := os.Remove(path); err != nil && !os.IsNotExist(err) {
+		return err
+	}
 	return nil
 }
 
@@ -452,29 +452,7 @@ func (r *Runtime) podmanRun(ctx context.Context, args ...string) (string, error)
 }
 
 func (r *Runtime) run(ctx context.Context, bin string, args ...string) (string, error) {
-	ctx, cancel := context.WithTimeout(ctx, r.timeout)
-	defer cancel()
-
-	cmd := exec.CommandContext(ctx, bin, args...)
-	cmd.Env = sessionEnv()
-	var stdout, stderr bytes.Buffer
-	cmd.Stdout = &stdout
-	cmd.Stderr = &stderr
-	err := cmd.Run()
-	if err != nil {
-		msg := strings.TrimSpace(stderr.String())
-		if msg == "" {
-			msg = strings.TrimSpace(stdout.String())
-		}
-		if msg == "" {
-			msg = err.Error()
-		}
-		if errors.Is(ctx.Err(), context.DeadlineExceeded) {
-			msg += " (timed out)"
-		}
-		return stdout.String(), fmt.Errorf("%s %s: %s", filepath.Base(bin), strings.Join(args, " "), msg)
-	}
-	return stdout.String(), nil
+	return subprocess.Run(ctx, subprocess.Command{Bin: bin, Args: args, Env: sessionEnv(), Timeout: r.timeout})
 }
 
 // sessionEnv makes sure systemctl --user can find the user's session bus, even when the agent was started from cron, a shell over a serial console, or a systemd service without a full session environment.
@@ -507,11 +485,4 @@ func quadletGeneratorPresent() bool {
 		}
 	}
 	return false
-}
-
-func orDefault(v, def string) string {
-	if v == "" {
-		return def
-	}
-	return v
 }

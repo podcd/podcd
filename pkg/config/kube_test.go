@@ -118,21 +118,10 @@ func TestPodHealthcheckComesFromTheReadinessProbe(t *testing.T) {
 	}
 }
 
-func TestPodUnpinnedImageIsRejected(t *testing.T) {
+func TestPodImageMayBeATag(t *testing.T) {
 	files := map[string]string{"pod.yaml": strings.Replace(podFiles, "example.com/side"+digest, "example.com/side:latest", 1)}
-	_, err := resolvePod(t, files, "vm-1")
-	if err == nil || !strings.Contains(err.Error(), `container "side" image "example.com/side:latest" is not pinned`) {
-		t.Fatalf("an unpinned container image must be rejected, got: %v", err)
-	}
-}
-
-func TestPodUnpinnedImageIsRejectedEvenWithTheOldAnnotation(t *testing.T) {
-	// There is no opt-out any more: the annotation is just inert metadata now.
-	files := map[string]string{"pod.yaml": strings.Replace(
-		strings.Replace(podFiles, "example.com/side"+digest, "example.com/side:latest", 1),
-		"metadata:\n  name: web\n", "metadata:\n  name: web\n  annotations:\n    gitops.podcd.io/allow-mutable-image: \"true\"\n", 1)}
-	if _, err := resolvePod(t, files, "vm-1"); err == nil || !strings.Contains(err.Error(), "not pinned") {
-		t.Fatalf("the annotation must no longer permit a tag, got: %v", err)
+	if _, err := resolvePod(t, files, "vm-1"); err != nil {
+		t.Fatalf("a tag is an acceptable container image: %v", err)
 	}
 }
 

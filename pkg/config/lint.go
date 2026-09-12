@@ -6,7 +6,8 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
-	"sort"
+	"slices"
+	"strings"
 
 	"github.com/podcd/podcd/pkg/secrets"
 )
@@ -35,6 +36,24 @@ func LoadPaths(paths ...string) (*Index, error) {
 	return ix, nil
 }
 
+// problems collects validation errors so a user sees them all at once
+// rather than one per run. prefix, when set, is put in front of every message.
+type problems struct {
+	prefix string
+	errs   []error
+}
+
+func (p *problems) add(format string, args ...any) {
+	p.errs = append(p.errs, fmt.Errorf(p.prefix+format, args...))
+}
+
+// err returns the collected problems as one error, sorted so the same input
+// always reports the same text, or nil when there are none.
+func (p *problems) err() error {
+	slices.SortFunc(p.errs, func(a, b error) int { return strings.Compare(a.Error(), b.Error()) })
+	return errors.Join(p.errs...)
+}
+
 // Finding is one problem compiling a host: the documents themselves are fine but together they do not add up.
 // i.e. a reference to something that is not defined.
 type Finding struct {
@@ -47,7 +66,7 @@ func Lint(ctx context.Context, ix *Index, hosts ...string) []Finding {
 	if len(hosts) == 0 {
 		hosts = ix.HostNames()
 	}
-	sort.Strings(hosts)
+	slices.Sort(hosts)
 	var findings []Finding
 	for _, h := range hosts {
 		_, err := ix.Resolve(ctx, ResolveOptions{Host: h, Secrets: secrets.LintResolver()})
@@ -70,7 +89,7 @@ func Lint(ctx context.Context, ix *Index, hosts ...string) []Finding {
 var ErrNoHosts = errors.New("no Host documents found; nothing to compile")
 
 // LintPaths is LoadPaths followed by Lint: what `podcd lint` runs.
-// An error means a document is wrong in itself (malformed, unknown field, duplicate name, unpinned image) or there was nothing to compile;
+// An error means a document is wrong in itself (malformed, unknown field, duplicate name) or there was nothing to compile;
 // findings are what does not fit together across the documents that did load, such as a reference to something not defined here.
 func LintPaths(ctx context.Context, hosts []string, paths ...string) (*Index, []Finding, error) {
 	ix, err := LoadPaths(paths...)

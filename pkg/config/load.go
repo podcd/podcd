@@ -3,20 +3,22 @@ package config
 import (
 	"bufio"
 	"bytes"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
 	"io/fs"
+	"maps"
 	"os"
 	"path/filepath"
-	"sort"
+	"slices"
 	"strings"
 
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	k8syaml "k8s.io/apimachinery/pkg/util/yaml"
 	sigyaml "sigs.k8s.io/yaml"
+
+	"github.com/podcd/podcd/pkg/secrets"
 )
 
 // Index is every document the agent loaded, addressed by name and kind.
@@ -25,31 +27,33 @@ import (
 // Two repositories defining the same Application is an ambiguity, and ambiguity is an error here, not a coin flip.
 // Applications and Pods share one namespace too, because a host lists both under `applications:`.
 type Index struct {
-	Applications map[string]ApplicationDoc
-	Groups       map[string]GroupDoc
-	Environments map[string]EnvironmentDoc
-	Hosts        map[string]HostDoc
+	Applications map[string]Doc[AppSpec]
+	Groups       map[string]Doc[SelectionSpec]
+	Environments map[string]Doc[SelectionSpec]
+	Hosts        map[string]Doc[HostSpec]
 
-	Pods       map[string]PodDoc
-	ConfigMaps map[string]ConfigMapDoc
-	Secrets    map[string]SecretDoc
+	// A Secret's values must be references (env:NAME, file:path), never
+	// plaintext; the loader enforces that.
+	Pods       map[string]Doc[corev1.Pod]
+	ConfigMaps map[string]Doc[corev1.ConfigMap]
+	Secrets    map[string]Doc[corev1.Secret]
 }
 
 // NewIndex returns an empty index.
 func NewIndex() *Index {
 	return &Index{
-		Applications: map[string]ApplicationDoc{},
-		Groups:       map[string]GroupDoc{},
-		Environments: map[string]EnvironmentDoc{},
-		Hosts:        map[string]HostDoc{},
-		Pods:         map[string]PodDoc{},
-		ConfigMaps:   map[string]ConfigMapDoc{},
-		Secrets:      map[string]SecretDoc{},
+		Applications: map[string]Doc[AppSpec]{},
+		Groups:       map[string]Doc[SelectionSpec]{},
+		Environments: map[string]Doc[SelectionSpec]{},
+		Hosts:        map[string]Doc[HostSpec]{},
+		Pods:         map[string]Doc[corev1.Pod]{},
+		ConfigMaps:   map[string]Doc[corev1.ConfigMap]{},
+		Secrets:      map[string]Doc[corev1.Secret]{},
 	}
 }
 
 // HostNames returns the known host names, sorted.
-func (ix *Index) HostNames() []string { return sortedKeys(ix.Hosts) }
+func (ix *Index) HostNames() []string { return slices.Sorted(maps.Keys(ix.Hosts)) }
 
 // LoadTree walks one repository checkout and adds every document it finds.
 //
@@ -80,7 +84,7 @@ func (ix *Index) LoadTree(repo, root string) error {
 	if err != nil {
 		return fmt.Errorf("walking %s: %w", root, err)
 	}
-	sort.Strings(files)
+	slices.Sort(files)
 
 	for _, path := range files {
 		rel, relErr := filepath.Rel(root, path)
@@ -167,126 +171,75 @@ func (ix *Index) loadFile(repo, path string, data []byte) error {
 }
 
 func (ix *Index) add(env document, src Source) error {
+	name := env.Name
 	switch env.APIVersion {
 	case APIVersion:
-		return ix.addOwn(env, src)
+		switch env.Kind {
+		case KindApplication:
+			if prev, ok := ix.Pods[name]; ok {
+				return fmt.Errorf("%q is both an Application (%s) and a Pod (%s); a host lists both under applications, so the name must be unique", name, src, prev.Source)
+			}
+			return addSpec(ix.Applications, env.Kind, name, src)
+		case KindGroup:
+			return addSpec(ix.Groups, env.Kind, name, src)
+		case KindEnvironment:
+			return addSpec(ix.Environments, env.Kind, name, src)
+		case KindHost:
+			return addSpec(ix.Hosts, env.Kind, name, src)
+		}
+		return fmt.Errorf("%s: unknown kind %q in %s", src, env.Kind, APIVersion)
 	case CoreAPIVersion:
-		return ix.addCore(env, src)
+		switch env.Kind {
+		case KindPod:
+			if prev, ok := ix.Applications[name]; ok {
+				return fmt.Errorf("%q is both a Pod (%s) and an Application (%s); a host lists both under applications, so the name must be unique", name, src, prev.Source)
+			}
+			return addObject(ix.Pods, env.Kind, name, src, nil)
+		case KindConfigMap:
+			return addObject(ix.ConfigMaps, env.Kind, name, src, nil)
+		case KindSecret:
+			return addObject(ix.Secrets, env.Kind, name, src, checkSecretIsReferenceOnly)
+		}
+		return fmt.Errorf("%s: kind %q is not supported from apiVersion v1 (Pod, ConfigMap, Secret are)", src, env.Kind)
 	default:
 		return fmt.Errorf("%s: apiVersion %q is not supported (want %s or %s)", src, env.APIVersion, APIVersion, CoreAPIVersion)
 	}
 }
 
-func (ix *Index) addOwn(env document, src Source) error {
-	name := env.Name
-	switch env.Kind {
-	case KindApplication:
-		var doc struct {
-			metav1.TypeMeta   `json:",inline"`
-			metav1.ObjectMeta `json:"metadata"`
-			Spec              AppSpec `json:"spec"`
-		}
-		if err := strictDecode(&doc, src, env.Kind); err != nil {
-			return err
-		}
-		if prev, ok := ix.Applications[name]; ok {
-			return duplicateErr(env.Kind, name, prev.Source, src)
-		}
-		if prev, ok := ix.Pods[name]; ok {
-			return fmt.Errorf("%q is both an Application (%s) and a Pod (%s); a host lists both under applications, so the name must be unique", name, src, prev.Source)
-		}
-		ix.Applications[name] = ApplicationDoc{Metadata: doc.ObjectMeta, Spec: doc.Spec, Source: src}
-
-	case KindGroup:
-		var doc struct {
-			metav1.TypeMeta   `json:",inline"`
-			metav1.ObjectMeta `json:"metadata"`
-			Spec              GroupSpec `json:"spec"`
-		}
-		if err := strictDecode(&doc, src, env.Kind); err != nil {
-			return err
-		}
-		if prev, ok := ix.Groups[name]; ok {
-			return duplicateErr(env.Kind, name, prev.Source, src)
-		}
-		ix.Groups[name] = GroupDoc{Metadata: doc.ObjectMeta, Spec: doc.Spec, Source: src}
-
-	case KindEnvironment:
-		var doc struct {
-			metav1.TypeMeta   `json:",inline"`
-			metav1.ObjectMeta `json:"metadata"`
-			Spec              EnvironmentSpec `json:"spec"`
-		}
-		if err := strictDecode(&doc, src, env.Kind); err != nil {
-			return err
-		}
-		if prev, ok := ix.Environments[name]; ok {
-			return duplicateErr(env.Kind, name, prev.Source, src)
-		}
-		ix.Environments[name] = EnvironmentDoc{Metadata: doc.ObjectMeta, Spec: doc.Spec, Source: src}
-
-	case KindHost:
-		var doc struct {
-			metav1.TypeMeta   `json:",inline"`
-			metav1.ObjectMeta `json:"metadata"`
-			Spec              HostSpec `json:"spec"`
-		}
-		if err := strictDecode(&doc, src, env.Kind); err != nil {
-			return err
-		}
-		if prev, ok := ix.Hosts[name]; ok {
-			return duplicateErr(env.Kind, name, prev.Source, src)
-		}
-		ix.Hosts[name] = HostDoc{Metadata: doc.ObjectMeta, Spec: doc.Spec, Source: src}
-
-	default:
-		return fmt.Errorf("%s: unknown kind %q in %s", src, env.Kind, APIVersion)
+// addSpec decodes the spec of one of podcd's kinds and indexes it.
+func addSpec[T any](into map[string]Doc[T], kind, name string, src Source) error {
+	var doc struct {
+		metav1.TypeMeta   `json:",inline"`
+		metav1.ObjectMeta `json:"metadata"`
+		Spec              T `json:"spec"`
 	}
-	return nil
+	if err := strictDecode(&doc, src, kind); err != nil {
+		return err
+	}
+	return put(into, kind, name, src, doc.Spec)
 }
 
-func (ix *Index) addCore(env document, src Source) error {
-	name := env.Name
-	switch env.Kind {
-	case KindPod:
-		var pod corev1.Pod
-		if err := strictDecode(&pod, src, env.Kind); err != nil {
-			return err
-		}
-		if prev, ok := ix.Pods[name]; ok {
-			return duplicateErr(env.Kind, name, prev.Source, src)
-		}
-		if prev, ok := ix.Applications[name]; ok {
-			return fmt.Errorf("%q is both a Pod (%s) and an Application (%s); a host lists both under applications, so the name must be unique", name, src, prev.Source)
-		}
-		ix.Pods[name] = PodDoc{Pod: pod, Source: src}
-
-	case KindConfigMap:
-		var cm corev1.ConfigMap
-		if err := strictDecode(&cm, src, env.Kind); err != nil {
-			return err
-		}
-		if prev, ok := ix.ConfigMaps[name]; ok {
-			return duplicateErr(env.Kind, name, prev.Source, src)
-		}
-		ix.ConfigMaps[name] = ConfigMapDoc{ConfigMap: cm, Source: src}
-
-	case KindSecret:
-		var sec corev1.Secret
-		if err := strictDecode(&sec, src, env.Kind); err != nil {
-			return err
-		}
-		if err := checkSecretIsReferenceOnly(sec, src); err != nil {
-			return err
-		}
-		if prev, ok := ix.Secrets[name]; ok {
-			return duplicateErr(env.Kind, name, prev.Source, src)
-		}
-		ix.Secrets[name] = SecretDoc{Secret: sec, Source: src}
-
-	default:
-		return fmt.Errorf("%s: kind %q is not supported from apiVersion v1 (Pod, ConfigMap, Secret are)", src, env.Kind)
+// addObject decodes a whole core/v1 object and indexes it, after an optional
+// extra check.
+func addObject[T any](into map[string]Doc[T], kind, name string, src Source, check func(T, Source) error) error {
+	var obj T
+	if err := strictDecode(&obj, src, kind); err != nil {
+		return err
 	}
+	if check != nil {
+		if err := check(obj, src); err != nil {
+			return err
+		}
+	}
+	return put(into, kind, name, src, obj)
+}
+
+func put[T any](into map[string]Doc[T], kind, name string, src Source, spec T) error {
+	if prev, ok := into[name]; ok {
+		return fmt.Errorf("%s %q is defined twice: %s and %s (names must be unique across all repositories)",
+			kind, name, prev.Source, src)
+	}
+	into[name] = Doc[T]{Name: name, Spec: spec, Source: src}
 	return nil
 }
 
@@ -296,39 +249,21 @@ func (ix *Index) addCore(env document, src Source) error {
 // `stringData` values must look like "scheme:locator", they are resolved on the host at reconcile time by the secrets provider.
 func checkSecretIsReferenceOnly(sec corev1.Secret, src Source) error {
 	if len(sec.Data) > 0 {
-		keys := make([]string, 0, len(sec.Data))
-		for k := range sec.Data {
-			keys = append(keys, k)
-		}
-		sort.Strings(keys)
 		return fmt.Errorf("%s: Secret %q has plaintext values in data (%s); use stringData with references such as env:NAME or file:path",
-			src, sec.Name, strings.Join(keys, ", "))
+			src, sec.Name, strings.Join(slices.Sorted(maps.Keys(sec.Data)), ", "))
 	}
-	var problems []string
+	var literals []string
 	for k, v := range sec.StringData {
-		if !looksLikeReference(v) {
-			problems = append(problems, k)
+		if !secrets.IsReference(v) {
+			literals = append(literals, k)
 		}
 	}
-	if len(problems) > 0 {
-		sort.Strings(problems)
+	if len(literals) > 0 {
+		slices.Sort(literals)
 		return fmt.Errorf("%s: Secret %q: stringData values must be references like env:NAME or file:path, not literals (keys: %s)",
-			src, sec.Name, strings.Join(problems, ", "))
+			src, sec.Name, strings.Join(literals, ", "))
 	}
 	return nil
-}
-
-func looksLikeReference(v string) bool {
-	scheme, locator, ok := strings.Cut(v, ":")
-	if !ok || scheme == "" || locator == "" {
-		return false
-	}
-	for _, r := range scheme {
-		if r < 'a' || r > 'z' {
-			return false
-		}
-	}
-	return true
 }
 
 // strictDecode decodes a YAML document against its real Go type and rejects unknown fields.
@@ -338,27 +273,4 @@ func strictDecode(out any, src Source, kind string) error {
 		return fmt.Errorf("%s: kind %s: %w", src, kind, err)
 	}
 	return nil
-}
-
-func duplicateErr(kind, name string, first, second Source) error {
-	return fmt.Errorf("%s %q is defined twice: %s and %s (names must be unique across all repositories)",
-		kind, name, first, second)
-}
-
-func sortedKeys[T any](m map[string]T) []string {
-	out := make([]string, 0, len(m))
-	for k := range m {
-		out = append(out, k)
-	}
-	sort.Strings(out)
-	return out
-}
-
-// jsonOf is a small helper for error messages and tests.
-func jsonOf(v any) string {
-	b, err := json.Marshal(v)
-	if err != nil {
-		return err.Error()
-	}
-	return string(b)
 }

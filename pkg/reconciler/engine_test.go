@@ -352,9 +352,9 @@ func TestBrokenConfigDoesNotTouchTheHost(t *testing.T) {
 	}
 	before := len(rt.applied)
 
-	// An image without a digest: the whole commit is rejected, and the host is
-	// left exactly as it was rather than half-updated.
-	writeRepo(t, repoDir, strings.Replace(twoApps, "example.com/web@sha256:bbbb", "example.com/web:latest", 1))
+	// A misspelled field: the whole commit is rejected, and the host is left
+	// exactly as it was rather than half-updated.
+	writeRepo(t, repoDir, strings.Replace(twoApps, "image:", "imagee:", 1))
 	if _, err := e.Reconcile(context.Background(), Options{}); err == nil {
 		t.Fatal("a bad commit must fail the reconcile")
 	}

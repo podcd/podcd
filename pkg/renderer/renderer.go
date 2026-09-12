@@ -6,11 +6,12 @@ package renderer
 
 import (
 	"bytes"
+	"cmp"
 	"encoding/json"
 	"fmt"
+	"maps"
 	"path/filepath"
-	"sort"
-	"strconv"
+	"slices"
 	"strings"
 
 	"github.com/podcd/podcd/pkg/model"
@@ -91,6 +92,29 @@ func FileNameFor(app model.Application) string {
 // ContainerName returns the container name podman will use.
 func ContainerName(app string) string { return Prefix + app }
 
+// UnitPath is where the unit for an application of either kind lives.
+func (r *Renderer) UnitPath(app model.Application) string {
+	return filepath.Join(r.UnitDir, FileNameFor(app))
+}
+
+// EnvFilePath is where an application's resolved secrets go, or "" when no
+// env directory is configured.
+func (r *Renderer) EnvFilePath(app string) string {
+	if r.EnvDir == "" {
+		return ""
+	}
+	return filepath.Join(r.EnvDir, app+".env")
+}
+
+// ManifestPath is where a kube workload's played manifest goes, or "" when
+// no kube directory is configured.
+func (r *Renderer) ManifestPath(app string) string {
+	if r.KubeDir == "" {
+		return ""
+	}
+	return filepath.Join(r.KubeDir, app+".yaml")
+}
+
 // AppFromFileName returns the application name for a managed unit file, and whether it is one of ours by name.
 // Both .container and .kube files qualify, they map to the same service name.
 // So one application can only ever be one of them.
@@ -111,35 +135,31 @@ func (r *Renderer) Render(app model.Application) (Unit, error) {
 	if app.Name == "" {
 		return Unit{}, fmt.Errorf("application has no name")
 	}
+	u := Unit{
+		App:         app.Name,
+		FileName:    FileNameFor(app),
+		Path:        r.UnitPath(app),
+		ServiceName: ServiceName(app.Name),
+		SpecHash:    app.SpecHash(),
+	}
 	if app.IsKube() {
-		return r.renderKube(app)
+		return r.renderKube(app, u)
 	}
 	if app.Image == "" {
 		return Unit{}, fmt.Errorf("application %q has no image", app.Name)
 	}
-
-	u := Unit{
-		App:         app.Name,
-		FileName:    FileName(app.Name),
-		ServiceName: ServiceName(app.Name),
-		SpecHash:    app.SpecHash(),
-		SecretsHash: app.SecretsHash(),
-	}
-	u.Path = filepath.Join(r.UnitDir, u.FileName)
-
+	u.SecretsHash = app.SecretsHash()
 	if len(app.SecretEnv) > 0 {
-		if r.EnvDir == "" {
+		if u.EnvFilePath = r.EnvFilePath(app.Name); u.EnvFilePath == "" {
 			return Unit{}, fmt.Errorf("application %q uses secrets but no env directory is configured", app.Name)
 		}
-		u.EnvFilePath = filepath.Join(r.EnvDir, app.Name+".env")
 		env, err := renderEnvFile(app)
 		if err != nil {
 			return Unit{}, err
 		}
 		u.EnvFile = env
 	}
-
-	content, err := r.renderUnit(app, u)
+	content, err := r.renderContainer(app, u)
 	if err != nil {
 		return Unit{}, err
 	}
@@ -149,75 +169,32 @@ func (r *Renderer) Render(app model.Application) (Unit, error) {
 
 // renderKube produces a .kube unit and the manifest it plays.
 // podman does the pod interpretation, the unit only says where the YAML is and how systemd should supervise it.
-func (r *Renderer) renderKube(app model.Application) (Unit, error) {
+func (r *Renderer) renderKube(app model.Application, u Unit) (Unit, error) {
 	if len(app.Manifest) == 0 {
 		return Unit{}, fmt.Errorf("pod %q has no manifest", app.Name)
 	}
-	if r.KubeDir == "" {
+	if u.ManifestPath = r.ManifestPath(app.Name); u.ManifestPath == "" {
 		return Unit{}, fmt.Errorf("pod %q: no kube directory is configured", app.Name)
 	}
-	u := Unit{
-		App:          app.Name,
-		FileName:     KubeFileName(app.Name),
-		ServiceName:  ServiceName(app.Name),
-		SpecHash:     app.SpecHash(),
-		ManifestPath: filepath.Join(r.KubeDir, app.Name+".yaml"),
-		Manifest:     app.Manifest,
-		ManifestHash: app.ManifestHash,
-	}
-	u.Path = filepath.Join(r.UnitDir, u.FileName)
+	u.Manifest = app.Manifest
+	u.ManifestHash = app.ManifestHash
 
 	var b bytes.Buffer
-	b.WriteString(markerManaged + "\n")
-	b.WriteString(markerApp + app.Name + "\n")
-	b.WriteString(markerKind + model.KindKube + "\n")
-	b.WriteString(markerSpec + u.SpecHash + "\n")
-	b.WriteString(markerManifest + u.ManifestHash + "\n")
-	b.WriteString(markerVersion + Version + "\n")
-	b.WriteString("\n")
-
-	b.WriteString("[Unit]\n")
-	fmt.Fprintf(&b, "Description=podcd pod %s\n", app.Name)
-	b.WriteString("\n")
-
-	b.WriteString("[Kube]\n")
-	fmt.Fprintf(&b, "Yaml=%s\n", u.ManifestPath)
-	b.WriteString("\n")
-
+	writeHeader(&b, u, model.KindKube)
+	fmt.Fprintf(&b, "[Unit]\nDescription=podcd pod %s\n\n", app.Name)
+	fmt.Fprintf(&b, "[Kube]\nYaml=%s\n\n", u.ManifestPath)
 	// Quadlet generates `podman kube play --replace` and `podman kube down`.
 	// Restart= applies to the service container that stands for the pod.
-	b.WriteString("[Service]\n")
-	switch app.RestartPolicy {
-	case "", "always":
-		b.WriteString("Restart=always\n")
-	default:
-		fmt.Fprintf(&b, "Restart=%s\n", app.RestartPolicy)
-	}
-	b.WriteString("RestartSec=5\n")
-	b.WriteString("\n")
-
-	b.WriteString("[Install]\n")
-	b.WriteString("WantedBy=default.target\n")
-
+	writeService(&b, app)
+	writeInstall(&b)
 	u.Content = b.Bytes()
 	return u, nil
 }
 
-func (r *Renderer) renderUnit(app model.Application, u Unit) ([]byte, error) {
+func (r *Renderer) renderContainer(app model.Application, u Unit) ([]byte, error) {
 	var b bytes.Buffer
-
-	b.WriteString(markerManaged + "\n")
-	b.WriteString(markerApp + app.Name + "\n")
-	b.WriteString(markerSpec + u.SpecHash + "\n")
-	if u.SecretsHash != "" {
-		b.WriteString(markerSecrets + u.SecretsHash + "\n")
-	}
-	b.WriteString(markerVersion + Version + "\n")
-	b.WriteString("\n")
-
-	b.WriteString("[Unit]\n")
-	fmt.Fprintf(&b, "Description=podcd application %s\n", app.Name)
-	b.WriteString("\n")
+	writeHeader(&b, u, "")
+	fmt.Fprintf(&b, "[Unit]\nDescription=podcd application %s\n\n", app.Name)
 
 	b.WriteString("[Container]\n")
 	fmt.Fprintf(&b, "ContainerName=%s\n", ContainerName(app.Name))
@@ -229,35 +206,22 @@ func (r *Renderer) renderUnit(app model.Application, u Unit) ([]byte, error) {
 		"io.podcd.app":       app.Name,
 		"io.podcd.spec-hash": u.SpecHash,
 	}
-	for k, v := range app.Labels {
-		labels[k] = v
+	maps.Copy(labels, app.Labels)
+	if err := writeKeyValues(&b, "Label", "label ", labels); err != nil {
+		return nil, err
 	}
-	for _, k := range sortedKeys(labels) {
-		if err := checkUnitValue("label "+k, labels[k]); err != nil {
-			return nil, err
-		}
-		fmt.Fprintf(&b, "Label=%s\n", quoteIfNeeded(k+"="+labels[k]))
-	}
-
-	for _, k := range sortedKeys(app.Env) {
-		if err := checkUnitValue("environment variable "+k, app.Env[k]); err != nil {
-			return nil, err
-		}
-		fmt.Fprintf(&b, "Environment=%s\n", quoteIfNeeded(k+"="+app.Env[k]))
+	if err := writeKeyValues(&b, "Environment", "environment variable ", app.Env); err != nil {
+		return nil, err
 	}
 	if u.EnvFilePath != "" {
 		fmt.Fprintf(&b, "EnvironmentFile=%s\n", u.EnvFilePath)
 	}
 
 	for _, p := range app.Ports {
-		fmt.Fprintf(&b, "PublishPort=%s\n", publishPort(p))
+		fmt.Fprintf(&b, "PublishPort=%s\n", p)
 	}
 	for _, v := range app.Volumes {
-		spec := v.Source + ":" + v.Destination
-		if v.Options != "" {
-			spec += ":" + v.Options
-		}
-		fmt.Fprintf(&b, "Volume=%s\n", spec)
+		fmt.Fprintf(&b, "Volume=%s\n", v)
 	}
 	for _, n := range app.Networks {
 		fmt.Fprintf(&b, "Network=%s\n", n)
@@ -279,40 +243,69 @@ func (r *Renderer) renderUnit(app model.Application, u Unit) ([]byte, error) {
 	}
 	b.WriteString("\n")
 
-	b.WriteString("[Service]\n")
-	switch app.RestartPolicy {
-	case "", "always":
-		b.WriteString("Restart=always\n")
-	default:
-		fmt.Fprintf(&b, "Restart=%s\n", app.RestartPolicy)
+	writeService(&b, app)
+	writeInstall(&b)
+	return b.Bytes(), nil
+}
+
+// writeHeader writes the marker comments the agent recognises its own work by.
+func writeHeader(b *bytes.Buffer, u Unit, kind string) {
+	b.WriteString(markerManaged + "\n")
+	b.WriteString(markerApp + u.App + "\n")
+	if kind != "" {
+		b.WriteString(markerKind + kind + "\n")
 	}
+	b.WriteString(markerSpec + u.SpecHash + "\n")
+	if u.SecretsHash != "" {
+		b.WriteString(markerSecrets + u.SecretsHash + "\n")
+	}
+	if u.ManifestHash != "" {
+		b.WriteString(markerManifest + u.ManifestHash + "\n")
+	}
+	b.WriteString(markerVersion + Version + "\n\n")
+}
+
+// writeService writes the [Service] section: how systemd supervises the unit.
+// Resource limits belong to systemd, not the container runtime: the unit is
+// what systemd supervises, and cgroup limits survive a restart.
+func writeService(b *bytes.Buffer, app model.Application) {
+	b.WriteString("[Service]\n")
+	fmt.Fprintf(b, "Restart=%s\n", cmp.Or(app.RestartPolicy, "always"))
 	b.WriteString("RestartSec=5\n")
 	if app.StopTimeout > 0 {
-		fmt.Fprintf(&b, "TimeoutStopSec=%d\n", app.StopTimeout)
+		fmt.Fprintf(b, "TimeoutStopSec=%d\n", app.StopTimeout)
 	}
-	// Resource limits belong to systemd, not the container runtime.
-	// The unit is what systemd supervises, and cgroup limits survive a restart.
 	if app.Resources.Memory != "" {
-		fmt.Fprintf(&b, "MemoryMax=%s\n", app.Resources.Memory)
+		fmt.Fprintf(b, "MemoryMax=%s\n", app.Resources.Memory)
 	}
 	if app.Resources.CPU != "" {
-		fmt.Fprintf(&b, "CPUQuota=%s\n", app.Resources.CPU)
+		fmt.Fprintf(b, "CPUQuota=%s\n", app.Resources.CPU)
 	}
 	b.WriteString("\n")
+}
 
-	// WantedBy makes the application come back after a reboot.
-	// With lingering enabled for the agent user, that is all "survives reboot" needs.
-	b.WriteString("[Install]\n")
-	b.WriteString("WantedBy=default.target\n")
+// writeInstall makes the unit come back after a reboot. With lingering
+// enabled for the agent user, that is all "survives reboot" needs.
+func writeInstall(b *bytes.Buffer) {
+	b.WriteString("[Install]\nWantedBy=default.target\n")
+}
 
-	return b.Bytes(), nil
+// writeKeyValues writes one key=value line per map entry, sorted.
+func writeKeyValues(b *bytes.Buffer, unitKey, what string, m map[string]string) error {
+	for _, k := range slices.Sorted(maps.Keys(m)) {
+		if err := checkUnitValue(what+k, m[k]); err != nil {
+			return err
+		}
+		fmt.Fprintf(b, "%s=%s\n", unitKey, quoteIfNeeded(k+"="+m[k]))
+	}
+	return nil
 }
 
 // renderEnvFile writes resolved secrets in systemd EnvironmentFile syntax.
 func renderEnvFile(app model.Application) ([]byte, error) {
 	var b bytes.Buffer
 	b.WriteString("# Managed by podcd - do not edit. Generated from secret references.\n")
-	for _, k := range sortedKeys(app.SecretEnv) {
+	for _, k := range slices.Sorted(maps.Keys(app.SecretEnv)) {
 		v := app.SecretEnv[k]
 		if strings.ContainsAny(v, "\n\r") {
 			return nil, fmt.Errorf("application %q: secret %s contains a newline, which systemd cannot carry in an environment file", app.Name, k)
@@ -357,22 +350,6 @@ func ParseMarkers(content []byte) Markers {
 		}
 	}
 	return m
-}
-
-func publishPort(p model.Port) string {
-	var sb strings.Builder
-	if p.HostIP != "" {
-		sb.WriteString(p.HostIP)
-		sb.WriteString(":")
-	}
-	sb.WriteString(strconv.Itoa(p.Host))
-	sb.WriteString(":")
-	sb.WriteString(strconv.Itoa(p.Container))
-	if p.Protocol != "" && p.Protocol != "tcp" {
-		sb.WriteString("/")
-		sb.WriteString(p.Protocol)
-	}
-	return sb.String()
 }
 
 // podmanArgs renders the settings Quadlet has no key for.
@@ -433,13 +410,4 @@ func checkUnitValue(what, v string) error {
 		return fmt.Errorf("%s contains a newline, which a systemd unit cannot represent", what)
 	}
 	return nil
-}
-
-func sortedKeys(m map[string]string) []string {
-	out := make([]string, 0, len(m))
-	for k := range m {
-		out = append(out, k)
-	}
-	sort.Strings(out)
-	return out
 }

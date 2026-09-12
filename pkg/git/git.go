@@ -5,18 +5,19 @@
 package git
 
 import (
-	"bytes"
+	"cmp"
 	"context"
 	"encoding/base64"
 	"errors"
 	"fmt"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"regexp"
 	"strconv"
 	"strings"
 	"time"
+
+	"github.com/podcd/podcd/internal/subprocess"
 )
 
 // ErrOffline means the remote could not be reached.
@@ -211,27 +212,9 @@ func (r *Repository) run(ctx context.Context, args ...string) (string, error) {
 }
 
 func (r *Repository) runIn(ctx context.Context, dir string, args ...string) (string, error) {
-	timeout := r.Timeout
-	if timeout <= 0 {
-		timeout = 5 * time.Minute
-	}
-	ctx, cancel := context.WithTimeout(ctx, timeout)
-	defer cancel()
-
-	cmd := exec.CommandContext(ctx, "git", args...)
-	cmd.Dir = dir
-	cmd.Env = r.env()
-	var stdout, stderr bytes.Buffer
-	cmd.Stdout = &stdout
-	cmd.Stderr = &stderr
-	if err := cmd.Run(); err != nil {
-		msg := strings.TrimSpace(stderr.String())
-		if msg == "" {
-			msg = err.Error()
-		}
-		return stdout.String(), fmt.Errorf("git %s: %s", strings.Join(args, " "), msg)
-	}
-	return stdout.String(), nil
+	return subprocess.Run(ctx, subprocess.Command{
+		Bin: "git", Args: args, Dir: dir, Env: r.env(), Timeout: cmp.Or(r.Timeout, 5*time.Minute),
+	})
 }
 
 // env builds the environment for git, never interactive, never prompting.

@@ -61,7 +61,7 @@ func newCreateCommand() *cobra.Command {
 		Short: "print a validated document for the repository",
 		Long: "Builds one document from flags, per kind. It is checked with the same loader the agent\n" +
 			"uses and printed; put it where you want it (`>> apps.yaml`) and run `podcd lint`.",
-		Example: "  podcd create application api --image ghcr.io/you/api@sha256:... --port 8081:8080 >> apps.yaml",
+		Example: "  podcd create application api --image ghcr.io/you/api:1.2.3 --port 8081:8080 >> apps.yaml",
 		RunE: func(cmd *cobra.Command, _ []string) error {
 			return cmd.Help()
 		},
@@ -98,7 +98,7 @@ func newCreateApplication() *cobra.Command {
 			return emit(cmd, doc)
 		},
 	}
-	cmd.Flags().StringVar(&o.Image, "image", "", "image, pinned by digest (required)")
+	cmd.Flags().StringVar(&o.Image, "image", "", "container image (required)")
 	cmd.Flags().StringArrayVar(&o.Ports, "port", nil, "host:container port to publish on 127.0.0.1 (repeatable)")
 	cmd.Flags().StringArrayVar(&o.Env, "env", nil, "KEY=value environment variable (repeatable)")
 	cmd.Flags().StringVar(&o.HealthPath, "health-path", "", "HTTP path to probe on the first port")
@@ -121,7 +121,7 @@ func newCreatePod() *cobra.Command {
 			return emit(cmd, doc)
 		},
 	}
-	cmd.Flags().StringVar(&o.Image, "image", "", "image, pinned by digest (required)")
+	cmd.Flags().StringVar(&o.Image, "image", "", "container image (required)")
 	cmd.Flags().StringArrayVar(&o.Ports, "port", nil, "host:container port to publish on 127.0.0.1 (repeatable)")
 	_ = cmd.MarkFlagRequired("image")
 	return cmd

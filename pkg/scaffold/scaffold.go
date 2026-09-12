@@ -18,6 +18,7 @@ import (
 	sigyaml "sigs.k8s.io/yaml"
 
 	"github.com/podcd/podcd/pkg/config"
+	"github.com/podcd/podcd/pkg/model"
 )
 
 // ApplicationOptions describes an Application to generate.
@@ -43,7 +44,7 @@ func Application(o ApplicationOptions) ([]byte, error) {
 		if err != nil {
 			return nil, err
 		}
-		spec.Ports = append(spec.Ports, config.PortSpec{Host: host, Container: container, HostIP: "127.0.0.1"})
+		spec.Ports = append(spec.Ports, model.Port{Host: host, Container: container, HostIP: "127.0.0.1"})
 	}
 	if len(o.Env) > 0 {
 		spec.Env = map[string]string{}
@@ -59,7 +60,7 @@ func Application(o ApplicationOptions) ([]byte, error) {
 		if len(spec.Ports) == 0 {
 			return nil, errors.New("--health-path needs a --port to probe")
 		}
-		spec.Healthcheck = &config.HealthcheckSpec{HTTP: &config.HTTPProbeSpec{Port: spec.Ports[0].Host, Path: o.HealthPath}}
+		spec.Healthcheck = &model.Healthcheck{HTTP: &model.HTTPProbe{Port: spec.Ports[0].Host, Path: o.HealthPath}}
 	}
 	return render(config.APIVersion, config.KindApplication, o.Name, spec)
 }
@@ -92,13 +93,9 @@ func Pod(o PodOptions) ([]byte, error) {
 	return toYAML(pod)
 }
 
-// checkImage enforces the digest rule at creation time, where the fix is cheapest
 func checkImage(image string) error {
 	if image == "" {
 		return errors.New("--image is required")
-	}
-	if !strings.Contains(image, "@sha256:") {
-		return fmt.Errorf("image %q is not pinned to a digest; use image@sha256:... (podman image inspect --format '{{index .RepoDigests 0}}' IMAGE prints it)", image)
 	}
 	return nil
 }
@@ -120,12 +117,12 @@ func Host(o HostOptions) ([]byte, error) {
 
 // Group renders a Group document selecting the given applications.
 func Group(name string, applications []string) ([]byte, error) {
-	return render(config.APIVersion, config.KindGroup, name, config.GroupSpec{Applications: applications})
+	return render(config.APIVersion, config.KindGroup, name, config.SelectionSpec{Applications: applications})
 }
 
 // Environment renders an Environment document selecting the given applications.
 func Environment(name string, applications []string) ([]byte, error) {
-	return render(config.APIVersion, config.KindEnvironment, name, config.EnvironmentSpec{Applications: applications})
+	return render(config.APIVersion, config.KindEnvironment, name, config.SelectionSpec{Applications: applications})
 }
 
 // document is the envelope every podcd kind is written in.
@@ -208,7 +205,7 @@ func check(doc []byte) ([]byte, error) {
 }
 
 func parsePort(s string) (host, container int, err error) {
-	var p config.PortSpec
+	var p model.Port
 	if err := sigyaml.Unmarshal([]byte(fmt.Sprintf("%q", s)), &p); err != nil {
 		return 0, 0, fmt.Errorf("--port %q: expected host:container", s)
 	}
@@ -291,11 +288,11 @@ Manual reconciliation:
 
 To grow it, add documents with podcd or by hand:
 
-    podcd create application api --image ghcr.io/you/api@sha256:... --port 8081:8080 >> apps.yaml
+    podcd create application api --image ghcr.io/you/api:1.2.3 --port 8081:8080 >> apps.yaml
     podcd create group web --app nginx --app api >> groups.yaml
     podcd create host web-02 --group web >> hosts.yaml
     podcd lint
 
-Images must be pinned by digest, and secrets are references (env:NAME, file:path, vault:mount/path/key)
+Secrets are references (env:NAME, file:path, vault:mount/path/key)
 `, host)
 }

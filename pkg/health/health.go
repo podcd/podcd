@@ -5,11 +5,13 @@
 package health
 
 import (
+	"cmp"
 	"context"
 	"fmt"
 	"net"
 	"net/http"
 	"strconv"
+	"strings"
 	"time"
 
 	"github.com/podcd/podcd/pkg/model"
@@ -77,14 +79,8 @@ func (c *Checker) Check(ctx context.Context, app model.Application, unitActive b
 func (c *Checker) Wait(ctx context.Context, app model.Application, unitActive func(context.Context) bool) model.Health {
 	retries, interval := DefaultRetries, DefaultInterval
 	if hc := app.Healthcheck; hc != nil {
-		if hc.Retries > 0 {
-			retries = hc.Retries
-		}
-		if hc.Interval != "" {
-			if d, err := time.ParseDuration(hc.Interval); err == nil && d > 0 {
-				interval = d
-			}
-		}
+		retries = cmp.Or(hc.Retries, retries)
+		interval = parseDuration(hc.Interval, interval)
 	}
 
 	var last model.Health
@@ -107,28 +103,11 @@ func (c *Checker) Wait(ctx context.Context, app model.Application, unitActive fu
 }
 
 func (c *Checker) checkHTTP(ctx context.Context, p *model.HTTPProbe) (string, model.HealthStatus) {
-	host := p.Host
-	if host == "" {
-		host = DefaultHost
-	}
-	scheme := p.Scheme
-	if scheme == "" {
-		scheme = "http"
-	}
-	path := p.Path
-	if path == "" {
-		path = "/"
-	}
-	if path[0] != '/' {
-		path = "/" + path
-	}
-	expect := p.Expect
-	if expect == 0 {
-		expect = 200
-	}
+	path := "/" + strings.TrimPrefix(p.Path, "/")
+	expect := cmp.Or(p.Expect, http.StatusOK)
 	timeout := parseDuration(p.Timeout, DefaultTimeout)
 
-	url := scheme + "://" + net.JoinHostPort(host, strconv.Itoa(p.Port)) + path
+	url := cmp.Or(p.Scheme, "http") + "://" + hostPort(p.Host, p.Port) + path
 	ctx, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()
 
@@ -152,12 +131,8 @@ func (c *Checker) checkHTTP(ctx context.Context, p *model.HTTPProbe) (string, mo
 }
 
 func (c *Checker) checkTCP(ctx context.Context, p *model.TCPProbe) (string, model.HealthStatus) {
-	host := p.Host
-	if host == "" {
-		host = DefaultHost
-	}
 	timeout := parseDuration(p.Timeout, DefaultTimeout)
-	addr := net.JoinHostPort(host, strconv.Itoa(p.Port))
+	addr := hostPort(p.Host, p.Port)
 
 	d := net.Dialer{Timeout: timeout}
 	conn, err := d.DialContext(ctx, "tcp", addr)
@@ -181,6 +156,13 @@ func (c *Checker) checkExec(ctx context.Context, app string, p *model.ExecProbe)
 	return "exec ok", model.HealthHealthy
 }
 
+// hostPort is the address a probe dials; an empty host means the loopback.
+func hostPort(host string, port int) string {
+	return net.JoinHostPort(cmp.Or(host, DefaultHost), strconv.Itoa(port))
+}
+
+// parseDuration reads a duration from the spec, or falls back to def when it
+// is empty or not usable.
 func parseDuration(s string, def time.Duration) time.Duration {
 	if s == "" {
 		return def

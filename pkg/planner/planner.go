@@ -2,8 +2,9 @@
 package planner
 
 import (
+	"cmp"
 	"fmt"
-	"sort"
+	"slices"
 	"strconv"
 	"strings"
 
@@ -23,14 +24,17 @@ func Build(desired model.DesiredState, actual model.ActualState, rend *renderer.
 	var plan model.Plan
 	seen := map[string]bool{}
 
-	apps := append([]model.Application(nil), desired.Applications...)
-	sort.Slice(apps, func(i, j int) bool { return apps[i].Name < apps[j].Name })
+	apps := slices.Clone(desired.Applications)
+	slices.SortFunc(apps, func(a, b model.Application) int { return cmp.Compare(a.Name, b.Name) })
 
 	for i := range apps {
-		app := apps[i]
+		app := &apps[i]
 		seen[app.Name] = true
+		act := func(t model.ActionType, reason string, details ...string) {
+			plan.Actions = append(plan.Actions, model.Action{Type: t, App: app.Name, Reason: reason, Details: details, Application: app})
+		}
 
-		unit, err := rend.Render(app)
+		unit, err := rend.Render(*app)
 		if err != nil {
 			return model.Plan{}, fmt.Errorf("rendering %s: %w", app.Name, err)
 		}
@@ -38,68 +42,28 @@ func Build(desired model.DesiredState, actual model.ActualState, rend *renderer.
 		cur, exists := actual.Apps[app.Name]
 		switch {
 		case !exists:
-			plan.Actions = append(plan.Actions, model.Action{
-				Type:        model.ActionCreate,
-				App:         app.Name,
-				Reason:      "not present on this host",
-				Details:     imageDetails(app),
-				Application: &apps[i],
-			})
-
+			act(model.ActionCreate, "not present on this host", imageDetails(*app)...)
 		case !cur.Managed:
 			// Somebody else owns this unit, guessing would be how you delete someone's database.
 			return model.Plan{}, fmt.Errorf("application %q: unit %s exists but is not managed by podcd; "+
 				"remove it by hand or restore its podcd header before reconciling", app.Name, cur.UnitFile)
-
 		case cur.UnitFileHash != model.HashBytes(unit.Content):
-			plan.Actions = append(plan.Actions, model.Action{
-				Type:        model.ActionUpdate,
-				App:         app.Name,
-				Reason:      updateReason(cur, unit),
-				Details:     changeDetails(cur, unit),
-				Application: &apps[i],
-			})
-
+			act(model.ActionUpdate, updateReason(cur, unit), changeDetails(cur, unit)...)
 		case cur.SecretsHash != unit.SecretsHash:
-			plan.Actions = append(plan.Actions, model.Action{
-				Type:        model.ActionUpdate,
-				App:         app.Name,
-				Reason:      "secret values changed",
-				Application: &apps[i],
-			})
-
+			act(model.ActionUpdate, "secret values changed")
 		case cur.UnitState != model.UnitActive:
-			plan.Actions = append(plan.Actions, model.Action{
-				Type:        model.ActionRestart,
-				App:         app.Name,
-				Reason:      fmt.Sprintf("unit is %s, should be running", stateOrUnknown(cur.UnitState)),
-				Application: &apps[i],
-			})
-
+			act(model.ActionRestart, fmt.Sprintf("unit is %s, should be running", cmp.Or(cur.UnitState, model.UnitUnknown)))
 		default:
-			plan.Actions = append(plan.Actions, model.Action{
-				Type:        model.ActionNoOp,
-				App:         app.Name,
-				Reason:      "up to date",
-				Application: &apps[i],
-			})
+			act(model.ActionNoOp, "up to date")
 		}
 	}
 
 	for _, name := range actual.Names() {
-		if seen[name] {
-			continue
-		}
-		cur := actual.Apps[name]
-		if !cur.Managed {
-			continue // not ours; not our business
+		if seen[name] || !actual.Apps[name].Managed {
+			continue // ours and still wanted, or not ours at all
 		}
 		if !opts.Prune {
-			plan.Actions = append(plan.Actions, model.Action{
-				Type:   model.ActionNoOp,
-				App:    name,
-				Reason: "no longer declared in Git, but pruning is disabled",
-			})
+			plan.Actions = append(plan.Actions, model.Action{Type: model.ActionNoOp, App: name, Reason: "no longer declared in Git, but pruning is disabled"})
 			continue
 		}
 		plan.Actions = append(plan.Actions, model.Action{
@@ -111,11 +75,8 @@ func Build(desired model.DesiredState, actual model.ActualState, rend *renderer.
 		})
 	}
 
-	sort.SliceStable(plan.Actions, func(i, j int) bool {
-		if rank(plan.Actions[i].Type) != rank(plan.Actions[j].Type) {
-			return rank(plan.Actions[i].Type) < rank(plan.Actions[j].Type)
-		}
-		return plan.Actions[i].App < plan.Actions[j].App
+	slices.SortStableFunc(plan.Actions, func(a, b model.Action) int {
+		return cmp.Or(cmp.Compare(rank(a.Type), rank(b.Type)), cmp.Compare(a.App, b.App))
 	})
 	return plan, nil
 }
@@ -147,13 +108,6 @@ func imageDetails(app model.Application) []string {
 		out = append([]string{"pod with " + strconv.Itoa(len(images)) + " container(s), played by podman"}, out...)
 	}
 	return out
-}
-
-func stateOrUnknown(s model.UnitState) string {
-	if s == "" {
-		return string(model.UnitUnknown)
-	}
-	return string(s)
 }
 
 func updateReason(cur model.ActualApp, unit renderer.Unit) string {

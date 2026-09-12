@@ -1,23 +1,24 @@
 package cli
 
 import (
+	"cmp"
 	"context"
 	"fmt"
 	"io"
+	"maps"
 	"os"
 	"os/signal"
 	"slices"
-	"sort"
 	"strconv"
 	"strings"
 	"syscall"
-	"text/tabwriter"
 
 	"github.com/spf13/cobra"
 	corev1 "k8s.io/api/core/v1"
 
 	"github.com/podcd/podcd/pkg/config"
 	"github.com/podcd/podcd/pkg/git"
+	"github.com/podcd/podcd/pkg/model"
 )
 
 // item is one document, flattened for listing: what kind, what name, where
@@ -162,10 +163,10 @@ func collect(ix *config.Index, kind, name string) []item {
 		items = append(items, item{Kind: k, Name: n, Source: src.String(), Spec: spec, raw: src.Raw, cols: cols})
 	}
 	for n, d := range ix.Applications {
-		add(config.KindApplication, n, d.Source, d.Spec, shortImage(d.Spec.Image), portSpecs(d.Spec.Ports))
+		add(config.KindApplication, n, d.Source, d.Spec, shortImage(d.Spec.Image), portList(d.Spec.Ports))
 	}
 	for n, d := range ix.Pods {
-		add(config.KindPod, n, d.Source, d.Pod.Spec, containerNames(d.Pod), podPorts(d.Pod))
+		add(config.KindPod, n, d.Source, d.Spec.Spec, containerNames(d.Spec), podPorts(d.Spec))
 	}
 	for n, d := range ix.Hosts {
 		add(config.KindHost, n, d.Source, d.Spec, dash(d.Spec.Environment), dash(strings.Join(d.Spec.Groups, ",")), dash(strings.Join(d.Spec.Applications, ",")))
@@ -177,18 +178,15 @@ func collect(ix *config.Index, kind, name string) []item {
 		add(config.KindEnvironment, n, d.Source, d.Spec, dash(strings.Join(d.Spec.Applications, ",")), strconv.Itoa(len(d.Spec.Overrides)))
 	}
 	for n, d := range ix.ConfigMaps {
-		add(config.KindConfigMap, n, d.Source, d.ConfigMap.Data, dash(strings.Join(sortedKeys(d.ConfigMap.Data), ",")))
+		add(config.KindConfigMap, n, d.Source, d.Spec.Data, dash(strings.Join(slices.Sorted(maps.Keys(d.Spec.Data)), ",")))
 	}
 	for n, d := range ix.Secrets {
 		// StringData holds references, never values, so listing keys and
 		// references is safe.
-		add(config.KindSecret, n, d.Source, d.Secret.StringData, dash(strings.Join(sortedKeys(d.Secret.StringData), ",")))
+		add(config.KindSecret, n, d.Source, d.Spec.StringData, dash(strings.Join(slices.Sorted(maps.Keys(d.Spec.StringData)), ",")))
 	}
-	sort.Slice(items, func(i, j int) bool {
-		if items[i].Kind != items[j].Kind {
-			return kindOrder(items[i].Kind) < kindOrder(items[j].Kind)
-		}
-		return items[i].Name < items[j].Name
+	slices.SortFunc(items, func(a, b item) int {
+		return cmp.Or(cmp.Compare(kindOrder(a.Kind), kindOrder(b.Kind)), cmp.Compare(a.Name, b.Name))
 	})
 	return items
 }
@@ -209,7 +207,7 @@ func printItems(w io.Writer, kind string, items []item) {
 		fmt.Fprintf(w, "no %s defined\n", orAll(kind))
 		return
 	}
-	tw := tabwriter.NewWriter(w, 0, 0, 2, ' ', 0)
+	tw := table(w)
 	if kind == "" {
 		// Mixed kinds: the columns they all share.
 		fmt.Fprintln(tw, "KIND\tNAME\tSOURCE")
@@ -241,17 +239,6 @@ func orAll(kind string) string {
 	return strings.ToLower(kind) + "s"
 }
 
-func portSpecs(ports []config.PortSpec) string {
-	if len(ports) == 0 {
-		return "-"
-	}
-	parts := make([]string, 0, len(ports))
-	for _, p := range ports {
-		parts = append(parts, fmt.Sprintf("%d→%d", p.Host, p.Container))
-	}
-	return strings.Join(parts, ",")
-}
-
 func containerNames(pod corev1.Pod) string {
 	names := make([]string, 0, len(pod.Spec.Containers))
 	for _, c := range pod.Spec.Containers {
@@ -261,22 +248,13 @@ func containerNames(pod corev1.Pod) string {
 }
 
 func podPorts(pod corev1.Pod) string {
-	var parts []string
+	var ports []model.Port
 	for _, c := range pod.Spec.Containers {
 		for _, p := range c.Ports {
 			if p.HostPort > 0 {
-				parts = append(parts, fmt.Sprintf("%d→%d", p.HostPort, p.ContainerPort))
+				ports = append(ports, model.Port{Host: int(p.HostPort), Container: int(p.ContainerPort)})
 			}
 		}
 	}
-	return dash(strings.Join(parts, ","))
-}
-
-func sortedKeys(m map[string]string) []string {
-	keys := make([]string, 0, len(m))
-	for k := range m {
-		keys = append(keys, k)
-	}
-	sort.Strings(keys)
-	return keys
+	return portList(ports)
 }

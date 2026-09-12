@@ -10,8 +10,9 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"maps"
 	"os"
-	"sort"
+	"slices"
 	"strings"
 )
 
@@ -46,21 +47,33 @@ func Default(secretsDir, envFile string) *Resolver {
 }
 
 // Schemes lists the registered schemes, sorted.
-func (r *Resolver) Schemes() []string {
-	out := make([]string, 0, len(r.providers))
-	for s := range r.providers {
-		out = append(out, s)
+func (r *Resolver) Schemes() []string { return slices.Sorted(maps.Keys(r.providers)) }
+
+// SplitRef splits a "scheme:locator" reference. ok is false for anything else.
+// A plaintext secret in Git should never work by accident.
+func SplitRef(ref string) (scheme, locator string, ok bool) {
+	scheme, locator, ok = strings.Cut(ref, ":")
+	if !ok || scheme == "" || locator == "" {
+		return "", "", false
 	}
-	sort.Strings(out)
-	return out
+	for _, r := range scheme {
+		if r < 'a' || r > 'z' {
+			return "", "", false
+		}
+	}
+	return scheme, locator, true
+}
+
+// IsReference reports whether v has the shape of a secret reference.
+func IsReference(v string) bool {
+	_, _, ok := SplitRef(v)
+	return ok
 }
 
 // Resolve looks up one "scheme:locator" reference.
-//
-// A reference with no scheme is rejected rather than treated as a literal, a plaintext secret in Git must never work by accident.
 func (r *Resolver) Resolve(ctx context.Context, ref string) (string, error) {
-	scheme, locator, ok := strings.Cut(ref, ":")
-	if !ok || scheme == "" || locator == "" {
+	scheme, locator, ok := SplitRef(ref)
+	if !ok {
 		return "", fmt.Errorf("secret reference %q must be \"scheme:locator\" (known schemes: %s)",
 			ref, strings.Join(r.Schemes(), ", "))
 	}

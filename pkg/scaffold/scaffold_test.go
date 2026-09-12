@@ -107,12 +107,15 @@ func TestCreatedDocumentsComposeIntoARepository(t *testing.T) {
 	}
 }
 
-func TestCreateEnforcesTheDigestRule(t *testing.T) {
-	if _, err := Application(ApplicationOptions{Name: "x", Image: "nginx:alpine"}); err == nil || !strings.Contains(err.Error(), "not pinned") {
-		t.Fatalf("an unpinned application image must be refused, got %v", err)
+func TestCreateAcceptsATag(t *testing.T) {
+	if _, err := Application(ApplicationOptions{Name: "x", Image: "nginx:alpine"}); err != nil {
+		t.Fatalf("a tag must be accepted: %v", err)
 	}
-	if _, err := Pod(PodOptions{Name: "x", Image: "nginx:alpine"}); err == nil {
-		t.Fatal("an unpinned pod image must be refused")
+	if _, err := Pod(PodOptions{Name: "x", Image: "nginx:alpine"}); err != nil {
+		t.Fatalf("a tag must be accepted: %v", err)
+	}
+	if _, err := Application(ApplicationOptions{Name: "x"}); err == nil {
+		t.Fatal("--image is required")
 	}
 }
 

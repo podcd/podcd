@@ -4,7 +4,6 @@ import (
 	"context"
 	"fmt"
 	"strings"
-	"text/tabwriter"
 
 	"github.com/spf13/cobra"
 
@@ -178,7 +177,7 @@ func newValidateCommand(f *configFlags) *cobra.Command {
 			d := res.Desired
 			fmt.Fprintf(env.out, "host %s (environment %s, groups %s) at %s\n",
 				d.Host, dash(d.Environment), dash(strings.Join(d.Groups, ",")), d.RevisionString())
-			w := tabwriter.NewWriter(env.out, 0, 0, 2, ' ', 0)
+			w := table(env.out)
 			fmt.Fprintln(w, "  APP\tKIND\tIMAGE\tPORTS\tFROM")
 			for _, a := range d.Applications {
 				kind := "container"

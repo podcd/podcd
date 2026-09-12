@@ -18,7 +18,7 @@ func newLintCommand() *cobra.Command {
 		Short: "check repository files without fetching or touching the host",
 		Long: "Loads the given directories and files (default: the current directory) with the agent's\n" +
 			"loader and compiles them for every Host they define, applying the same rules a reconcile\n" +
-			"would: known fields, unique names, pinned images, references that exist, no host port\n" +
+			"would: known fields, unique names, references that exist, no host port\n" +
 			"conflicts. Secret references are checked for syntax, not looked up, so this runs anywhere.\n" +
 			"Exits non-zero on any finding.",
 		Args: cobra.ArbitraryArgs,

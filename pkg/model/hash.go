@@ -5,7 +5,8 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
-	"sort"
+	"maps"
+	"slices"
 )
 
 // hashView drops Application's redacting MarshalJSON so the hash can see the
@@ -38,29 +39,20 @@ func (a Application) SpecHash() string {
 	return hashString(string(b))
 }
 
-// SecretsHash fingerprints just the resolved secret values.
-// s.t the executor could tell whether the on-disk env file needs rewriting.
-
+// SecretsHash fingerprints just the resolved secret values, so the executor
+// can tell whether the on-disk env file needs rewriting.
 func (a Application) SecretsHash() string {
 	if len(a.SecretEnv) == 0 {
 		return ""
 	}
-	keys := make([]string, 0, len(a.SecretEnv))
-	for k := range a.SecretEnv {
-		keys = append(keys, k)
-	}
-	sort.Strings(keys)
 	buf := ""
-	for _, k := range keys {
+	for _, k := range slices.Sorted(maps.Keys(a.SecretEnv)) {
 		buf += k + "\x00" + a.SecretEnv[k] + "\x00"
 	}
 	return hashString(buf)
 }
 
-func hashString(s string) string {
-	sum := sha256.Sum256([]byte(s))
-	return hex.EncodeToString(sum[:])
-}
+func hashString(s string) string { return HashBytes([]byte(s)) }
 
 // HashBytes returns the hex sha256 of b. Used for comparing rendered unit files.
 func HashBytes(b []byte) string {

@@ -7,7 +7,7 @@ import (
 	"fmt"
 	"log/slog"
 	"os"
-	"sort"
+	"slices"
 	"strings"
 	"time"
 
@@ -317,7 +317,7 @@ func (e *Engine) checkHealth(ctx context.Context, desired model.DesiredState, ap
 		}
 	}
 	if len(bad) > 0 {
-		sort.Strings(bad)
+		slices.Sort(bad)
 		return results, fmt.Errorf("unhealthy after reconcile: %s", strings.Join(bad, ", "))
 	}
 	return results, nil
