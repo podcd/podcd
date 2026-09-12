@@ -1,6 +1,5 @@
-# podcd agent configuration. This file says which Git to trust, and how
-# often to look. It lives on this host, not in Git.
-#
+# podcd agent configuration.
+
 # Lines starting with # show the default; uncomment one to change it.
 
 # Which Host document this machine is. Empty means the system hostname (with

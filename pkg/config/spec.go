@@ -25,9 +25,7 @@ func WriteAgentConfig(path string, cfg AgentConfig) error {
 // RenderAgentConfig returns the annotated YAML for cfg.
 func RenderAgentConfig(cfg AgentConfig) string {
 	var b strings.Builder
-	b.WriteString("# podcd agent configuration. This file says which Git to trust, and how\n")
-	b.WriteString("# often to look. It lives on this host, not in Git.\n")
-	b.WriteString("#\n")
+	b.WriteString("# podcd agent configuration.\n")
 	b.WriteString("# Lines starting with # show the default; uncomment one to change it.\n")
 	renderStruct(&b, reflect.ValueOf(cfg), reflect.ValueOf(DefaultAgentConfig()), "", true)
 	return b.String()
