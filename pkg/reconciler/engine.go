@@ -202,13 +202,6 @@ func (e *Engine) Reconcile(ctx context.Context, opts Options) (Result, error) {
 	res.Desired = load.Desired
 	res.Offline = load.Offline
 
-	for _, app := range load.Desired.Applications {
-		if app.AllowMutableImage {
-			e.log.Warn("application uses a mutable image reference; a Git commit no longer identifies what is deployed",
-				"app", app.Name, "image", app.Image)
-		}
-	}
-
 	actual, err := e.rt.Inspect(ctx)
 	if err != nil {
 		e.recordFailure(&st, started, load.Desired.Revisions, err)
@@ -328,6 +321,12 @@ func (e *Engine) checkHealth(ctx context.Context, desired model.DesiredState, ap
 		return results, fmt.Errorf("unhealthy after reconcile: %s", strings.Join(bad, ", "))
 	}
 	return results, nil
+}
+
+// Index fetches the configured repositories and returns everything they
+// define, without resolving for a host or touching the runtime.
+func (e *Engine) Index(ctx context.Context, only ...string) (*config.Index, map[string]string, []string, error) {
+	return e.source.LoadIndex(ctx, only...)
 }
 
 // Health probes the desired applications without changing anything.

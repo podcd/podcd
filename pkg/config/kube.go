@@ -17,12 +17,6 @@ import (
 	"github.com/podcd/podcd/pkg/secrets"
 )
 
-// Annotations a Pod may carry to talk to podcd.
-const (
-	// AnnotationAllowMutableImage is the Pod equivalent of allowMutableImage.
-	AnnotationAllowMutableImage = "gitops.podcd.io/allow-mutable-image"
-)
-
 // Labels podcd stamps on every pod it plays, so it can recognise its own work.
 const (
 	LabelManaged = "io.podcd.managed"
@@ -61,12 +55,10 @@ func (ix *Index) podToApplication(ctx context.Context, name string, pod corev1.P
 		add("has no containers")
 	}
 
-	allowMutable := strings.EqualFold(pod.Annotations[AnnotationAllowMutableImage], "true")
 	app := model.Application{
-		Name:              name,
-		Kind:              model.KindKube,
-		RestartPolicy:     kubeRestartPolicy(pod.Spec.RestartPolicy),
-		AllowMutableImage: allowMutable,
+		Name:          name,
+		Kind:          model.KindKube,
+		RestartPolicy: kubeRestartPolicy(pod.Spec.RestartPolicy),
 	}
 
 	containers := append(append([]corev1.Container(nil), pod.Spec.InitContainers...), pod.Spec.Containers...)
@@ -81,9 +73,8 @@ func (ix *Index) podToApplication(ctx context.Context, name string, pod corev1.P
 		switch {
 		case c.Image == "":
 			add("container %q has no image", c.Name)
-		case !strings.Contains(c.Image, "@sha256:") && !allowMutable:
-			add("container %q image %q is not pinned to a digest; use image@sha256:... or annotate the pod with %s: \"true\"",
-				c.Name, c.Image, AnnotationAllowMutableImage)
+		case !strings.Contains(c.Image, "@sha256:"):
+			add("container %q image %q is not pinned to a digest; use image@sha256:...", c.Name, c.Image)
 		}
 		app.Images = append(app.Images, c.Image)
 		for _, p := range c.Ports {

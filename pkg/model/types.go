@@ -116,10 +116,6 @@ type Application struct {
 	Healthcheck *Healthcheck `json:"healthcheck,omitempty"`
 	Resources   Resources    `json:"resources,omitempty"`
 
-	// AllowMutableImage permits an image reference without a digest.
-	// It is a deliberate, visible opt-out, not a default.
-	AllowMutableImage bool `json:"allowMutableImage,omitempty"`
-
 	// Provenance, for humans debugging on the host.
 	SourceRepo string   `json:"sourceRepo,omitempty"`
 	Origins    []string `json:"origins,omitempty"`

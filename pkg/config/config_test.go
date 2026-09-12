@@ -217,7 +217,9 @@ spec:
 	}
 }
 
-func TestUnpinnedImageAllowedWithOptOut(t *testing.T) {
+func TestAllowMutableImageIsNotAField(t *testing.T) {
+	// There is no opt-out: the digest rule is unconditional, and the field
+	// that used to relax it is rejected like any other unknown field.
 	files := baseFiles()
 	files["apps/api.yaml"] = `
 apiVersion: gitops.podcd.io/v1
@@ -228,13 +230,9 @@ spec:
   image: example.com/api:latest
   allowMutableImage: true
 `
-	ix := loadIndex(t, files)
-	got, err := ix.Resolve(context.Background(), ResolveOptions{Host: "prod-web-01"})
-	if err != nil {
-		t.Fatalf("explicit opt-out should be accepted: %v", err)
-	}
-	if !got.Applications[0].AllowMutableImage {
-		t.Error("allowMutableImage did not survive resolution")
+	dir := writeTree(t, files)
+	if err := NewIndex().LoadTree("repo", dir); err == nil || !strings.Contains(err.Error(), "allowMutableImage") {
+		t.Fatalf("allowMutableImage should be rejected as an unknown field, got %v", err)
 	}
 }
 

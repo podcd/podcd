@@ -46,6 +46,8 @@ type Source struct {
 	Repo string `json:"repo"`
 	Path string `json:"path"` // path relative to the repository root
 	Line int    `json:"line"`
+	// Raw is the document's YAML as loaded
+	Raw []byte `json:"-"`
 }
 
 func (s Source) String() string {
@@ -215,8 +217,6 @@ type AppSpec struct {
 
 	Healthcheck *HealthcheckSpec `json:"healthcheck,omitempty"`
 	Resources   *ResourcesSpec   `json:"resources,omitempty"`
-
-	AllowMutableImage *bool `json:"allowMutableImage,omitempty"`
 }
 
 // Override is a partial change to one workload, kept raw until resolution.

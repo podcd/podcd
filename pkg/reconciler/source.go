@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"slices"
 
 	"github.com/podcd/podcd/pkg/config"
 	"github.com/podcd/podcd/pkg/git"
@@ -38,30 +39,11 @@ type LoadResult struct {
 // resolves them for this host.
 func (s *Source) LoadDesiredState(ctx context.Context) (LoadResult, error) {
 	var result LoadResult
-	index := config.NewIndex()
-	revisions := map[string]string{}
-
-	for _, repo := range s.Repos {
-		if err := s.resolveAuth(ctx, repo); err != nil {
-			return result, err
-		}
-		sha, err := repo.Sync(ctx)
-		switch {
-		case err == nil:
-		case errors.Is(err, git.ErrOffline) && sha != "":
-			result.Offline = append(result.Offline, repo.Name)
-			s.logWarn("git remote unreachable, using the commit already on disk",
-				"repo", repo.Name, "revision", sha, "error", err)
-		default:
-			return result, fmt.Errorf("repository %s: %w", repo.Name, err)
-		}
-		revisions[repo.Name] = sha
-
-		if err := index.LoadTree(repo.Name, repo.TreePath()); err != nil {
-			return result, err
-		}
+	index, revisions, offline, err := s.LoadIndex(ctx)
+	if err != nil {
+		return result, err
 	}
-
+	result.Offline = offline
 	desired, err := index.Resolve(ctx, config.ResolveOptions{
 		Host:      s.Host,
 		Secrets:   s.Secrets,
@@ -72,6 +54,39 @@ func (s *Source) LoadDesiredState(ctx context.Context) (LoadResult, error) {
 	}
 	result.Desired = desired
 	return result, nil
+}
+
+// LoadIndex fetches every repository and loads its documents, without resolving them for a host
+// It returns the commits loaded and the repositories that could not be refreshed.
+func (s *Source) LoadIndex(ctx context.Context, only ...string) (*config.Index, map[string]string, []string, error) {
+	index := config.NewIndex()
+	revisions := map[string]string{}
+	var offline []string
+
+	for _, repo := range s.Repos {
+		if len(only) > 0 && !slices.Contains(only, repo.Name) {
+			continue
+		}
+		if err := s.resolveAuth(ctx, repo); err != nil {
+			return nil, nil, nil, err
+		}
+		sha, err := repo.Sync(ctx)
+		switch {
+		case err == nil:
+		case errors.Is(err, git.ErrOffline) && sha != "":
+			offline = append(offline, repo.Name)
+			s.logWarn("git remote unreachable, using the commit already on disk",
+				"repo", repo.Name, "revision", sha, "error", err)
+		default:
+			return nil, nil, nil, fmt.Errorf("repository %s: %w", repo.Name, err)
+		}
+		revisions[repo.Name] = sha
+
+		if err := index.LoadTree(repo.Name, repo.TreePath()); err != nil {
+			return nil, nil, nil, err
+		}
+	}
+	return index, revisions, offline, nil
 }
 
 // resolveAuth turns a repository's token reference into a value, on every

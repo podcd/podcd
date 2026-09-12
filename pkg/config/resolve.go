@@ -241,9 +241,6 @@ func mergeAppSpec(base, over AppSpec) AppSpec {
 	if over.Resources != nil {
 		out.Resources = over.Resources
 	}
-	if over.AllowMutableImage != nil {
-		out.AllowMutableImage = over.AllowMutableImage
-	}
 	return out
 }
 
@@ -270,16 +267,15 @@ func specToApplication(ctx context.Context, name string, spec AppSpec, sec *secr
 	}
 
 	app := model.Application{
-		Name:              name,
-		Image:             spec.Image,
-		Command:           append([]string(nil), spec.Command...),
-		Entrypoint:        append([]string(nil), spec.Entrypoint...),
-		Env:               mergeMap(nil, spec.Env),
-		Labels:            mergeMap(nil, spec.Labels),
-		RestartPolicy:     spec.RestartPolicy,
-		User:              spec.User,
-		WorkingDir:        spec.WorkingDir,
-		AllowMutableImage: spec.AllowMutableImage != nil && *spec.AllowMutableImage,
+		Name:          name,
+		Image:         spec.Image,
+		Command:       append([]string(nil), spec.Command...),
+		Entrypoint:    append([]string(nil), spec.Entrypoint...),
+		Env:           mergeMap(nil, spec.Env),
+		Labels:        mergeMap(nil, spec.Labels),
+		RestartPolicy: spec.RestartPolicy,
+		User:          spec.User,
+		WorkingDir:    spec.WorkingDir,
 	}
 	if spec.StopTimeout != nil {
 		app.StopTimeout = *spec.StopTimeout
@@ -296,8 +292,8 @@ func specToApplication(ctx context.Context, name string, spec AppSpec, sec *secr
 	switch {
 	case spec.Image == "":
 		add("no image")
-	case !strings.Contains(spec.Image, "@sha256:") && !app.AllowMutableImage:
-		add("image %q is not pinned to a digest; use image@sha256:... or set allowMutableImage: true to accept a moving target", spec.Image)
+	case !strings.Contains(spec.Image, "@sha256:"):
+		add("image %q is not pinned to a digest; use image@sha256:... (podman image inspect --format '{{index .RepoDigests 0}}' IMAGE prints it)", spec.Image)
 	}
 
 	for k := range app.Env {

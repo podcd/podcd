@@ -1,6 +1,8 @@
 package config
 
 import (
+	"bufio"
+	"bytes"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -13,9 +15,8 @@ import (
 
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	k8syaml "k8s.io/apimachinery/pkg/util/yaml"
 	sigyaml "sigs.k8s.io/yaml"
-
-	"gopkg.in/yaml.v3"
 )
 
 // Index is every document the agent loaded, addressed by name and kind.
@@ -97,32 +98,59 @@ func (ix *Index) LoadTree(repo, root string) error {
 	return nil
 }
 
-// loadFile decodes one possibly multi-document YAML file into the index.
-//
-// yaml.v3 splits the stream and keeps line numbers.
-// Each document is then re-encoded and decoded strictly against its real Go type, so an unknown field is an error whichever family the document belongs to.
-func (ix *Index) loadFile(repo, path string, data []byte) error {
-	dec := yaml.NewDecoder(strings.NewReader(string(data)))
-	for i := 0; ; i++ {
-		var node yaml.Node
-		err := dec.Decode(&node)
-		if errors.Is(err, io.EOF) {
-			return nil
-		}
-		if err != nil {
-			return fmt.Errorf("%s/%s: document %d: %w", repo, path, i, err)
-		}
-		if node.Kind == 0 || (node.Kind == yaml.DocumentNode && len(node.Content) == 0) {
-			continue // empty document, e.g. a trailing ---
-		}
-		raw, err := yaml.Marshal(&node)
-		if err != nil {
-			return fmt.Errorf("%s/%s: document %d: %w", repo, path, i, err)
-		}
-		src := Source{Repo: repo, Path: path, Line: node.Line}
+func (ix *Index) LoadBytes(repo, path string, data []byte) error {
+	return ix.loadFile(repo, path, data)
+}
 
+func SplitDocuments(repo, path string, data []byte) ([]Source, error) {
+	// The reader hands back lines re-terminated with "\n", so normalise the
+	// input the same way and every chunk is a verbatim slice of it.
+	data = bytes.ReplaceAll(data, []byte("\r\n"), []byte("\n"))
+	if len(data) > 0 && !bytes.HasSuffix(data, []byte("\n")) {
+		data = append(data, '\n')
+	}
+	r := k8syaml.NewYAMLReader(bufio.NewReader(bytes.NewReader(data)))
+	var docs []Source
+	offset := 0
+	for {
+		raw, err := r.Read()
+		if errors.Is(err, io.EOF) {
+			return docs, nil
+		}
+		if err != nil {
+			return nil, err
+		}
+		// The chunk is a verbatim slice of the input, so its position is where it next occurs after the previous one;
+		// reported at its first content line rather than at a separator, blank line or comment.
+		at := offset + bytes.Index(data[offset:], raw)
+		offset = at + len(raw)
+		if skip := leadingBlank(raw); skip >= 0 {
+			docs = append(docs, Source{Repo: repo, Path: path, Line: bytes.Count(data[:at], []byte("\n")) + 1 + skip, Raw: raw})
+		}
+	}
+}
+
+// leadingBlank counts the blank and comment lines before a document's first content line, or returns -1 when there is no content at all.
+func leadingBlank(raw []byte) int {
+	for i, l := range bytes.Split(raw, []byte("\n")) {
+		if t := bytes.TrimSpace(l); len(t) > 0 && t[0] != '#' {
+			return i
+		}
+	}
+	return -1
+}
+
+// loadFile decodes one possibly multi-document YAML file into the index.
+// Each document is decoded strictly against its real Go type.
+// An unknown field is an error whichever family the document belongs to.
+func (ix *Index) loadFile(repo, path string, data []byte) error {
+	docs, err := SplitDocuments(repo, path, data)
+	if err != nil {
+		return fmt.Errorf("%s/%s: %w", repo, path, err)
+	}
+	for _, src := range docs {
 		var env document
-		if err := sigyaml.Unmarshal(raw, &env); err != nil {
+		if err := sigyaml.Unmarshal(src.Raw, &env); err != nil {
 			return fmt.Errorf("%s: %w", src, err)
 		}
 		if env.APIVersion == "" && env.Kind == "" {
@@ -131,24 +159,25 @@ func (ix *Index) loadFile(repo, path string, data []byte) error {
 		if env.Name == "" {
 			return fmt.Errorf("%s: kind %s has no metadata.name", src, env.Kind)
 		}
-		if err := ix.add(env, raw, src); err != nil {
+		if err := ix.add(env, src); err != nil {
 			return err
 		}
 	}
+	return nil
 }
 
-func (ix *Index) add(env document, raw []byte, src Source) error {
+func (ix *Index) add(env document, src Source) error {
 	switch env.APIVersion {
 	case APIVersion:
-		return ix.addOwn(env, raw, src)
+		return ix.addOwn(env, src)
 	case CoreAPIVersion:
-		return ix.addCore(env, raw, src)
+		return ix.addCore(env, src)
 	default:
 		return fmt.Errorf("%s: apiVersion %q is not supported (want %s or %s)", src, env.APIVersion, APIVersion, CoreAPIVersion)
 	}
 }
 
-func (ix *Index) addOwn(env document, raw []byte, src Source) error {
+func (ix *Index) addOwn(env document, src Source) error {
 	name := env.Name
 	switch env.Kind {
 	case KindApplication:
@@ -157,7 +186,7 @@ func (ix *Index) addOwn(env document, raw []byte, src Source) error {
 			metav1.ObjectMeta `json:"metadata"`
 			Spec              AppSpec `json:"spec"`
 		}
-		if err := strictDecode(raw, &doc, src, env.Kind); err != nil {
+		if err := strictDecode(&doc, src, env.Kind); err != nil {
 			return err
 		}
 		if prev, ok := ix.Applications[name]; ok {
@@ -174,7 +203,7 @@ func (ix *Index) addOwn(env document, raw []byte, src Source) error {
 			metav1.ObjectMeta `json:"metadata"`
 			Spec              GroupSpec `json:"spec"`
 		}
-		if err := strictDecode(raw, &doc, src, env.Kind); err != nil {
+		if err := strictDecode(&doc, src, env.Kind); err != nil {
 			return err
 		}
 		if prev, ok := ix.Groups[name]; ok {
@@ -188,7 +217,7 @@ func (ix *Index) addOwn(env document, raw []byte, src Source) error {
 			metav1.ObjectMeta `json:"metadata"`
 			Spec              EnvironmentSpec `json:"spec"`
 		}
-		if err := strictDecode(raw, &doc, src, env.Kind); err != nil {
+		if err := strictDecode(&doc, src, env.Kind); err != nil {
 			return err
 		}
 		if prev, ok := ix.Environments[name]; ok {
@@ -202,7 +231,7 @@ func (ix *Index) addOwn(env document, raw []byte, src Source) error {
 			metav1.ObjectMeta `json:"metadata"`
 			Spec              HostSpec `json:"spec"`
 		}
-		if err := strictDecode(raw, &doc, src, env.Kind); err != nil {
+		if err := strictDecode(&doc, src, env.Kind); err != nil {
 			return err
 		}
 		if prev, ok := ix.Hosts[name]; ok {
@@ -216,12 +245,12 @@ func (ix *Index) addOwn(env document, raw []byte, src Source) error {
 	return nil
 }
 
-func (ix *Index) addCore(env document, raw []byte, src Source) error {
+func (ix *Index) addCore(env document, src Source) error {
 	name := env.Name
 	switch env.Kind {
 	case KindPod:
 		var pod corev1.Pod
-		if err := strictDecode(raw, &pod, src, env.Kind); err != nil {
+		if err := strictDecode(&pod, src, env.Kind); err != nil {
 			return err
 		}
 		if prev, ok := ix.Pods[name]; ok {
@@ -234,7 +263,7 @@ func (ix *Index) addCore(env document, raw []byte, src Source) error {
 
 	case KindConfigMap:
 		var cm corev1.ConfigMap
-		if err := strictDecode(raw, &cm, src, env.Kind); err != nil {
+		if err := strictDecode(&cm, src, env.Kind); err != nil {
 			return err
 		}
 		if prev, ok := ix.ConfigMaps[name]; ok {
@@ -244,7 +273,7 @@ func (ix *Index) addCore(env document, raw []byte, src Source) error {
 
 	case KindSecret:
 		var sec corev1.Secret
-		if err := strictDecode(raw, &sec, src, env.Kind); err != nil {
+		if err := strictDecode(&sec, src, env.Kind); err != nil {
 			return err
 		}
 		if err := checkSecretIsReferenceOnly(sec, src); err != nil {
@@ -304,8 +333,8 @@ func looksLikeReference(v string) bool {
 
 // strictDecode decodes a YAML document against its real Go type and rejects unknown fields.
 // A misspelled key is a mistake worth failing on: silently ignoring `imagee:` would leave a host running the wrong thing.
-func strictDecode(raw []byte, out any, src Source, kind string) error {
-	if err := sigyaml.UnmarshalStrict(raw, out); err != nil {
+func strictDecode(out any, src Source, kind string) error {
+	if err := sigyaml.UnmarshalStrict(src.Raw, out); err != nil {
 		return fmt.Errorf("%s: kind %s: %w", src, kind, err)
 	}
 	return nil

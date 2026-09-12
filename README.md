@@ -89,11 +89,32 @@ For the demo variant of this, use your own user in place of `podcd`, skip step 2
 #### 1. Setup GitOps repository
 
 > [!TIP]
-> `podcd validate` requires images to be pinned by digest and Secrets as references (`env:NAME`, `file:path`).
+> `podcd validate` requires Secrets as references (`env:NAME`, `file:path`).
 
 Setup a repository defining at least a `Host` and an `Application` or `Pod`. See [./examples](./examples/) or [podcd/podcd-gitops.git](https://github.com/podcd/podcd-gitops.git)
 The files are the **desired state**. podcd reads the repository, resolves the configuration for a host, validates it, and reconciles the result with the workloads running on that host.
 There is no prescribed directory structure. Organize the Git repository however you like.
+
+* `podcd init` scaffolds a basic podcd-gitops repository.
+* `podcd create` to generate a document per kind from flags.
+* `podcd lint` to lint.
+
+```bash
+podcd lint                 # the current directory
+podcd lint apps.yaml hosts.yaml
+podcd lint --host prod-web-01 ./gitops
+```
+
+`podcd get` shows what a repository defines - by default every repository in `agent.yaml`, fetched as the agent fetches them. `--repo` narrows it to one: a repository name from `agent.yaml`, a local directory, or a git URL (tried in that order):
+
+```bash
+podcd get                          # every document, with its file and line
+podcd get hosts                    # NAME  ENVIRONMENT  GROUPS  APPLICATIONS  SOURCE
+podcd get application api -o yaml  # one document, as written
+podcd get all --repo gitops        # one of the repositories in agent.yaml
+podcd get all --repo ./gitops      # a checkout you are editing
+podcd get pods --repo https://github.com/podcd/podcd-gitops.git
+```
 
 For a private repository, give the agent a read credential in `agent.yaml`.
 A GitHub or GitLab deploy token over HTTPS:
@@ -348,6 +369,10 @@ podcd reconcile   # apply the current Git desired state
 podcd health      # probe application health; non-zero exit if anything is unhealthy
 podcd logs api    # recent output for one application (--tail N)
 podcd validate    # compile config and check for errors
+podcd lint        # check repository files, for every host, without fetching
+podcd get         # what a repository defines (agent.yaml's, or --repo NAME|DIR|URL)
+podcd init        # scaffold a minimal repository: one host, one nginx
+podcd create      # print a document for a kind, built from flags
 podcd install     # write the systemd user service file for the agent
 podcd config      # view, create or edit the agent config file
 ```
@@ -405,7 +430,6 @@ kind: Application
 metadata:
   name: local
 spec:
-  # A moving tag is rejected unless the application sets `allowMutableImage: true`
   image: docker.io/library/nginx@sha256:72ba65eb42c10344912a84ff42408db7d34f2feb642204570ab8fc5ffd29f1d3
   ports:
     - host: 8080
@@ -423,7 +447,6 @@ spec:
 A host's application list can also name a plain Kubernetes `Pod`.
 Pods are validated by the same rules as applications:
 
-- immutable image references unless explicitly allowed
 - referenced ConfigMaps and Secrets that must exist or be optional
 - host port conflicts
 - the first readiness or liveness probe on a published port becoming the health check

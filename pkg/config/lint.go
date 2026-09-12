@@ -1,0 +1,89 @@
+package config
+
+import (
+	"context"
+	"errors"
+	"fmt"
+	"os"
+	"path/filepath"
+	"sort"
+
+	"github.com/podcd/podcd/pkg/secrets"
+)
+
+func LoadPaths(paths ...string) (*Index, error) {
+	ix := NewIndex()
+	for _, p := range paths {
+		info, err := os.Stat(p)
+		if err != nil {
+			return nil, err
+		}
+		if info.IsDir() {
+			if err := ix.LoadTree("", p); err != nil {
+				return nil, err
+			}
+			continue
+		}
+		data, err := os.ReadFile(p)
+		if err != nil {
+			return nil, err
+		}
+		if err := ix.LoadBytes("", filepath.Clean(p), data); err != nil {
+			return nil, err
+		}
+	}
+	return ix, nil
+}
+
+// Finding is one problem compiling a host: the documents themselves are fine but together they do not add up.
+// i.e. a reference to something that is not defined.
+type Finding struct {
+	Host string `json:"host"`
+	Err  string `json:"error"`
+}
+
+// Lint compiles the index for every Host it defines and returns everything that went wrong, host by host.
+func Lint(ctx context.Context, ix *Index, hosts ...string) []Finding {
+	if len(hosts) == 0 {
+		hosts = ix.HostNames()
+	}
+	sort.Strings(hosts)
+	var findings []Finding
+	for _, h := range hosts {
+		_, err := ix.Resolve(ctx, ResolveOptions{Host: h, Secrets: secrets.LintResolver()})
+		if err == nil {
+			continue
+		}
+		// errors.Join produces one error per line; report them separately.
+		if joined, ok := err.(interface{ Unwrap() []error }); ok {
+			for _, e := range joined.Unwrap() {
+				findings = append(findings, Finding{Host: h, Err: e.Error()})
+			}
+			continue
+		}
+		findings = append(findings, Finding{Host: h, Err: err.Error()})
+	}
+	return findings
+}
+
+// ErrNoHosts is returned by LintPaths when the documents define no Host: they loaded, but nothing could be compiled.
+var ErrNoHosts = errors.New("no Host documents found; nothing to compile")
+
+// LintPaths is LoadPaths followed by Lint: what `podcd lint` runs.
+// An error means a document is wrong in itself (malformed, unknown field, duplicate name, unpinned image) or there was nothing to compile;
+// findings are what does not fit together across the documents that did load, such as a reference to something not defined here.
+func LintPaths(ctx context.Context, hosts []string, paths ...string) (*Index, []Finding, error) {
+	ix, err := LoadPaths(paths...)
+	if err != nil {
+		return nil, nil, err
+	}
+	if len(ix.Hosts) == 0 && len(hosts) == 0 {
+		return ix, nil, ErrNoHosts
+	}
+	for _, h := range hosts {
+		if _, ok := ix.Hosts[h]; !ok {
+			return ix, nil, fmt.Errorf("no Host named %q (known: %v)", h, ix.HostNames())
+		}
+	}
+	return ix, Lint(ctx, ix, hosts...), nil
+}
