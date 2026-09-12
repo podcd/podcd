@@ -9,6 +9,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
 
 	"github.com/podcd/podcd/pkg/config"
@@ -20,7 +21,10 @@ import (
 
 // fakeRuntime stands in for podman so the engine's own behaviour - ordering,
 // error handling, what gets recorded - can be tested without containers.
+// The mutex matters only for the loop test, where the engine runs on its own
+// goroutine while the test watches what it does.
 type fakeRuntime struct {
+	mu   sync.Mutex
 	apps map[string]model.ActualApp
 
 	applied  []string
@@ -39,6 +43,8 @@ func (f *fakeRuntime) Name() string                             { return "fake" 
 func (f *fakeRuntime) Available(context.Context) (bool, string) { return true, "" }
 
 func (f *fakeRuntime) Inspect(context.Context) (model.ActualState, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
 	apps := make(map[string]model.ActualApp, len(f.apps))
 	for k, v := range f.apps {
 		apps[k] = v
@@ -47,6 +53,8 @@ func (f *fakeRuntime) Inspect(context.Context) (model.ActualState, error) {
 }
 
 func (f *fakeRuntime) Apply(_ context.Context, app model.Application) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
 	if f.applyErr != nil {
 		return f.applyErr
 	}
@@ -65,12 +73,16 @@ func (f *fakeRuntime) Apply(_ context.Context, app model.Application) error {
 }
 
 func (f *fakeRuntime) Remove(_ context.Context, app string) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
 	f.removed = append(f.removed, app)
 	delete(f.apps, app)
 	return nil
 }
 
 func (f *fakeRuntime) Restart(_ context.Context, app string) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
 	f.restarts = append(f.restarts, app)
 	cur := f.apps[app]
 	cur.UnitState = model.UnitActive
@@ -86,6 +98,13 @@ func (f *fakeRuntime) Health(_ context.Context, app model.Application) (model.He
 }
 
 func (f *fakeRuntime) Logs(context.Context, string, int) (string, error) { return "", nil }
+
+// appliedCount is safe to call while the engine is running on another goroutine.
+func (f *fakeRuntime) appliedCount() int {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return len(f.applied)
+}
 
 // newTestEngine wires an engine around the fake runtime and a real local Git
 // repository, so the whole path from a commit to an applied change is exercised.

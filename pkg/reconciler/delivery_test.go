@@ -261,10 +261,10 @@ func TestRunLoopReconcilesAndStopsWhenAsked(t *testing.T) {
 	go func() { done <- e.Run(ctx) }()
 
 	deadline := time.After(5 * time.Second)
-	for len(rt.applied) < 2 {
+	for rt.appliedCount() < 2 {
 		select {
 		case <-deadline:
-			t.Fatalf("the loop did not converge the host: applied=%v", rt.applied)
+			t.Fatalf("the loop did not converge the host: applied=%d", rt.appliedCount())
 		case <-time.After(5 * time.Millisecond):
 		}
 	}
