@@ -43,7 +43,7 @@ This is not Kubernetes, it is a focused GitOps model for Linux hosts that need p
 Install the binary.
 
 ```bash
-V=1.3.2; A=amd64   # or arm64
+V=2.0.0; A=amd64   # or arm64
 curl -fsSLO "https://github.com/podcd/podcd/releases/download/v$V/podcd_${V}_linux_${A}.tar.gz"
 curl -fsSLO "https://github.com/podcd/podcd/releases/download/v$V/podcd_${V}_linux_${A}.tar.gz.sha256"
 sha256sum -c "podcd_${V}_linux_${A}.tar.gz.sha256" && tar -xzf "podcd_${V}_linux_${A}.tar.gz"
@@ -169,7 +169,7 @@ One command per host; it is idempotent.
 
 ```bash
 curl -fsSL https://raw.githubusercontent.com/podcd/podcd/main/deploy/bootstrap.sh | sudo bash -s -- \
-  --release-version 1.3.2 \
+  --release-version 2.0.0 \
   --user podcd \
   --revision main \
   --host hostname \  # ideally you leave the host out and use machine names in your gitops repo
