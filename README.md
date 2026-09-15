@@ -397,7 +397,7 @@ podman run --rm -v /repo:/repo:ro,Z ghcr.io/podcd/podcd:latest lint /repo
 
 The image runs as a fixed non-root UID (1000); rootless Podman remaps that into your subordinate uid/gid range the same way it does for any other container, nothing special to configure there. On SELinux-enforcing hosts (RHEL, Fedora), add `:z` (shared) or `:Z` (private) to any bind mount as above, or the mount is denied - Debian/Ubuntu/Alpine don't need this since they don't enforce SELinux.
 
-The image carries `git`, `podman` and `systemctl`, so every podcd command runs in it, including `run`/`reconcile` - but those manage *the host's* rootless Podman and systemd `--user` session, so from inside a container they need the host's Podman socket and systemd user bus bind-mounted in. [`examples/quadlet`](examples/quadlet/) has a working Quadlet unit for running the agent itself this way, and is upfront about the one part of it (`--pid=host`) that's fragile - read its README before using it.
+The image carries `git`, `podman` and `systemctl`, so every podcd command runs in it, including `run`/`reconcile` - but those manage *the host's* rootless Podman and systemd `--user` session, so from inside a container they need the host's Podman socket and systemd user bus bind-mounted in.
 
 ## State and History
 
