@@ -18,7 +18,7 @@ RACE      := $(if $(filter 1,$(shell $(GO) env CGO_ENABLED)),-race,)
 TESTCOVER ?= $(RACE) -covermode=atomic -coverprofile=coverage.out -coverpkg=./...
 GOJUNITREPORT_VERSION ?= v2.1.0
 
-.PHONY: all build image test test-report cover test-e2e vet fmt lint clean install
+.PHONY: all build image test test-report cover test-e2e vet fmt lint clean install docs docs-serve
 
 all: build
 
@@ -63,6 +63,14 @@ fmt:
 ## lint: run golangci-lint using the repo's Go toolchain.
 lint:
 	GO111MODULE=on $(GO) run github.com/golangci/golangci-lint/v2/cmd/golangci-lint@$(GOLANGCILINT_VERSION) run --timeout 10m --default=none --enable=govet
+
+## docs: build the documentation site (docs/, Docusaurus) into docs/build.
+docs:
+	cd docs && npm install && npm run build
+
+## docs-serve: run the documentation site locally with live reload.
+docs-serve:
+	cd docs && npm install && npm start
 
 ## install: put the binary on this machine (needs root).
 install: build

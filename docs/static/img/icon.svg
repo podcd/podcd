@@ -1,0 +1,11 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" width="24" height="24" role="img" aria-label="podcd">
+  <path d="M20.66 7.00 L20.66 17.00 L14.51 20.55" fill="none" stroke="#AECBFA" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"/>
+  <circle cx="20.66" cy="7.00" r="1.7" fill="#AECBFA"/>
+  <path d="M12.00 22.00 L3.34 17.00 L3.34 9.90" fill="none" stroke="#AECBFA" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"/>
+  <circle cx="12.00" cy="22.00" r="1.7" fill="#AECBFA"/>
+  <path d="M3.34 7.00 L12.00 2.00 L18.15 5.55" fill="none" stroke="#AECBFA" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"/>
+  <circle cx="3.34" cy="7.00" r="1.7" fill="#AECBFA"/>
+  <polygon points="12.00 6.60 16.68 9.30 12.00 12.00 7.32 9.30" fill="#AECBFA"/>
+  <polygon points="7.32 9.30 12.00 12.00 12.00 17.40 7.32 14.70" fill="#669DF6"/>
+  <polygon points="12.00 12.00 16.68 9.30 16.68 14.70 12.00 17.40" fill="#4285F4"/>
+</svg>
