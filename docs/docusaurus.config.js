@@ -12,7 +12,7 @@ const config = {
   // v4 turns on the Rspack-based "Faster" build, hence @docusaurus/faster in package.json.
   future: {
     v4: true,
-    experimental_faster: true,
+    faster: true,
   },
 
   // GitHub Pages: https://podcd.github.io/podcd/
