@@ -127,7 +127,7 @@ func changeDetails(cur model.ActualApp, unit renderer.Unit) []string {
 }
 
 // manifestLines prepares a played manifest for diffing.
-// Secret documents are replaced by a one-line placeholder: their values are exactly what a plan printed to a terminal must never show.
+// Secret documents are replaced by a one-line placeholder: their values are a plan printed to a terminal must never show.
 func manifestLines(manifest []byte) []string {
 	if len(manifest) == 0 {
 		return nil

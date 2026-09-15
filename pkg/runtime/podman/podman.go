@@ -68,7 +68,7 @@ func New(opts Options) *Runtime {
 }
 
 // Renderer exposes the renderer this runtime writes with.
-// So the planner compares against exactly the bytes the runtime would produce.
+// So the planner compares against the bytes the runtime would produce.
 func (r *Runtime) Renderer() *renderer.Renderer { return r.rend }
 
 // Name implements runtime.Runtime.

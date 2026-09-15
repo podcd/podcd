@@ -1,0 +1,73 @@
+# Runs the podcd agent itself as a rootless Podman Quadlet, instead of the
+# plain systemd unit `podcd install` writes. Most deployments should still
+# use `podcd install`; this is for when you specifically want podcd itself
+# container-packaged.
+#
+# Requires:
+#   - rootless Podman 4.4+ with Quadlet, already proven working on this host
+#     directly (e.g. `podcd install` + `podcd reconcile` once, by hand) -
+#     if that doesn't work, this won't either
+#   - systemctl --user enable --now podman.socket
+#   - an agent config already at ~/.config/podcd/agent.yaml
+#     (podcd config create --repo-url ... --revision ...), and
+#     ~/.config/podcd/agent.env if the repository needs secrets
+#
+# Install:
+#   mkdir -p ~/.config/containers/systemd
+#   cp podcd-agent.container ~/.config/containers/systemd/
+#   systemctl --user daemon-reload
+#   systemctl --user enable --now podcd-agent.service
+#
+# Verify:
+#   systemctl --user status podcd-agent.service
+#   journalctl --user -u podcd-agent -f
+#
+# Remove (only the containerized agent - applications it manages are untouched; 
+# use `podcd prune`/`podcd teardown` from the host binary for those):
+#   systemctl --user disable --now podcd-agent.service
+#   rm ~/.config/containers/systemd/podcd-agent.container
+#   systemctl --user daemon-reload
+#
+# On SELinux-enforcing hosts (RHEL, Fedora), add ,z or ,Z to every Volume=
+# line below, the same as any other bind mount - see the main README's
+# "Container image" section.
+
+[Unit]
+Description=podcd agent (containerized)
+After=podman.socket
+Requires=podman.socket
+
+[Container]
+Image=ghcr.io/podcd/podcd:latest
+ContainerName=podcd-agent
+Exec=run
+
+# Run as this session's own user, mapped 1:1 rather than through the usual
+# subuid range - required for the bind-mounted sockets below to pass their
+# peer-credential checks. Assumes the primary GID equals the UID, true for
+# a typical dedicated service account (useradd -u N -U); adjust Group= if
+# yours differs.
+UserNS=keep-id:uid=%U,gid=%U
+User=%U
+Group=%U
+
+# The host's own systemd --user bus and Podman API socket live under its
+# runtime directory (%t = /run/user/<uid> in a user session).
+Volume=%t:%t
+Volume=/run/systemd/system:/run/systemd/system:ro
+Environment=XDG_RUNTIME_DIR=%t
+Environment=CONTAINER_HOST=unix://%t/podman/podman.sock
+Environment=HOME=%h
+
+PodmanArgs=--cgroupns=host --pid=host
+
+Volume=%h/.config/podcd:%h/.config/podcd:ro
+Volume=%h/.local/state/podcd:%h/.local/state/podcd
+Volume=%h/.config/containers/systemd:%h/.config/containers/systemd
+
+[Service]
+Restart=always
+RestartSec=10
+
+[Install]
+WantedBy=default.target

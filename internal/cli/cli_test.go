@@ -24,6 +24,9 @@ func TestEveryCommandOwnsItsFlags(t *testing.T) {
 		"validate":  {"output"},
 		"version":   {"output"},
 		"install":   {"output", "yes"},
+		"uninstall": {"output", "yes"},
+		"prune":     {"all", "yes"},
+		"teardown":  {"purge-state", "purge-config", "yes"},
 	}
 	for name, flags := range want {
 		cmd, _, err := root.Find([]string{name})

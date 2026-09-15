@@ -78,6 +78,21 @@ jobs:
             test.json
           retention-days: 14
 
+  image:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: install podman
+        run: sudo apt-get update -qq && sudo apt-get install -y -qq podman uidmap
+      - run: make image VERSION=ci IMAGE=podcd:ci
+      - name: smoke test
+        run: |
+          podman run --rm podcd:ci version
+          podman run --rm --entrypoint git podcd:ci --version
+          podman run --rm --entrypoint systemctl podcd:ci --version
+      - name: run a real command against a mounted repository
+        run: podman run --rm -v "$PWD/examples:/home/podcd/examples:ro,Z" podcd:ci lint /home/podcd/examples
+
   # Rootless podman + systemd --user on a hosted GitHub runner is inherently
   # a bit fragile (lingering, dbus session, XDG_RUNTIME_DIR). This job is
   # best-effort and does not gate merges or releases; tighten it (drop

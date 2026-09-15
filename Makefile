@@ -5,6 +5,7 @@ LDFLAGS := -X github.com/podcd/podcd/internal/cli.Version=$(VERSION)
 DIST    := dist
 GO ?= go
 GOLANGCILINT_VERSION ?= v2.13.2
+IMAGE ?= podcd:$(VERSION)
 
 # A failing `go test` must fail the pipeline it is tee'd through.
 SHELL := bash
@@ -17,7 +18,7 @@ RACE      := $(if $(filter 1,$(shell $(GO) env CGO_ENABLED)),-race,)
 TESTCOVER ?= $(RACE) -covermode=atomic -coverprofile=coverage.out -coverpkg=./...
 GOJUNITREPORT_VERSION ?= v2.1.0
 
-.PHONY: all build test test-report cover test-e2e vet fmt lint clean install
+.PHONY: all build image test test-report cover test-e2e vet fmt lint clean install
 
 all: build
 
@@ -26,6 +27,11 @@ build:
 	@mkdir -p $(DIST)
 	go build -ldflags "$(LDFLAGS)" -o $(DIST)/podcd ./cmd/podcd
 	@echo "built $(DIST)/podcd ($(VERSION))"
+
+## image: build the container image (see Containerfile for what it's for).
+image:
+	podman build --build-arg VERSION=$(VERSION) -t $(IMAGE) -f Containerfile .
+	@echo "built $(IMAGE)"
 
 ## test: unit tests with the race detector and coverage. Fast, no containers, no network.
 test:

@@ -32,6 +32,7 @@ type fakeRuntime struct {
 	restarts []string
 
 	applyErr  error
+	removeErr map[string]error
 	unhealthy map[string]bool
 }
 
@@ -75,6 +76,9 @@ func (f *fakeRuntime) Apply(_ context.Context, app model.Application) error {
 func (f *fakeRuntime) Remove(_ context.Context, app string) error {
 	f.mu.Lock()
 	defer f.mu.Unlock()
+	if err := f.removeErr[app]; err != nil {
+		return err
+	}
 	f.removed = append(f.removed, app)
 	delete(f.apps, app)
 	return nil
@@ -372,7 +376,6 @@ func TestBrokenConfigDoesNotTouchTheHost(t *testing.T) {
 	before := len(rt.applied)
 
 	// A misspelled field: the whole commit is rejected, and the host is left
-	// exactly as it was rather than half-updated.
 	writeRepo(t, repoDir, strings.Replace(twoApps, "image:", "imagee:", 1))
 	if _, err := e.Reconcile(context.Background(), Options{}); err == nil {
 		t.Fatal("a bad commit must fail the reconcile")

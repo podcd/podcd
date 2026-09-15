@@ -8,6 +8,7 @@ import (
 	"log/slog"
 	"os"
 	"os/signal"
+	"path/filepath"
 	"runtime/debug"
 	"strings"
 	"syscall"
@@ -77,6 +78,9 @@ func newRootCommand() *cobra.Command {
 		newInitCommand(),
 		newCreateCommand(),
 		newInstallCommand(),
+		newUninstallCommand(),
+		newPruneCommand(f),
+		newTeardownCommand(f),
 		newConfigCommand(f),
 		newVersionCommand(),
 		newOptionsCommand(root),
@@ -129,7 +133,16 @@ type environment struct {
 
 // withEngine wraps a command body: it resolves the config flags into an engine
 func withEngine(f *configFlags, body func(context.Context, *environment) error) func(*cobra.Command, []string) error {
-	return func(cmd *cobra.Command, _ []string) error {
+	return withEngineArgs(f, func(ctx context.Context, env *environment, _ *cobra.Command, _ []string) error {
+		return body(ctx, env)
+	})
+}
+
+// withEngineArgs is withEngine for a command whose body also needs cobra's
+// own args and *cobra.Command - positional arguments cobra parsed, or a
+// confirmation prompt that has to write to the command's own streams.
+func withEngineArgs(f *configFlags, body func(context.Context, *environment, *cobra.Command, []string) error) func(*cobra.Command, []string) error {
+	return func(cmd *cobra.Command, args []string) error {
 		ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 		defer stop()
 		env, err := setup(*f)
@@ -137,7 +150,7 @@ func withEngine(f *configFlags, body func(context.Context, *environment) error) 
 			return err
 		}
 		env.out = cmd.OutOrStdout()
-		return body(ctx, env)
+		return body(ctx, env, cmd, args)
 	}
 }
 
@@ -226,4 +239,14 @@ func versionString() string {
 		v += " (" + rev[:7] + ")"
 	}
 	return "podcd " + v
+}
+
+// defaultServiceFilePath is where `install` writes and `uninstall` looks
+// when --output is not given.
+func defaultServiceFilePath() (string, error) {
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return "", fmt.Errorf("determining the home directory: %w", err)
+	}
+	return filepath.Join(home, ".config", "systemd", "user", serviceUnitName), nil
 }
