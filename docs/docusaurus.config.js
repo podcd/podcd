@@ -9,8 +9,10 @@ const config = {
   tagline: 'A Git-driven reconciler for Linux workloads.',
   favicon: 'img/icon.png',
 
+  // v4 turns on the Rspack-based "Faster" build, hence @docusaurus/faster in package.json.
   future: {
     v4: true,
+    experimental_faster: true,
   },
 
   // GitHub Pages: https://podcd.github.io/podcd/

@@ -9,7 +9,7 @@ Values templating parametrizes the documents themselves, so several hosts can sh
 
 ## Templates
 
-A template is a file named `*.tpl` (`edge-api.yaml.tpl`, say). It is the name that makes it a template - nothing about a plain `.yaml`'s contents does, so `{{` there is just text. A template is rendered for each host against that host's values, and only then read as a document.
+A template is a file named `*.tpl` (`edge-api.yaml.tpl`, say). A template is rendered for each host against that host's values, and only then read as a document.
 
 ```yaml
 # apps/edge-api.yaml.tpl
