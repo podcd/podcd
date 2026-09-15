@@ -120,16 +120,216 @@ spec: {applications: [web]}
 	}
 	dir := writeTree(t, files)
 	ix := NewIndex()
-	ix.Values = Values{"image": map[string]any{"repository": "example.com/web", "tag": "2.0"}}
 	if err := ix.LoadTree("test", dir); err != nil {
 		t.Fatal(err)
 	}
-	desired, err := ix.Resolve(context.Background(), ResolveOptions{Host: "vm-1"})
+	values := Values{"image": map[string]any{"repository": "example.com/web", "tag": "2.0"}}
+	desired, err := ix.Resolve(context.Background(), ResolveOptions{Host: "vm-1", Values: values})
 	if err != nil {
 		t.Fatal(err)
 	}
 	app, ok := desired.App("web")
 	if !ok || app.Image != "example.com/web:2.0" {
 		t.Fatalf("template was not applied: %+v", app)
+	}
+}
+
+// TestEnvironmentGroupAndHostValuesMergeInOverridePrecedence checks that a
+// Host's own values:, a Group's, an Environment's, and the agent.yaml
+// fallback (ResolveOptions.Values) merge with exactly the precedence
+// overrides already use: environment < group < host, host winning.
+func TestEnvironmentGroupAndHostValuesMergeInOverridePrecedence(t *testing.T) {
+	files := map[string]string{
+		"app.yaml": `
+apiVersion: gitops.podcd.io/v1
+kind: Application
+metadata: {name: web}
+spec:
+  image: '{{ .Values.tag }}'
+  env:
+    LOG: '{{ .Values.log }}'
+`,
+		"env.yaml": `
+apiVersion: gitops.podcd.io/v1
+kind: Environment
+metadata: {name: prod}
+spec: {applications: [web], values: [values/env.yaml]}
+`,
+		"group.yaml": `
+apiVersion: gitops.podcd.io/v1
+kind: Group
+metadata: {name: web}
+spec: {values: [values/group.yaml]}
+`,
+		"host.yaml": `
+apiVersion: gitops.podcd.io/v1
+kind: Host
+metadata: {name: vm-1}
+spec: {environment: prod, groups: [web], values: [values/host.yaml]}
+`,
+		"values/env.yaml":   "tag: env-tag\n",
+		"values/group.yaml": "tag: group-tag\n",
+		"values/host.yaml":  "tag: host-tag\n",
+	}
+	ix := loadIndex(t, files)
+	baseline := Values{"tag": "baseline-tag", "log": "baseline-log"}
+	desired, err := ix.Resolve(context.Background(), ResolveOptions{Host: "vm-1", Values: baseline})
+	if err != nil {
+		t.Fatal(err)
+	}
+	app, ok := desired.App("web")
+	if !ok || app.Image != "host-tag" {
+		t.Fatalf("the host's own values should win: %+v", app)
+	}
+	if app.Env["LOG"] != "baseline-log" {
+		t.Fatalf("a key no layer touches should still come from the agent.yaml fallback: %+v", app.Env)
+	}
+}
+
+// TestTwoHostsSharingAnEnvironmentGetTheirOwnGroupValues mirrors the real
+// multi-env shape: one Environment two hosts share, two Groups that each
+// supply a different value for the same key.
+func TestTwoHostsSharingAnEnvironmentGetTheirOwnGroupValues(t *testing.T) {
+	files := map[string]string{
+		"app.yaml": `
+apiVersion: gitops.podcd.io/v1
+kind: Application
+metadata: {name: web}
+spec: {image: '{{ .Values.tag }}'}
+`,
+		"env.yaml": `
+apiVersion: gitops.podcd.io/v1
+kind: Environment
+metadata: {name: prod}
+spec: {applications: [web]}
+`,
+		"groups.yaml": `
+apiVersion: gitops.podcd.io/v1
+kind: Group
+metadata: {name: dmz}
+spec: {values: [values/dmz.yaml]}
+---
+apiVersion: gitops.podcd.io/v1
+kind: Group
+metadata: {name: iso}
+spec: {values: [values/iso.yaml]}
+`,
+		"hosts.yaml": `
+apiVersion: gitops.podcd.io/v1
+kind: Host
+metadata: {name: dmz-host}
+spec: {environment: prod, groups: [dmz]}
+---
+apiVersion: gitops.podcd.io/v1
+kind: Host
+metadata: {name: iso-host}
+spec: {environment: prod, groups: [iso]}
+`,
+		"values/dmz.yaml": "tag: dmz-tag\n",
+		"values/iso.yaml": "tag: iso-tag\n",
+	}
+	ix := loadIndex(t, files)
+
+	dmz, err := ix.Resolve(context.Background(), ResolveOptions{Host: "dmz-host"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if app, _ := dmz.App("web"); app.Image != "dmz-tag" {
+		t.Fatalf("dmz-host should see dmz's value: %+v", app)
+	}
+
+	iso, err := ix.Resolve(context.Background(), ResolveOptions{Host: "iso-host"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if app, _ := iso.App("web"); app.Image != "iso-tag" {
+		t.Fatalf("iso-host should see iso's value, not dmz's leaking across hosts: %+v", app)
+	}
+}
+
+// TestTemplatedApplicationSkipsEagerDecodeButStillValidatesAtResolve checks
+// that a templated Application's structural mistakes (here, an unknown
+// field) are not silently lost by deferring its decode to Resolve - they
+// still surface, just when a host actually selects it, not at load time.
+func TestTemplatedApplicationSkipsEagerDecodeButStillValidatesAtResolve(t *testing.T) {
+	files := map[string]string{
+		"app.yaml": `
+apiVersion: gitops.podcd.io/v1
+kind: Application
+metadata: {name: web}
+spec:
+  image: '{{ .Values.tag }}'
+  imagee: typo
+`,
+		"host.yaml": `
+apiVersion: gitops.podcd.io/v1
+kind: Host
+metadata: {name: vm-1}
+spec: {applications: [web]}
+`,
+	}
+	// Loading must not fail eagerly - the document contains "{{", so its
+	// spec decode is deferred - but Resolve must still catch the typo.
+	ix := loadIndex(t, files)
+	if _, err := ix.Resolve(context.Background(), ResolveOptions{Host: "vm-1", Values: Values{"tag": "x"}}); err == nil || !strings.Contains(err.Error(), "imagee") {
+		t.Fatalf("want an error naming the unknown field, got %v", err)
+	}
+}
+
+// TestBlockConditionalsAreNotValidTemplatingBreakOtherHosts documents a real
+// limitation: a template may only fill in a value inside an already-quoted
+// string. A block conditional that adds or removes a whole line makes the
+// raw, unrendered document invalid YAML, and every document is decoded once
+// - structurally, before any host's values are known - so it breaks loading
+// for every host, not just the one that would have taken the "if" branch.
+func TestBlockConditionalsBreakLoadingForEveryHost(t *testing.T) {
+	files := map[string]string{
+		"app.yaml": `
+apiVersion: gitops.podcd.io/v1
+kind: Application
+metadata: {name: web}
+spec:
+  image: nginx
+  env:
+{{- if .Values.extra }}
+    EXTRA: '{{ .Values.extra }}'
+{{- end }}
+`,
+		"host.yaml": `
+apiVersion: gitops.podcd.io/v1
+kind: Host
+metadata: {name: vm-1}
+spec: {applications: [web]}
+`,
+	}
+	dir := writeTree(t, files)
+	ix := NewIndex()
+	if err := ix.LoadTree("test", dir); err == nil {
+		t.Fatal("a block conditional makes the raw document invalid YAML; loading must fail, not silently misparse")
+	}
+}
+
+// TestMissingValuesFileIsAClearResolveError checks that a Host naming a
+// values file nobody loaded fails with a message pointing at the file and
+// the layer that named it, not a generic "not found".
+func TestMissingValuesFileIsAClearResolveError(t *testing.T) {
+	files := map[string]string{
+		"app.yaml": `
+apiVersion: gitops.podcd.io/v1
+kind: Application
+metadata: {name: web}
+spec: {image: nginx}
+`,
+		"host.yaml": `
+apiVersion: gitops.podcd.io/v1
+kind: Host
+metadata: {name: vm-1}
+spec: {applications: [web], values: [values/missing.yaml]}
+`,
+	}
+	ix := loadIndex(t, files)
+	_, err := ix.Resolve(context.Background(), ResolveOptions{Host: "vm-1"})
+	if err == nil || !strings.Contains(err.Error(), "values/missing.yaml") || !strings.Contains(err.Error(), "host/vm-1") {
+		t.Fatalf("want an error naming the file and the layer, got %v", err)
 	}
 }

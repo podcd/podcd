@@ -12,6 +12,9 @@ import (
 	"strings"
 	"time"
 
+	corev1 "k8s.io/api/core/v1"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+
 	"github.com/podcd/podcd/pkg/model"
 	"github.com/podcd/podcd/pkg/secrets"
 )
@@ -24,6 +27,8 @@ type ResolveOptions struct {
 	Secrets *secrets.Resolver
 	// Revisions is repo name -> commit, carried into the desired state for reporting.
 	Revisions map[string]string
+	// Values is the lowest-precedence input to {{ .Values }} templating
+	Values Values
 }
 
 // Resolve compiles the index into the desired state for one host.
@@ -49,11 +54,16 @@ func (ix *Index) Resolve(ctx context.Context, opts ResolveOptions) (model.Desire
 	// the order documents happened to be written in.
 	var layers []layer
 	selected := map[string]bool{}
-	addLayer := func(label string, spec SelectionSpec) {
+	addLayer := func(label, repo string, spec SelectionSpec) error {
 		for _, n := range spec.Applications {
 			selected[n] = true
 		}
-		layers = append(layers, layer{label, spec.Overrides})
+		values, err := ix.layerValues(repo, spec.Values)
+		if err != nil {
+			return fmt.Errorf("%s: %w", label, err)
+		}
+		layers = append(layers, layer{label, spec.Overrides, values})
+		return nil
 	}
 
 	if e := host.Spec.Environment; e != "" {
@@ -62,7 +72,9 @@ func (ix *Index) Resolve(ctx context.Context, opts ResolveOptions) (model.Desire
 			return zero, fmt.Errorf("%s: environment %q is not defined (known: %s)",
 				host.Source, e, strings.Join(slices.Sorted(maps.Keys(ix.Environments)), ", "))
 		}
-		addLayer("environment/"+e, env.Spec)
+		if err := addLayer("environment/"+e, env.Source.Repo, env.Spec); err != nil {
+			return zero, err
+		}
 	}
 	for _, g := range host.Spec.Groups {
 		group, ok := ix.Groups[g]
@@ -70,9 +82,21 @@ func (ix *Index) Resolve(ctx context.Context, opts ResolveOptions) (model.Desire
 			return zero, fmt.Errorf("%s: group %q is not defined (known: %s)",
 				host.Source, g, strings.Join(slices.Sorted(maps.Keys(ix.Groups)), ", "))
 		}
-		addLayer("group/"+g, group.Spec)
+		if err := addLayer("group/"+g, group.Source.Repo, group.Spec); err != nil {
+			return zero, err
+		}
 	}
-	addLayer("host/"+opts.Host, SelectionSpec{Applications: host.Spec.Applications, Overrides: host.Spec.Overrides})
+	hostSelection := SelectionSpec{Applications: host.Spec.Applications, Overrides: host.Spec.Overrides, Values: host.Spec.Values}
+	if err := addLayer("host/"+opts.Host, host.Source.Repo, hostSelection); err != nil {
+		return zero, err
+	}
+
+	// Values apply in the same precedence as overrides, plus one layer below
+	// all of them: agent.yaml's own fallback.
+	values := opts.Values
+	for _, l := range layers {
+		values = MergeValues(values, l.values)
+	}
 
 	for _, ex := range host.Spec.ExcludeApplications {
 		if !selected[ex] {
@@ -94,23 +118,29 @@ func (ix *Index) Resolve(ctx context.Context, opts ResolveOptions) (model.Desire
 			err     error
 		)
 		if doc, ok := ix.Pods[name]; ok {
-			pod := doc.Spec
 			src = doc.Source
-			origins, err = overlay(layers, name, "pod", src, func(o Override) (e error) {
-				pod, e = patchPod(pod, o)
-				return e
-			})
+			var pod corev1.Pod
+			pod, err = renderPodSpec(src, values)
+			if err == nil {
+				origins, err = overlay(layers, name, "pod", src, func(o Override) (e error) {
+					pod, e = patchPod(pod, o)
+					return e
+				})
+			}
 			if err == nil {
 				app, err = ix.podToApplication(ctx, name, pod, opts.Secrets)
 			}
 		} else if doc, ok := ix.Applications[name]; ok {
-			spec := doc.Spec
 			src = doc.Source
-			origins, err = overlay(layers, name, "application", src, func(o Override) error {
-				over, e := decodeAppOverride(o)
-				spec = mergeAppSpec(spec, over)
-				return e
-			})
+			var spec AppSpec
+			spec, err = renderAppSpec(src, values)
+			if err == nil {
+				origins, err = overlay(layers, name, "application", src, func(o Override) error {
+					over, e := decodeAppOverride(o)
+					spec = mergeAppSpec(spec, over)
+					return e
+				})
+			}
 			if err == nil {
 				app, err = specToApplication(ctx, name, spec, opts.Secrets)
 			}
@@ -150,11 +180,77 @@ func (ix *Index) Resolve(ctx context.Context, opts ResolveOptions) (model.Desire
 	}, nil
 }
 
-// layer is one source of overrides, lowest precedence first: the environment,
-// then each group in the order the host lists them, then the host itself.
+// layer is one source of overrides and values, lowest precedence first: the
+// environment, then each group in the order the host lists them, then the
+// host itself.
 type layer struct {
 	label     string
 	overrides map[string]Override
+	values    Values
+}
+
+// layerValues loads and merges a layer's own values files, in list order,
+// resolved against the repository the document naming them came from - the
+// only repository a bare path in that document could sensibly mean.
+func (ix *Index) layerValues(repo string, files []string) (Values, error) {
+	values := Values{}
+	for _, f := range files {
+		v, err := ix.readValuesFile(repo, f)
+		if err != nil {
+			return nil, err
+		}
+		values = MergeValues(values, v)
+	}
+	return values, nil
+}
+
+// renderAppSpec renders an Application document's raw text against a host's
+// values - a no-op unless the document contains "{{" - and decodes the
+// result: the actual, host-specific spec, as opposed to the structurally
+// validated but still-templated one the loader decoded when the tree was read.
+func renderAppSpec(src Source, values Values) (AppSpec, error) {
+	raw, err := renderIfTemplated(src, values)
+	if err != nil {
+		return AppSpec{}, err
+	}
+	var doc struct {
+		metav1.TypeMeta   `json:",inline"`
+		metav1.ObjectMeta `json:"metadata"`
+		Spec              AppSpec `json:"spec"`
+	}
+	if err := strictDecode(&doc, withRaw(src, raw), KindApplication); err != nil {
+		return AppSpec{}, err
+	}
+	return doc.Spec, nil
+}
+
+// renderPodSpec is renderAppSpec for a Pod manifest.
+func renderPodSpec(src Source, values Values) (corev1.Pod, error) {
+	var pod corev1.Pod
+	raw, err := renderIfTemplated(src, values)
+	if err != nil {
+		return pod, err
+	}
+	if err := strictDecode(&pod, withRaw(src, raw), KindPod); err != nil {
+		return pod, err
+	}
+	return pod, nil
+}
+
+// renderIfTemplated is the loader's opt-in rule, applied lazily
+// a document renders as a template only if it contains "{{" at all.
+func renderIfTemplated(src Source, values Values) ([]byte, error) {
+	if !bytes.Contains(src.Raw, []byte("{{")) {
+		return src.Raw, nil
+	}
+	return renderTemplate(src.String(), src.Raw, values)
+}
+
+// withRaw returns src with its Raw bytes replaced - the rendered text, so
+// error messages still point at the source's original path and line.
+func withRaw(src Source, raw []byte) Source {
+	src.Raw = raw
+	return src
 }
 
 // overlay applies every layer's override for name, in order, and returns the

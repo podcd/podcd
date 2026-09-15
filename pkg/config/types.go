@@ -120,6 +120,7 @@ type Doc[T any] struct {
 type SelectionSpec struct {
 	Applications []string            `json:"applications,omitempty"`
 	Overrides    map[string]Override `json:"overrides,omitempty"`
+	Values       []string            `json:"values,omitempty"`
 }
 
 // HostSpec is a kind: Host document body.
@@ -129,4 +130,5 @@ type HostSpec struct {
 	Applications        []string            `json:"applications,omitempty"`
 	ExcludeApplications []string            `json:"excludeApplications,omitempty"`
 	Overrides           map[string]Override `json:"overrides,omitempty"`
+	Values              []string            `json:"values,omitempty"`
 }

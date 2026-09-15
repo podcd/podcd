@@ -326,7 +326,7 @@ func (e *Engine) checkHealth(ctx context.Context, desired model.DesiredState, ap
 
 // Index fetches the configured repositories and returns everything they
 // define, without resolving for a host or touching the runtime.
-func (e *Engine) Index(ctx context.Context, only ...string) (*config.Index, map[string]string, []string, error) {
+func (e *Engine) Index(ctx context.Context, only ...string) (*config.Index, config.Values, map[string]string, []string, error) {
 	return e.source.LoadIndex(ctx, only...)
 }
 

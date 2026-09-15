@@ -38,10 +38,11 @@ type Index struct {
 	ConfigMaps map[string]Doc[corev1.ConfigMap]
 	Secrets    map[string]Doc[corev1.Secret]
 
-	// Values is available to every document as `.Values` when the document
-	// is templated (see renderTemplate). Set it before loading any tree or
-	// bytes; it applies to everything loaded afterwards.
-	Values Values
+	// files holds every loaded file's raw bytes, keyed by repository and the
+	// path it was loaded under - not just recognized documents. A Host,
+	// Group or Environment's own `values:` list is resolved against this
+	// cache in Resolve, so reading it back never touches disk again.
+	files map[string]map[string][]byte
 }
 
 // NewIndex returns an empty index.
@@ -54,6 +55,7 @@ func NewIndex() *Index {
 		Pods:         map[string]Doc[corev1.Pod]{},
 		ConfigMaps:   map[string]Doc[corev1.ConfigMap]{},
 		Secrets:      map[string]Doc[corev1.Secret]{},
+		files:        map[string]map[string][]byte{},
 	}
 }
 
@@ -150,18 +152,18 @@ func leadingBlank(raw []byte) int {
 }
 
 // loadFile decodes one possibly multi-document YAML file into the index.
-// Each document is decoded strictly against its real Go type.
-// An unknown field is an error whichever family the document belongs to.
+// Each document is decoded strictly against its real Go type here and now -
+// unknown field, malformed document, all of it - except an Application or a
+// Pod that opts into templating (by containing "{{" at all): rendering can
+// add or remove whole lines, so its raw text is not always valid YAML before
+// that happens, and its real decode is deferred to Resolve, once a host and
+// its values are known (see renderAppSpec, renderPodSpec in resolve.go).
 func (ix *Index) loadFile(repo, path string, data []byte) error {
-	// A document opts into templating by using "{{" at all, so a file that
-	// never does costs nothing and cannot be broken by a template error.
-	if bytes.Contains(data, []byte("{{")) {
-		rendered, err := renderTemplate(Source{Repo: repo, Path: path}.String(), data, ix.Values)
-		if err != nil {
-			return err
-		}
-		data = rendered
+	if ix.files[repo] == nil {
+		ix.files[repo] = map[string][]byte{}
 	}
+	ix.files[repo][path] = data
+
 	docs, err := SplitDocuments(repo, path, data)
 	if err != nil {
 		return fmt.Errorf("%s/%s: %w", repo, path, err)
@@ -193,6 +195,14 @@ func (ix *Index) add(env document, src Source) error {
 			if prev, ok := ix.Pods[name]; ok {
 				return fmt.Errorf("%q is both an Application (%s) and a Pod (%s); a host lists both under applications, so the name must be unique", name, src, prev.Source)
 			}
+			// A templated Application is not decoded here at all: rendering
+			// can add or remove whole lines (a template conditional, say),
+			// so the raw, unrendered text is not always valid YAML on its
+			// own. Its real decode happens in Resolve, once a host and its
+			// values are known - see renderAppSpec.
+			if bytes.Contains(src.Raw, []byte("{{")) {
+				return put(ix.Applications, env.Kind, name, src, AppSpec{})
+			}
 			return addSpec(ix.Applications, env.Kind, name, src)
 		case KindGroup:
 			return addSpec(ix.Groups, env.Kind, name, src)
@@ -207,6 +217,10 @@ func (ix *Index) add(env document, src Source) error {
 		case KindPod:
 			if prev, ok := ix.Applications[name]; ok {
 				return fmt.Errorf("%q is both a Pod (%s) and an Application (%s); a host lists both under applications, so the name must be unique", name, src, prev.Source)
+			}
+			// See the matching comment under KindApplication.
+			if bytes.Contains(src.Raw, []byte("{{")) {
+				return put(ix.Pods, env.Kind, name, src, corev1.Pod{})
 			}
 			return addObject(ix.Pods, env.Kind, name, src, nil)
 		case KindConfigMap:
@@ -255,6 +269,21 @@ func put[T any](into map[string]Doc[T], kind, name string, src Source, spec T) e
 	}
 	into[name] = Doc[T]{Name: name, Spec: spec, Source: src}
 	return nil
+}
+
+// readValuesFile resolves one entry of a Host, Group or Environment's own
+// `values:` list against the repository that document came from - the same
+// repository, because there is no other document-relative anchor to resolve
+// a bare path against.
+func (ix *Index) readValuesFile(repo, path string) (Values, error) {
+	data, ok := ix.files[repo][path]
+	if !ok {
+		if repo == "" {
+			return nil, fmt.Errorf("values file %q was not loaded", path)
+		}
+		return nil, fmt.Errorf("values file %q was not loaded from repository %q", path, repo)
+	}
+	return parseValues(Source{Repo: repo, Path: path}.String(), data)
 }
 
 // checkSecretIsReferenceOnly enforces the one rule that does not bend: a Secret in Git carries references to values, never the values.
