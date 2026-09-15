@@ -97,6 +97,35 @@ func TestRenderedFileRoundTrips(t *testing.T) {
 	}
 }
 
+// TestRenderScalarSliceIsCommentedWhenEmptyAndRoundTripsWhenSet exercises the
+// "values" field on RepositorySpec, a plain []string rather than a slice of
+// structs: renderStruct must not try to treat its items as structs.
+func TestRenderScalarSliceIsCommentedWhenEmptyAndRoundTripsWhenSet(t *testing.T) {
+	out := RenderAgentConfig(minimal())
+	if !strings.Contains(out, "\n    # values: []\n") {
+		t.Errorf("an unset scalar slice should render as a commented placeholder:\n%s", out)
+	}
+
+	cfg := minimal()
+	cfg.Repositories[0].Values = []string{"values/zones/dmz.yaml", "values/envs/prd.yaml"}
+	out = RenderAgentConfig(cfg)
+	if !strings.Contains(out, "\n    values:\n      - values/zones/dmz.yaml\n      - values/envs/prd.yaml\n") {
+		t.Fatalf("a set scalar slice should render its items:\n%s", out)
+	}
+
+	path := filepath.Join(t.TempDir(), "agent.yaml")
+	if err := WriteAgentConfig(path, cfg); err != nil {
+		t.Fatal(err)
+	}
+	back, err := LoadAgentConfig(path)
+	if err != nil {
+		t.Fatalf("the rendered file does not load: %v", err)
+	}
+	if strings.Join(back.Repositories[0].Values, ",") != "values/zones/dmz.yaml,values/envs/prd.yaml" {
+		t.Fatalf("round trip lost values: %+v", back.Repositories[0].Values)
+	}
+}
+
 func TestEditReplacesAValueInPlace(t *testing.T) {
 	src := "# my notes\nhost: vm-1   # keep this comment\ninterval: 60s\nrepositories:\n  - name: r\n    url: https://example.com/r.git\n    revision: main\n"
 	out, err := EditAgentConfigBytes([]byte(src), Setting{"host", "vm-2"}, Setting{"revision", "v2"})

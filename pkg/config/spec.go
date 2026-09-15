@@ -48,8 +48,10 @@ func renderStruct(b *strings.Builder, v, def reflect.Value, indent string, top b
 		fv, dv := v.Field(i), def.Field(i)
 
 		switch {
-		case f.Type.Kind() == reflect.Slice:
+		case f.Type.Kind() == reflect.Slice && f.Type.Elem().Kind() == reflect.Struct:
 			renderSlice(b, key, fv, indent)
+		case f.Type.Kind() == reflect.Slice:
+			renderScalarSlice(b, key, fv, indent)
 		case f.Type.Kind() == reflect.Pointer && f.Type.Elem().Kind() == reflect.Struct:
 			if fv.IsNil() {
 				renderExample(b, key, f.Type.Elem(), indent)
@@ -97,6 +99,20 @@ func renderSlice(b *strings.Builder, key string, v reflect.Value, indent string)
 				dashed = true
 			}
 		}
+	}
+}
+
+// renderScalarSlice writes a list of plain values (strings, numbers): active
+// with its items when set, a single commented placeholder when empty, the
+// same "shown either way" rule scalar fields follow.
+func renderScalarSlice(b *strings.Builder, key string, v reflect.Value, indent string) {
+	if v.Len() == 0 {
+		fmt.Fprintf(b, "%s# %s: []\n", indent, key)
+		return
+	}
+	fmt.Fprintf(b, "%s%s:\n", indent, key)
+	for i := 0; i < v.Len(); i++ {
+		fmt.Fprintf(b, "%s  - %s\n", indent, yamlScalar(scalar(v.Index(i))))
 	}
 }
 

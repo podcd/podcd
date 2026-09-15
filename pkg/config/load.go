@@ -37,6 +37,11 @@ type Index struct {
 	Pods       map[string]Doc[corev1.Pod]
 	ConfigMaps map[string]Doc[corev1.ConfigMap]
 	Secrets    map[string]Doc[corev1.Secret]
+
+	// Values is available to every document as `.Values` when the document
+	// is templated (see renderTemplate). Set it before loading any tree or
+	// bytes; it applies to everything loaded afterwards.
+	Values Values
 }
 
 // NewIndex returns an empty index.
@@ -148,6 +153,15 @@ func leadingBlank(raw []byte) int {
 // Each document is decoded strictly against its real Go type.
 // An unknown field is an error whichever family the document belongs to.
 func (ix *Index) loadFile(repo, path string, data []byte) error {
+	// A document opts into templating by using "{{" at all, so a file that
+	// never does costs nothing and cannot be broken by a template error.
+	if bytes.Contains(data, []byte("{{")) {
+		rendered, err := renderTemplate(Source{Repo: repo, Path: path}.String(), data, ix.Values)
+		if err != nil {
+			return err
+		}
+		data = rendered
+	}
 	docs, err := SplitDocuments(repo, path, data)
 	if err != nil {
 		return fmt.Errorf("%s/%s: %w", repo, path, err)

@@ -71,13 +71,14 @@ func NewEngine(cfg config.AgentConfig, log *slog.Logger) (*Engine, error) {
 	if err != nil {
 		return nil, err
 	}
-	repos, tokenRefs := ReposFromConfig(cfg)
+	repos, tokenRefs, valuesFiles := ReposFromConfig(cfg)
 	e.source = &Source{
-		Repos:     repos,
-		TokenRefs: tokenRefs,
-		Host:      ident.Host,
-		Secrets:   resolver,
-		Log:       log,
+		Repos:       repos,
+		TokenRefs:   tokenRefs,
+		ValuesFiles: valuesFiles,
+		Host:        ident.Host,
+		Secrets:     resolver,
+		Log:         log,
 	}
 	return e, nil
 }

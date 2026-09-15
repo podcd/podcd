@@ -305,6 +305,10 @@ repositories:
     revision: main
     # Read only this subdirectory of the repository.
     # path: ""
+    # Values file(s), relative to this repository's tree (path, if set), for
+    # {{ .Values }} templating; a document opts in by using "{{" at all.
+    # Repeated files merge, later ones winning per key.
+    # values: []
     # Disable host key / TLS verification. Visible here on purpose, rather
     # than an environment variable nobody sees.
     # insecure: false
@@ -530,6 +534,54 @@ repositories:
     url: https://github.com/your-user/applications.git
     revision: v1.4.0
 ```
+
+### Values templating
+
+Overrides (above) parametrize one application at a time, by name. Values templating parametrizes the documents themselves, so several hosts can share one `Application`/`Host`/`Group`/`Environment` definition and each fill in the parts that differ, such as an image tag, a resource limit, or a domain.
+
+A document opts in per file: only a file containing `{{` is rendered as a template, so a repository that never uses this feature is never parsed as one and cannot be broken by a template error elsewhere. Templates get Go's own `text/template` plus a handful of helpers: `default`, `required` (fails the render with a message when a value is missing, rather than writing the literal `<no value>` into the document), `upper`, `lower`, `trim`, `trimPrefix`, `trimSuffix`, `replace`, `quote`. Not sprig - podcd stays a small, dependency-light binary, and a missing value is meant to be visible.
+
+```yaml
+# apps/edge-api.yaml
+apiVersion: gitops.podcd.io/v1
+kind: Application
+metadata:
+  name: edge-api
+spec:
+  image: "{{ .Values.image.repository }}:{{ .Values.image.tag }}"
+  resources:
+    memory: "{{ default \"256M\" .Values.resources.memory }}"
+```
+
+Which values apply is a decision each host's own agent makes, in its `agent.yaml`, the same way it already decides its own `revision`:
+
+```yaml
+repositories:
+  - name: gitops
+    url: https://github.com/your-user/podcd-gitops.git
+    revision: main
+    values:
+      - values/prod.yaml   # repeatable; later files win per key
+```
+
+`values/prod.yaml` and `values/dev.yaml` live in Git like any other file, just without an `apiVersion`/`kind`, so the loader ignores them as documents:
+
+```yaml
+image:
+  repository: registry.example.com/edge-api
+  tag: "1.4.0"
+resources:
+  memory: 512M
+```
+
+Values from every configured repository are merged (maps key-by-key, later repository wins) before any document is rendered, so one repository can hold shared templates and another can hold each host's values. `podcd lint --values values/dev.yaml path/to/repo` renders and compiles against a values file without touching a host, the same workflow `helm template -f` gives a chart.
+
+Two things follow from templates being expanded while the tree is loaded, before `Resolve` decides which applications a given host actually runs:
+
+- Every templated document renders for every host that loads the tree, whether or not that host ends up running the application. A value fetched with `required` must therefore be supplied by every host, not only the ones that will use it; a value only some hosts have should be read inside a template conditional (`{{ if .Values.optionalThing }}...{{ end }}`) instead, so hosts without it render a document that simply omits that part.
+- A document opts in to templating per file, by containing `{{` anywhere at all, including inside a YAML comment - a comment that mentions the syntax in prose (`` `{{ if }}` ``, written literally) is itself invalid template code and will fail to parse. Describe the syntax in words, or keep an example non-executable, rather than writing a bare `{{ if }}`/`{{ end }}` in a comment.
+
+See [`podcd-gitops/multi-env`](https://github.com/podcd/podcd-gitops/tree/main/multi-env) for a complete example: four hosts across two zones and two environments, sharing one set of `Application` documents.
 
 ## Testing
 

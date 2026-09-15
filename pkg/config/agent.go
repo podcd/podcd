@@ -25,8 +25,9 @@ import (
 type RepositorySpec struct {
 	Name     string    `yaml:"name" doc:"A short name for this repository; it appears in logs and status."`
 	URL      string    `yaml:"url" doc:"Where to fetch from: https://, ssh (git@host:path) or a local path."`
-	Revision string    `yaml:"revision" doc:"A branch, a tag or a commit. A tag or commit pins the host exactly."`
+	Revision string    `yaml:"revision" doc:"A branch, a tag or a commit. A tag or commit pins the host."`
 	Path     string    `yaml:"path,omitempty" doc:"Read only this subdirectory of the repository."`
+	Values   []string  `yaml:"values,omitempty" doc:"Values file(s), relative to this repository's tree (path, if set), for {{ .Values }} templating; a document opts in by using \"{{\" at all. Repeated files merge, later ones winning per key."`
 	Insecure bool      `yaml:"insecure,omitempty" doc:"Disable host key / TLS verification. Visible here on purpose, rather than an environment variable nobody sees."`
 	Auth     *RepoAuth `yaml:"auth,omitempty" doc:"A private repository needs a read credential. The token is a secret reference (env:, file:, vault:), never a literal in this file; it is resolved on every fetch. GitLab deploy tokens have their own username."`
 }
@@ -232,6 +233,14 @@ func (c AgentConfig) Validate() error {
 		}
 		if strings.Contains(r.Path, "..") {
 			p.add("repository %q: path %q must not escape the repository", r.Name, r.Path)
+		}
+		for _, v := range r.Values {
+			if filepath.IsAbs(v) {
+				p.add("repository %q: values file %q must be relative to the repository root", r.Name, v)
+			}
+			if strings.Contains(v, "..") {
+				p.add("repository %q: values file %q must not escape the repository", r.Name, v)
+			}
 		}
 		if a := r.Auth; a != nil {
 			if a.Token != "" && a.SSHKeyPath != "" {

@@ -1,0 +1,140 @@
+// Values templating lets one set of Application/Host/Group/Environment
+// documents in Git serve several hosts, by filling in the parts that differ
+// (an image tag, a resource limit, a domain) from a values file chosen by
+// each host's own agent configuration - the same shape as `helm template -f`.
+//
+// A document opts in per file: only files containing "{{" are parsed as a
+// template, so a repository that never uses the feature pays nothing for it
+// and is never surprised by it.
+package config
+
+import (
+	"bytes"
+	"fmt"
+	"maps"
+	"os"
+	"strconv"
+	"strings"
+	"text/template"
+
+	sigyaml "sigs.k8s.io/yaml"
+)
+
+// Values is the nested data a document's template sees as `.Values`.
+// It is decoded from YAML, so maps are keyed by string and any scalar,
+// sequence or nested map JSON/YAML can express is valid.
+type Values map[string]any
+
+// LoadValuesFile reads one YAML values file.
+// A missing or empty file is not an error: it contributes nothing.
+func LoadValuesFile(path string) (Values, error) {
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return nil, fmt.Errorf("reading values %s: %w", path, err)
+	}
+	var v Values
+	if err := sigyaml.Unmarshal(data, &v); err != nil {
+		return nil, fmt.Errorf("values %s: %w", path, err)
+	}
+	return v, nil
+}
+
+// LoadValuesFiles reads each file in order and merges them, later files
+// overriding earlier ones - the same precedence as repeating `-f` on helm.
+func LoadValuesFiles(paths ...string) (Values, error) {
+	merged := Values{}
+	for _, p := range paths {
+		v, err := LoadValuesFile(p)
+		if err != nil {
+			return nil, err
+		}
+		merged = MergeValues(merged, v)
+	}
+	return merged, nil
+}
+
+// MergeValues layers src over dst: maps are merged key by key, recursively;
+// anything else (including a slice) is replaced wholesale, the same rule
+// AppSpec overrides use, so one merge algorithm covers both features.
+func MergeValues(dst, src Values) Values {
+	if dst == nil {
+		dst = Values{}
+	}
+	out := maps.Clone(dst)
+	for k, sv := range src {
+		if dv, ok := out[k]; ok {
+			if dm, ok := asValues(dv); ok {
+				if sm, ok := asValues(sv); ok {
+					out[k] = MergeValues(dm, sm)
+					continue
+				}
+			}
+		}
+		out[k] = sv
+	}
+	return out
+}
+
+// asValues reports whether v decoded as a nested mapping, whichever of the
+// two shapes sigs.k8s.io/yaml produces for it.
+func asValues(v any) (Values, bool) {
+	switch m := v.(type) {
+	case Values:
+		return m, true
+	case map[string]any:
+		return m, true
+	default:
+		return nil, false
+	}
+}
+
+// templateFuncs are the handful of helpers a values template actually needs.
+// This deliberately is not sprig: podcd stays a single small dependency-light
+// binary, and a missing value is meant to be visible, not silently smoothed
+// over by a large function library.
+var templateFuncs = template.FuncMap{
+	"default": func(def, val any) any {
+		if val == nil {
+			return def
+		}
+		if s, ok := val.(string); ok && s == "" {
+			return def
+		}
+		return val
+	},
+	// required stops the render with msg when val is missing, rather than
+	// silently writing the literal "<no value>" into the document - a
+	// missing map key is not an error by itself, so a template that truly
+	// needs a value must say so.
+	"required": func(msg string, val any) (any, error) {
+		if val == nil {
+			return nil, fmt.Errorf("%s", msg)
+		}
+		if s, ok := val.(string); ok && s == "" {
+			return nil, fmt.Errorf("%s", msg)
+		}
+		return val, nil
+	},
+	"upper":      strings.ToUpper,
+	"lower":      strings.ToLower,
+	"trim":       strings.TrimSpace,
+	"trimPrefix": func(prefix, s string) string { return strings.TrimPrefix(s, prefix) },
+	"trimSuffix": func(suffix, s string) string { return strings.TrimSuffix(s, suffix) },
+	"replace":    func(old, new, s string) string { return strings.ReplaceAll(s, old, new) },
+	"quote":      func(v any) string { return strconv.Quote(fmt.Sprint(v)) },
+}
+
+// renderTemplate expands {{ .Values... }} in a document against values.
+// name is used only for error messages (repo/path), so a broken template
+// points a human at the file that needs fixing.
+func renderTemplate(name string, data []byte, values Values) ([]byte, error) {
+	tmpl, err := template.New(name).Funcs(templateFuncs).Parse(string(data))
+	if err != nil {
+		return nil, fmt.Errorf("%s: template: %w", name, err)
+	}
+	var buf bytes.Buffer
+	if err := tmpl.Execute(&buf, map[string]any{"Values": values}); err != nil {
+		return nil, fmt.Errorf("%s: template: %w", name, err)
+	}
+	return buf.Bytes(), nil
+}

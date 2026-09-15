@@ -13,6 +13,7 @@ import (
 func newLintCommand() *cobra.Command {
 	var out outputFormat
 	var hosts []string
+	var valuesFiles []string
 	cmd := &cobra.Command{
 		Use:   "lint [PATH...]",
 		Short: "check repository files without fetching or touching the host",
@@ -20,6 +21,8 @@ func newLintCommand() *cobra.Command {
 			"loader and compiles them for every Host they define, applying the same rules a reconcile\n" +
 			"would: known fields, unique names, references that exist, no host port\n" +
 			"conflicts. Secret references are checked for syntax, not looked up, so this runs anywhere.\n" +
+			"--values renders any document containing \"{{\" against the given file(s) first, the same\n" +
+			"way a host's own agent.yaml repositories[].values would.\n" +
 			"Exits non-zero on any finding.",
 		Args: cobra.ArbitraryArgs,
 		RunE: func(cmd *cobra.Command, args []string) error {
@@ -27,7 +30,11 @@ func newLintCommand() *cobra.Command {
 			if len(paths) == 0 {
 				paths = []string{"."}
 			}
-			ix, findings, err := config.LintPaths(context.Background(), hosts, paths...)
+			values, err := config.LoadValuesFiles(valuesFiles...)
+			if err != nil {
+				return err
+			}
+			ix, findings, err := config.LintPaths(context.Background(), hosts, values, paths...)
 			if err != nil {
 				if errors.Is(err, config.ErrNoHosts) {
 					fmt.Fprintf(cmd.OutOrStdout(), "ok: %d document(s) loaded, but %v\n", countDocs(ix), err)
@@ -52,6 +59,7 @@ func newLintCommand() *cobra.Command {
 	}
 	out.addFlag(cmd)
 	cmd.Flags().StringArrayVar(&hosts, "host", nil, "only compile for this host (repeatable; default: every Host defined)")
+	cmd.Flags().StringArrayVar(&valuesFiles, "values", nil, "a values file for {{ .Values }} templating (repeatable; later files win)")
 	return cmd
 }
 

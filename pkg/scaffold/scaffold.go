@@ -259,7 +259,7 @@ func Init(dir, host string, force bool) ([]string, error) {
 	sort.Strings(written)
 
 	// The result must pass the same lint a user would run on it.
-	if _, findings, err := config.LintPaths(context.Background(), nil, dir); err != nil {
+	if _, findings, err := config.LintPaths(context.Background(), nil, nil, dir); err != nil {
 		return nil, err
 	} else if len(findings) > 0 {
 		return nil, fmt.Errorf("scaffolded repository does not lint: %s", findings[0].Err)

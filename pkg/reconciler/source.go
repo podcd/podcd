@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"path/filepath"
 	"slices"
 
 	"github.com/podcd/podcd/pkg/config"
@@ -24,6 +25,9 @@ type Source struct {
 	Log     *slog.Logger
 	// TokenRefs holds each repository's auth.token reference by repo name.
 	TokenRefs map[string]string
+	// ValuesFiles holds each repository's values file paths (relative to its
+	// tree) by repo name, for {{ .Values }} templating.
+	ValuesFiles map[string][]string
 }
 
 // LoadResult is a compiled desired state plus what went wrong on the way.
@@ -62,7 +66,12 @@ func (s *Source) LoadIndex(ctx context.Context, only ...string) (*config.Index, 
 	index := config.NewIndex()
 	revisions := map[string]string{}
 	var offline []string
+	var synced []*git.Repository
+	values := config.Values{}
 
+	// Every repository is synced, and its values loaded, before any tree is
+	// parsed: values apply across repositories, so a document in one
+	// repository can be templated against a values file that lives in another.
 	for _, repo := range s.Repos {
 		if len(only) > 0 && !slices.Contains(only, repo.Name) {
 			continue
@@ -81,7 +90,19 @@ func (s *Source) LoadIndex(ctx context.Context, only ...string) (*config.Index, 
 			return nil, nil, nil, fmt.Errorf("repository %s: %w", repo.Name, err)
 		}
 		revisions[repo.Name] = sha
+		synced = append(synced, repo)
 
+		for _, vf := range s.ValuesFiles[repo.Name] {
+			v, err := config.LoadValuesFile(filepath.Join(repo.TreePath(), vf))
+			if err != nil {
+				return nil, nil, nil, fmt.Errorf("repository %s: %w", repo.Name, err)
+			}
+			values = config.MergeValues(values, v)
+		}
+	}
+
+	index.Values = values
+	for _, repo := range synced {
 		if err := index.LoadTree(repo.Name, repo.TreePath()); err != nil {
 			return nil, nil, nil, err
 		}
@@ -116,11 +137,16 @@ func (s *Source) logWarn(msg string, args ...any) {
 }
 
 // ReposFromConfig builds the repository list from the agent configuration,
-// and returns the token references to resolve before each fetch.
-func ReposFromConfig(cfg config.AgentConfig) ([]*git.Repository, map[string]string) {
+// and returns the token references to resolve before each fetch and each
+// repository's configured values files.
+func ReposFromConfig(cfg config.AgentConfig) ([]*git.Repository, map[string]string, map[string][]string) {
 	repos := make([]*git.Repository, 0, len(cfg.Repositories))
 	tokenRefs := map[string]string{}
+	valuesFiles := map[string][]string{}
 	for _, r := range cfg.Repositories {
+		if len(r.Values) > 0 {
+			valuesFiles[r.Name] = r.Values
+		}
 		repo := git.New(r.Name, r.URL, r.Revision, r.Path, cfg.ReposDir())
 		repo.Insecure = r.Insecure
 		if a := r.Auth; a != nil {
@@ -135,5 +161,5 @@ func ReposFromConfig(cfg config.AgentConfig) ([]*git.Repository, map[string]stri
 		}
 		repos = append(repos, repo)
 	}
-	return repos, tokenRefs
+	return repos, tokenRefs, valuesFiles
 }
