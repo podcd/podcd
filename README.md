@@ -391,12 +391,11 @@ fish and PowerShell: `podcd completion --help`.
 ### Container image
 
 ```bash
-# builds podcd:$(VERSION) from Containerfile
-make image                       
-podman run --rm podcd:dev lint /repo -v /repo:/repo:ro
+make image                                       # builds podcd:$(VERSION) from Containerfile
+podman run --rm -v /repo:/repo:ro,Z podcd:dev lint /repo
 ```
 
-Useful for the commands that only read Git and print: `get`, `lint`, `validate`, `create`, config`. `run`/`reconcile`/`install`/`uninstall`/`prune`/`teardown`/`health` manage *this host's* rootless Podman and systemd `--user` session - run those from the host directly (the way `deploy/bootstrap.sh` does), not from inside a container, unless you bind-mount the host's Podman socket, systemd user bus and Quadlet unit directory in.
+The image runs as a fixed non-root UID (1000); rootless Podman remaps that into your subordinate uid/gid range the same way it does for any other container, nothing special to configure there. On SELinux-enforcing hosts (RHEL, Fedora), add `:z` (shared) or `:Z` (private) to any bind mount as above, or the mount is denied - Debian/Ubuntu/Alpine don't need this since they don't enforce SELinux.
 
 ## State and History
 
