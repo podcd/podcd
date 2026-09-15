@@ -13,7 +13,6 @@ import (
 	"time"
 
 	corev1 "k8s.io/api/core/v1"
-	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 
 	"github.com/podcd/podcd/pkg/model"
 	"github.com/podcd/podcd/pkg/secrets"
@@ -106,6 +105,15 @@ func (ix *Index) Resolve(ctx context.Context, opts ResolveOptions) (model.Desire
 		delete(selected, ex)
 	}
 
+	// Templates render for this host's values, into a second set of
+	// documents that sits on top of the plain ones. Only now: a template's
+	// kind and name are whatever it renders to.
+	rendered, err := ix.renderTemplates(values)
+	if err != nil {
+		return zero, err
+	}
+	v := view{ix, rendered}
+
 	var p problems
 	var apps []model.Application
 	for _, name := range slices.Sorted(maps.Keys(selected)) {
@@ -117,30 +125,24 @@ func (ix *Index) Resolve(ctx context.Context, opts ResolveOptions) (model.Desire
 			origins []string
 			err     error
 		)
-		if doc, ok := ix.Pods[name]; ok {
+		if doc, ok := v.pod(name); ok {
+			pod := doc.Spec
 			src = doc.Source
-			var pod corev1.Pod
-			pod, err = renderPodSpec(src, values)
+			origins, err = overlay(layers, name, "pod", src, func(o Override) (e error) {
+				pod, e = patchPod(pod, o)
+				return e
+			})
 			if err == nil {
-				origins, err = overlay(layers, name, "pod", src, func(o Override) (e error) {
-					pod, e = patchPod(pod, o)
-					return e
-				})
+				app, err = v.podToApplication(ctx, name, pod, opts.Secrets)
 			}
-			if err == nil {
-				app, err = ix.podToApplication(ctx, name, pod, opts.Secrets)
-			}
-		} else if doc, ok := ix.Applications[name]; ok {
+		} else if doc, ok := v.application(name); ok {
+			spec := doc.Spec
 			src = doc.Source
-			var spec AppSpec
-			spec, err = renderAppSpec(src, values)
-			if err == nil {
-				origins, err = overlay(layers, name, "application", src, func(o Override) error {
-					over, e := decodeAppOverride(o)
-					spec = mergeAppSpec(spec, over)
-					return e
-				})
-			}
+			origins, err = overlay(layers, name, "application", src, func(o Override) error {
+				over, e := decodeAppOverride(o)
+				spec = mergeAppSpec(spec, over)
+				return e
+			})
 			if err == nil {
 				app, err = specToApplication(ctx, name, spec, opts.Secrets)
 			}
@@ -204,53 +206,99 @@ func (ix *Index) layerValues(repo string, files []string) (Values, error) {
 	return values, nil
 }
 
-// renderAppSpec renders an Application document's raw text against a host's
-// values - a no-op unless the document contains "{{" - and decodes the
-// result: the actual, host-specific spec, as opposed to the structurally
-// validated but still-templated one the loader decoded when the tree was read.
-func renderAppSpec(src Source, values Values) (AppSpec, error) {
-	raw, err := renderIfTemplated(src, values)
-	if err != nil {
-		return AppSpec{}, err
+// renderTemplates renders every template for one host's values and decodes
+// the result through the same path plain documents take, into a second set
+// of documents. Everything about a template is decided here and nowhere
+// earlier: its kind, its name, whether it is valid. A rendered document
+// may not reuse the name of a plain one (or of another rendered one) - the
+// same rule as two files defining the same thing.
+func (ix *Index) renderTemplates(values Values) (*documents, error) {
+	rendered := newDocuments()
+	for _, tpl := range ix.templates {
+		out, err := renderTemplate(tpl.String(), tpl.Raw, values)
+		if err != nil {
+			return nil, err
+		}
+		if err := rendered.addDocuments(tpl.Repo, tpl.Path, out, true); err != nil {
+			return nil, err
+		}
 	}
-	var doc struct {
-		metav1.TypeMeta   `json:",inline"`
-		metav1.ObjectMeta `json:"metadata"`
-		Spec              AppSpec `json:"spec"`
+	if err := ix.checkNoOverlap(&rendered); err != nil {
+		return nil, err
 	}
-	if err := strictDecode(&doc, withRaw(src, raw), KindApplication); err != nil {
-		return AppSpec{}, err
-	}
-	return doc.Spec, nil
+	return &rendered, nil
 }
 
-// renderPodSpec is renderAppSpec for a Pod manifest.
-func renderPodSpec(src Source, values Values) (corev1.Pod, error) {
-	var pod corev1.Pod
-	raw, err := renderIfTemplated(src, values)
-	if err != nil {
-		return pod, err
+// checkNoOverlap is put's "defined twice" rule across the two sets, plus
+// the Application/Pod shared-namespace rule.
+func (ix *Index) checkNoOverlap(rendered *documents) error {
+	for name, doc := range rendered.Applications {
+		if prev, ok := ix.Applications[name]; ok {
+			return fmt.Errorf("Application %q is defined twice: %s and %s (rendered)", name, prev.Source, doc.Source)
+		}
+		if prev, ok := ix.Pods[name]; ok {
+			return fmt.Errorf("%q is both a Pod (%s) and an Application (%s, rendered); a host lists both under applications, so the name must be unique", name, prev.Source, doc.Source)
+		}
 	}
-	if err := strictDecode(&pod, withRaw(src, raw), KindPod); err != nil {
-		return pod, err
+	for name, doc := range rendered.Pods {
+		if prev, ok := ix.Pods[name]; ok {
+			return fmt.Errorf("Pod %q is defined twice: %s and %s (rendered)", name, prev.Source, doc.Source)
+		}
+		if prev, ok := ix.Applications[name]; ok {
+			return fmt.Errorf("%q is both an Application (%s) and a Pod (%s, rendered); a host lists both under applications, so the name must be unique", name, prev.Source, doc.Source)
+		}
 	}
-	return pod, nil
+	for name, doc := range rendered.ConfigMaps {
+		if prev, ok := ix.ConfigMaps[name]; ok {
+			return fmt.Errorf("ConfigMap %q is defined twice: %s and %s (rendered)", name, prev.Source, doc.Source)
+		}
+	}
+	for name, doc := range rendered.Secrets {
+		if prev, ok := ix.Secrets[name]; ok {
+			return fmt.Errorf("Secret %q is defined twice: %s and %s (rendered)", name, prev.Source, doc.Source)
+		}
+	}
+	return nil
 }
 
-// renderIfTemplated is the loader's opt-in rule, applied lazily
-// a document renders as a template only if it contains "{{" at all.
-func renderIfTemplated(src Source, values Values) ([]byte, error) {
-	if !bytes.Contains(src.Raw, []byte("{{")) {
-		return src.Raw, nil
-	}
-	return renderTemplate(src.String(), src.Raw, values)
+// view is what one host sees: the plain documents, plus what its templates
+// rendered to. Lookups try the plain set first; checkNoOverlap has already
+// made sure a name cannot be in both.
+type view struct {
+	*Index
+	rendered *documents
 }
 
-// withRaw returns src with its Raw bytes replaced - the rendered text, so
-// error messages still point at the source's original path and line.
-func withRaw(src Source, raw []byte) Source {
-	src.Raw = raw
-	return src
+func (v view) application(name string) (Doc[AppSpec], bool) {
+	if d, ok := v.Applications[name]; ok {
+		return d, true
+	}
+	d, ok := v.rendered.Applications[name]
+	return d, ok
+}
+
+func (v view) pod(name string) (Doc[corev1.Pod], bool) {
+	if d, ok := v.Pods[name]; ok {
+		return d, true
+	}
+	d, ok := v.rendered.Pods[name]
+	return d, ok
+}
+
+func (v view) configMap(name string) (Doc[corev1.ConfigMap], bool) {
+	if d, ok := v.ConfigMaps[name]; ok {
+		return d, true
+	}
+	d, ok := v.rendered.ConfigMaps[name]
+	return d, ok
+}
+
+func (v view) secret(name string) (Doc[corev1.Secret], bool) {
+	if d, ok := v.Secrets[name]; ok {
+		return d, true
+	}
+	d, ok := v.rendered.Secrets[name]
+	return d, ok
 }
 
 // overlay applies every layer's override for name, in order, and returns the

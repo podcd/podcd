@@ -5,10 +5,13 @@
 // with an agent.yaml `repositories[].values` list as a last-resort, host-local
 // fallback beneath all of that.
 //
-// A document opts in per file: only files containing "{{" are parsed as a
-// template, so a repository that never uses the feature pays nothing for it
-// and is never surprised by it. Rendering happens in Resolve, once a host and
-// its values are known, not while the tree is being loaded - see resolve.go.
+// A template is a file named *.tpl (edge-api.yaml.tpl, say). Nothing about
+// its contents makes it one, and nothing about a plain .yaml's contents makes
+// it a template - "{{" there is just text. A template is rendered in Resolve,
+// once a host and that host's values are known, and only then decoded, so it
+// may use the whole of text/template: conditionals around entire keys,
+// ranges, a name computed from a value.
+// Index.renderTemplates in resolve.go.
 package config
 
 import (
@@ -49,8 +52,7 @@ func parseValues(name string, data []byte) (Values, error) {
 	return v, nil
 }
 
-// LoadValuesFiles reads each file in order and merges them, later files
-// overriding earlier ones - the same precedence as repeating `-f` on helm.
+// LoadValuesFiles reads each file in order and merges them, later files overriding earlier ones
 func LoadValuesFiles(paths ...string) (Values, error) {
 	merged := Values{}
 	for _, p := range paths {

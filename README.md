@@ -306,8 +306,9 @@ repositories:
     # Read only this subdirectory of the repository.
     # path: ""
     # Values file(s), relative to this repository's tree (path, if set), for
-    # {{ .Values }} templating; a document opts in by using "{{" at all.
-    # Repeated files merge, later ones winning per key.
+    # {{ .Values }} templating of *.tpl files - a host-local fallback
+    # beneath what Host, Group and Environment documents declare. Repeated
+    # files merge, later ones winning per key.
     # values: []
     # Disable host key / TLS verification. Visible here on purpose, rather
     # than an environment variable nobody sees.
@@ -541,9 +542,12 @@ Overrides (above) parametrize one application at a time, by name, and only work 
 
 Values templating parametrizes the documents as well, so several hosts can share one `Application`/`Pod` definition and each fill in the parts that differ.
 
+A template is a file named `*.tpl` (e.g. `edge-api.yaml.tpl`). A template is rendered for each host against that host's values and only then decoded.
+
+Templates may render any deployable kind - `Application`, `Pod`, `ConfigMap`, `Secret` - but not `Host`, `Group` or `Environment`, since those are what decide a host's values in the first place.
 
 ```yaml
-# apps/edge-api.yaml
+# apps/edge-api.yaml.tpl
 apiVersion: gitops.podcd.io/v1
 kind: Application
 metadata:
@@ -600,7 +604,7 @@ Templates get Go's own `text/template`, plus this small helper set - deliberatel
 | Function | Use |
 |---|---|
 | `default DEF VAL` | `VAL` if set, else `DEF`. For anything genuinely optional. |
-| `required MSG VAL` | `VAL` if set, else fails the render with `MSG` - see the caveat below before reaching for this. |
+| `required MSG VAL` | `VAL` if set, else fails the render with `MSG`. Per host: a host that never selects the application never renders its template, so only hosts that actually need the value have to supply it. |
 | `upper`, `lower`, `trim` | The obvious string transforms. |
 | `trimPrefix P S`, `trimSuffix SUF S` | Strip a fixed prefix/suffix from `S`. |
 | `replace OLD NEW S` | `strings.ReplaceAll`. |

@@ -25,7 +25,7 @@ func TestValuesFilesTemplateApplicationsForThisHost(t *testing.T) {
 	}
 	repoDir := t.TempDir()
 	files := map[string]string{
-		"app.yaml": `
+		"app.yaml.tpl": `
 apiVersion: gitops.podcd.io/v1
 kind: Application
 metadata: {name: web}
