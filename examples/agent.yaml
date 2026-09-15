@@ -29,7 +29,7 @@ repositories:
   - name: infrastructure
     # Where to fetch from: https://, ssh (git@host:path) or a local path.
     url: https://github.com/podcd/podcd-gitops.git
-    # A branch, a tag or a commit. A tag or commit pins the host exactly.
+    # A branch, a tag or a commit. A tag or commit pins the host.
     revision: main
     # Read only this subdirectory of the repository.
     # path: ""

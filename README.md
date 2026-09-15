@@ -72,15 +72,12 @@ To see the loop by hand rather than wait for it, `podcd plan` shows what would c
 Tear down when done:
 
 ```bash
-systemctl --user disable --now podcd-agent.service
-systemctl --user stop podcd-local.service
-rm ~/.config/containers/systemd/podcd-local.container ~/.config/systemd/user/podcd-agent.service
-systemctl --user daemon-reload
-rm -rf ~/.config/podcd ~/.local/state/podcd
+podcd teardown --purge-state --purge-config -y
 ```
 
-Building from source instead: `make build`, then the same bootstrap with
-`--binaries ./dist`.
+This stops and removes every application podcd manages, then stops, disables and removes `podcd-agent.service`, it is the equivalent of running `systemctl --user disable --now podcd-agent.service` and deleting the unit file by hand. `--purge-state` also deletes `~/.local/state/podcd` (checkouts, played manifests, state.json); `--purge-config` also deletes `~/.config/podcd` (the repository URL, and any secrets in `agent.env`) - both are opt-in and skipped without them.
+
+Building from source instead: `make build`, then the same bootstrap with `--binaries ./dist`.
 
 For the demo variant of this, use your own user in place of `podcd`, skip step 2's `useradd`, and point step 4 at `https://github.com/podcd/podcd.git` with `--repo-path examples --host local`.
 
@@ -304,7 +301,7 @@ repositories:
   - name: infrastructure
     # Where to fetch from: https://, ssh (git@host:path) or a local path.
     url: git@github.com:podcd/podcd-gitops.git
-    # A branch, a tag or a commit. A tag or commit pins the host exactly.
+    # A branch, a tag or a commit. A tag or commit pins the host.
     revision: main
     # Read only this subdirectory of the repository.
     # path: ""
@@ -374,6 +371,9 @@ podcd get         # what a repository defines (agent.yaml's, or --repo NAME|DIR|
 podcd init        # scaffold a minimal repository: one host, one nginx
 podcd create      # print a document for a kind, built from flags
 podcd install     # write the systemd user service file for the agent
+podcd uninstall   # stop the agent's systemd user service and remove its unit file
+podcd prune       # stop and remove applications directly, without consulting Git (--all, or by name)
+podcd teardown    # prune --all, then uninstall; --purge-state and --purge-config to also delete local state/config
 podcd config      # view, create or edit the agent config file
 ```
 
@@ -387,6 +387,16 @@ mkdir -p ~/.zsh/completions && podcd completion zsh > ~/.zsh/completions/_podcd 
 ```
 
 fish and PowerShell: `podcd completion --help`.
+
+### Container image
+
+```bash
+# builds podcd:$(VERSION) from Containerfile
+make image                       
+podman run --rm podcd:dev lint /repo -v /repo:/repo:ro
+```
+
+Useful for the commands that only read Git and print: `get`, `lint`, `validate`, `create`, config`. `run`/`reconcile`/`install`/`uninstall`/`prune`/`teardown`/`health` manage *this host's* rootless Podman and systemd `--user` session - run those from the host directly (the way `deploy/bootstrap.sh` does), not from inside a container, unless you bind-mount the host's Podman socket, systemd user bus and Quadlet unit directory in.
 
 ## State and History
 

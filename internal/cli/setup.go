@@ -29,11 +29,10 @@ func newInstallCommand() *cobra.Command {
 		RunE: func(cmd *cobra.Command, _ []string) error {
 			dest := output
 			if dest == "" {
-				home, err := os.UserHomeDir()
-				if err != nil {
-					return fmt.Errorf("determining the home directory: %w", err)
+				var err error
+				if dest, err = defaultServiceFilePath(); err != nil {
+					return err
 				}
-				dest = filepath.Join(home, ".config", "systemd", "user", "podcd-agent.service")
 			}
 			if _, err := os.Stat(dest); err == nil && !yes {
 				if !confirm(cmd, dest+" already exists. Overwrite?") {

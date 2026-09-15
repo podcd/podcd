@@ -1,0 +1,7 @@
+.git
+dist
+bin
+coverage.out
+test.json
+junit.xml
+*.md
