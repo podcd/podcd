@@ -27,7 +27,3 @@ The pull request template asks for:
 - the README, the generated `agent.yaml` (`podcd config create`) and the examples updated if the change is visible to a user
 - a check that nothing writes a secret value to Git, a unit file, a log line or `state.json`
 - `make lint` and `gofmt -l .` clean
-
-## This documentation
-
-The site lives in `docs/` of the main repository and is built with Docusaurus; see [`docs/README.md`](https://github.com/podcd/podcd/blob/main/docs/README.md) for running it locally. Every page has an *Edit this page* link.

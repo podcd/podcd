@@ -32,6 +32,8 @@
 }
 
 [data-theme='dark'] {
+  /* VS Code Dark+ greys for surfaces; Helm's bright blue stays the accent,
+     the navy frame and footer stay as the signature. */
   --ifm-color-primary: var(--shade-green-bright);
   --ifm-color-primary-dark: #2793c1;
   --ifm-color-primary-darker: #2589b5;
@@ -40,18 +42,20 @@
   --ifm-color-primary-lighter: #4ab1db;
   --ifm-color-primary-lightest: #6dc0e2;
 
-  --ifm-background-color: var(--shade-dark);
-  --ifm-background-surface-color: var(--blue-dark);
-  --ifm-font-color-base: var(--shade-light);
-  --ifm-heading-color: #ffffff;
+  --ifm-background-color: #1e1e1e;
+  --ifm-background-surface-color: #252526;
+  --ifm-font-color-base: #d4d4d4;
+  --ifm-heading-color: #e8e8e8;
   --ifm-link-color: var(--shade-green-bright);
   --ifm-link-hover-color: var(--ifm-color-primary-lightest);
-  --ifm-menu-color: var(--shade-mid);
-  --ifm-toc-link-color: var(--shade-mid);
-  --ifm-color-emphasis-300: #2a3299;
+  --ifm-menu-color: #cccccc;
+  --ifm-toc-link-color: #9d9d9d;
+  --ifm-color-emphasis-200: #2b2b2b;
+  --ifm-color-emphasis-300: #3c3c3c;
   --ifm-table-stripe-background: rgba(255, 255, 255, 0.03);
-  --ifm-code-background: rgba(255, 255, 255, 0.08);
-  --docusaurus-highlighted-code-line-bg: rgba(255, 255, 255, 0.1);
+  --ifm-code-background: rgba(255, 255, 255, 0.06);
+  --ifm-pre-background: #252526;
+  --docusaurus-highlighted-code-line-bg: rgba(255, 255, 255, 0.08);
 }
 
 body {

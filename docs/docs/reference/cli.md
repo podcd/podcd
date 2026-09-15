@@ -24,7 +24,7 @@ podcd validate    # fetch, compile the configuration for this host, and check fo
 podcd lint        # check repository files, for every host they define, without fetching
 podcd get         # what a repository defines (agent.yaml's, or --repo NAME|DIR|URL)
 podcd init        # scaffold a minimal repository: one host, one nginx
-podcd create      # print a document for a kind, built from flags
+podcd create      # prints a document from a kind.
 ```
 
 `lint` and `get` need no agent configuration when given a path - they are the two commands meant to run on a laptop against a checkout:

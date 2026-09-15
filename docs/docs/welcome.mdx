@@ -29,14 +29,7 @@ The model is intentionally simple:
 - The agent compiles the resulting configuration.
 - Quadlet and systemd manage the running containers.
 
-```mermaid
-flowchart LR
-  git["Git desired state"] --> agent["agent: pull + host match + plan"]
-  agent --> quadlet["Quadlet units"]
-  quadlet --> app["running app"]
-```
-
-podcd is for teams that want disciplined, declarative deployment on regular Linux VMs while keeping the operational model lightweight and auditable.
+podcd is for teams that want simple, declarative deployment on regular Linux VMs while keeping the operational model lightweight and auditable.
 
 ## Why podcd?
 
@@ -45,10 +38,9 @@ podcd is built around a few principles:
 - Declarative configuration in Git
 - Host-specific reconciliation with explicit inheritance
 - Rootless Podman workloads managed by systemd
-- Deterministic compilation and clear validation errors
 - A small, operationally simple control plane
 
-This is not Kubernetes, it is a focused GitOps model for Linux hosts that need predictable service deployment without a cluster control plane.
+This is not Kubernetes, it is a focused GitOps model for Linux hosts.
 
 ## Where to go next
 

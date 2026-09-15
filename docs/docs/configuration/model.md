@@ -16,15 +16,6 @@ The core document types are:
 - `Group`: a role or machine-purpose definition
 - `Host`: a specific VM, including its environment, groups, and overrides
 
-A host's desired state is built from these in layers:
-
-```mermaid
-flowchart TD
-  app["Application / Pod<br/><i>what it is</i>"] --> env["Environment"]
-  env --> group["Group(s)"]
-  group --> host["Host<br/><i>which VM</i>"]
-```
-
 `Application` and `Pod` define workloads. `Environment`, `Group` and `Host` decide **which workloads run on a host** and may override their configuration.
 
 ## Application
@@ -184,16 +175,3 @@ env:
 ```
 
 An override may only name an application that every host in that layer actually runs; an environment-level override for an application only some of its hosts have is an error for the hosts that don't. For parametrizing *within* a shared definition - an image tag that differs between dev and prod, say - see [values templating](values.md).
-
-## Determinism
-
-Two compiler runs on the same commit produce the same bytes. Ambiguity is treated as an error, not a guess. Examples include:
-
-- an application defined twice across repositories
-- a reference to a missing application
-- an unknown group
-- a host with no `Host` document
-- a misspelled field
-- two applications contending for the same host port
-
-Each failure names the offending file and explains the issue. `podcd lint` runs all of these checks for every host a repository defines, without fetching or touching a host.
