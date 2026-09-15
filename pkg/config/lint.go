@@ -12,8 +12,9 @@ import (
 	"github.com/podcd/podcd/pkg/secrets"
 )
 
-func LoadPaths(paths ...string) (*Index, error) {
+func LoadPaths(values Values, paths ...string) (*Index, error) {
 	ix := NewIndex()
+	ix.Values = values
 	for _, p := range paths {
 		info, err := os.Stat(p)
 		if err != nil {
@@ -91,8 +92,8 @@ var ErrNoHosts = errors.New("no Host documents found; nothing to compile")
 // LintPaths is LoadPaths followed by Lint: what `podcd lint` runs.
 // An error means a document is wrong in itself (malformed, unknown field, duplicate name) or there was nothing to compile;
 // findings are what does not fit together across the documents that did load, such as a reference to something not defined here.
-func LintPaths(ctx context.Context, hosts []string, paths ...string) (*Index, []Finding, error) {
-	ix, err := LoadPaths(paths...)
+func LintPaths(ctx context.Context, hosts []string, values Values, paths ...string) (*Index, []Finding, error) {
+	ix, err := LoadPaths(values, paths...)
 	if err != nil {
 		return nil, nil, err
 	}

@@ -430,3 +430,32 @@ func TestAgentConfigRejectsEmptyRepositories(t *testing.T) {
 		t.Fatalf("want an error about missing repositories, got: %v", err)
 	}
 }
+
+func TestAgentConfigRejectsBadValuesPaths(t *testing.T) {
+	base := AgentConfig{
+		Runtime:      "podman",
+		LogFormat:    "text",
+		Repositories: []RepositorySpec{{Name: "infra", URL: "https://example.com/infra.git"}},
+	}
+	for _, tc := range []struct {
+		name  string
+		value string
+	}{
+		{"absolute", "/etc/passwd"},
+		{"escaping", "../../secrets.yaml"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			cfg := base
+			cfg.Repositories = []RepositorySpec{{Name: "infra", URL: "https://example.com/infra.git", Values: []string{tc.value}}}
+			if err := cfg.Validate(); err == nil || !strings.Contains(err.Error(), "values file") {
+				t.Fatalf("want a values-file error for %q, got: %v", tc.value, err)
+			}
+		})
+	}
+
+	cfg := base
+	cfg.Repositories = []RepositorySpec{{Name: "infra", URL: "https://example.com/infra.git", Values: []string{"values/prod.yaml"}}}
+	if err := cfg.Validate(); err != nil {
+		t.Fatalf("a relative values path should validate cleanly: %v", err)
+	}
+}

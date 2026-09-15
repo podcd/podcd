@@ -19,7 +19,7 @@ func lintFiles(t *testing.T, files map[string]string) (*Index, []Finding, error)
 			t.Fatal(err)
 		}
 	}
-	return LintPaths(context.Background(), nil, dir)
+	return LintPaths(context.Background(), nil, nil, dir)
 }
 
 func TestLintCompilesEveryHost(t *testing.T) {
@@ -119,15 +119,15 @@ func TestLintAcceptsFilesAndLimitsToNamedHosts(t *testing.T) {
 	os.WriteFile(apps, []byte("apiVersion: gitops.podcd.io/v1\nkind: Application\nmetadata: {name: web}\nspec: {image: example.com/web"+pinned+"}\n"), 0o644)
 	os.WriteFile(hosts, []byte("apiVersion: gitops.podcd.io/v1\nkind: Host\nmetadata: {name: ok}\nspec: {applications: [web]}\n---\napiVersion: gitops.podcd.io/v1\nkind: Host\nmetadata: {name: bad}\nspec: {applications: [nope]}\n"), 0o644)
 
-	_, findings, err := LintPaths(context.Background(), nil, apps, hosts)
+	_, findings, err := LintPaths(context.Background(), nil, nil, apps, hosts)
 	if err != nil || len(findings) != 1 || findings[0].Host != "bad" {
 		t.Fatalf("two files, one bad host: %v %v", findings, err)
 	}
-	_, findings, err = LintPaths(context.Background(), []string{"ok"}, apps, hosts)
+	_, findings, err = LintPaths(context.Background(), []string{"ok"}, nil, apps, hosts)
 	if err != nil || len(findings) != 0 {
 		t.Fatalf("--host ok should be clean: %v %v", findings, err)
 	}
-	if _, _, err := LintPaths(context.Background(), []string{"ghost"}, apps, hosts); err == nil {
+	if _, _, err := LintPaths(context.Background(), []string{"ghost"}, nil, apps, hosts); err == nil {
 		t.Fatal("an unknown --host must be an error")
 	}
 }
@@ -152,7 +152,7 @@ func TestSplitDocumentsReportsLinesAndSurvivesOddEndings(t *testing.T) {
 	// A file that ends in garbage is an error naming the line, not a panic.
 	bad := filepath.Join(t.TempDir(), "env.yaml")
 	os.WriteFile(bad, []byte("apiVersion: gitops.podcd.io/v1\nkind: Environment\nmetadata:\n  name: local\nspec:\n  applications:\n    - local\n123"), 0o644)
-	if _, err := LoadPaths(bad); err == nil || !strings.Contains(err.Error(), "env.yaml:1") {
+	if _, err := LoadPaths(nil, bad); err == nil || !strings.Contains(err.Error(), "env.yaml:1") {
 		t.Fatalf("want a located error, got %v", err)
 	}
 }

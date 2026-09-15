@@ -305,6 +305,10 @@ repositories:
     revision: main
     # Read only this subdirectory of the repository.
     # path: ""
+    # Values file(s), relative to this repository's tree (path, if set), for
+    # {{ .Values }} templating; a document opts in by using "{{" at all.
+    # Repeated files merge, later ones winning per key.
+    # values: []
     # Disable host key / TLS verification. Visible here on purpose, rather
     # than an environment variable nobody sees.
     # insecure: false
@@ -530,6 +534,85 @@ repositories:
     url: https://github.com/your-user/applications.git
     revision: v1.4.0
 ```
+
+### Values templating
+
+Overrides (above) parametrize one application at a time, by name, and only work for structural differences: which apps run, which port, which interface - an override can only name an application every host in that layer actually runs. Values templating parametrizes the documents themselves instead, so several hosts can share one `Application`/`Host`/`Group`/`Environment` definition and each fill in the parts that differ, such as an image tag, a resource limit, or a domain - including for an application that only exists on some of those hosts, which an override cannot express.
+
+
+```yaml
+# apps/edge-api.yaml
+apiVersion: gitops.podcd.io/v1
+kind: Application
+metadata:
+  name: edge-api
+spec:
+  image: "{{ .Values.image.repository }}:{{ .Values.image.tag }}"
+  resources:
+    memory: "{{ default \"256M\" .Values.resources.memory }}"
+```
+
+#### Where values come from
+
+Which values apply is a decision each host's own agent makes, in its `agent.yaml`, the same way it already decides its own `revision`:
+
+```yaml
+repositories:
+  - name: gitops
+    url: https://github.com/your-user/podcd-gitops.git
+    revision: main
+    values:
+      - values/prod.yaml   # repeatable; later files win per key
+```
+
+`values/prod.yaml` and `values/dev.yaml` live in Git like any other file, just without an `apiVersion`/`kind`, so the loader already ignores them as documents - no new document kind was needed:
+
+```yaml
+image:
+  repository: registry.example.com/edge-api
+  tag: "1.4.0"
+resources:
+  memory: 512M
+```
+
+Merging happens in two stages, both "later wins, maps merge key-by-key": the files listed under one repository's `values`, in order, then across every configured repository, in the order they're listed. So one repository can hold shared templates and another can hold each host's values, or a repository can hold both.
+
+#### Functions
+
+Templates get Go's own `text/template`, plus this small helper set - deliberately not sprig, so podcd stays a dependency-light single binary and a missing value is meant to be visible, not smoothed over:
+
+| Function | Use |
+|---|---|
+| `default DEF VAL` | `VAL` if set, else `DEF`. For anything genuinely optional. |
+| `required MSG VAL` | `VAL` if set, else fails the render with `MSG` - see the caveat below before reaching for this. |
+| `upper`, `lower`, `trim` | The obvious string transforms. |
+| `trimPrefix P S`, `trimSuffix SUF S` | Strip a fixed prefix/suffix from `S`. |
+| `replace OLD NEW S` | `strings.ReplaceAll`. |
+| `quote V` | Go-quote a value, for embedding it as a JSON/YAML string literal. |
+
+#### Two things to know
+
+Templates are expanded while the tree is loaded, before `Resolve` decides which applications a given host actually runs. Two things follow from that:
+
+- **`required` is tree-wide, not per-host.** Every templated document renders for every host that loads the tree, whether or not that host ends up running the application - so a value read with `required` must be supplied by every host, not only the ones that will use it. A value only some hosts have should be read inside a template conditional instead, so the others simply render a document that omits that part:
+
+  ```yaml
+  {{- if .Values.publicHostname }}
+  PUBLIC_HOSTNAME: "{{ .Values.publicHostname }}"
+  {{- end }}
+  ```
+
+- **`{{` anywhere opts a file in, comments included.** A YAML `#` comment that mentions the syntax in prose - a literal `` `{{ if }}` `` written as an example - is itself invalid template code and will fail to parse, since the whole file becomes one template the moment it contains `{{` at all. Helm has the exact same behaviour and the same fix: use a Go template comment instead of a YAML one. `{{/* ... */}}` is inert at render time regardless of what looks like syntax inside it:
+
+  ```yaml
+  {{- /* mentioning {{ if }} in here is fine - this is a template comment, not a YAML one */ -}}
+  ```
+
+#### Try it
+
+`podcd lint --values values/dev.yaml path/to/repo` renders and compiles a repository against a values file without touching a host - the `helm template -f` workflow for a podcd-gitops repo.
+
+See [`podcd-gitops/multi-env`](https://github.com/podcd/podcd-gitops/tree/main/multi-env) for a complete example: four hosts across two zones and two environments, using overrides for the structural zone differences and values templating for the per-environment image tag and sizing that overrides can't reach.
 
 ## Testing
 
