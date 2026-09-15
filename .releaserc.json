@@ -6,7 +6,8 @@
     [
       "@semantic-release/exec",
       {
-        "prepareCmd": "VERSION=${nextRelease.version} scripts/build-release.sh"
+        "prepareCmd": "VERSION=${nextRelease.version} scripts/build-release.sh",
+        "publishCmd": "VERSION=${nextRelease.version} scripts/publish-image.sh"
       }
     ],
     [

@@ -1,0 +1,70 @@
+# Runs the podcd agent itself as a rootless Podman Quadlet, instead of the
+# plain systemd unit `podcd install` writes. See ./README.md before using
+# this - the container has to reach back into the *host's* real Podman
+# engine and systemd --user session, which needs --pid=host, and that flag
+# combination has been observed to hang podman on the host until the
+# resulting process is found and killed by hand. Treat this as verified-but-
+# fragile, not a drop-in replacement for `podcd install`.
+#
+# Install:
+#   mkdir -p ~/.config/containers/systemd
+#   cp podcd-agent.container ~/.config/containers/systemd/
+#   systemctl --user daemon-reload
+#   systemctl --user enable --now podcd-agent.service
+#
+# Requires (see ./README.md for why):
+#   - rootless Podman 4.4+ with Quadlet, already proven working on this host
+#     directly (e.g. `podcd install` + `podcd reconcile` once, by hand)
+#   - systemctl --user enable --now podman.socket
+#   - an agent config already at ~/.config/podcd/agent.yaml
+#     (podcd config create --repo-url ... --revision ...)
+#
+# On SELinux-enforcing hosts (RHEL, Fedora), add ,z or ,Z to every Volume=
+# line below, the same as any other bind mount - see the main README's
+# "Container image" section.
+
+[Unit]
+Description=podcd agent (containerized)
+After=podman.socket
+Requires=podman.socket
+
+[Container]
+Image=ghcr.io/podcd/podcd:latest
+ContainerName=podcd-agent
+Exec=run
+
+# Run as this session's own user, mapped 1:1 rather than through the usual
+# subuid range - required for the bind-mounted sockets below to pass their
+# peer-credential checks. Assumes the primary GID equals the UID, true for
+# a typical dedicated service account (useradd -u N -U); adjust Group= if
+# yours differs.
+UserNS=keep-id:uid=%U,gid=%U
+User=%U
+Group=%U
+
+# The host's own systemd --user bus and Podman API socket live under its
+# runtime directory (%t = /run/user/<uid> in a user session).
+Volume=%t:%t
+Volume=/run/systemd/system:/run/systemd/system:ro
+Environment=XDG_RUNTIME_DIR=%t
+Environment=CONTAINER_HOST=unix://%t/podman/podman.sock
+Environment=HOME=%h
+
+# systemd's user-bus authentication checks the caller's cgroup and PID as
+# seen from the host; sharing both is what makes that check pass - and
+# also what caused the hang mentioned above. No known way around it yet.
+PodmanArgs=--cgroupns=host --pid=host
+
+# podcd's own config (read-only: it only ever reads agent.yaml/agent.env),
+# its state (checkouts, state.json), and the real Quadlet unit directory it
+# writes the applications *it* manages into.
+Volume=%h/.config/podcd:%h/.config/podcd:ro
+Volume=%h/.local/state/podcd:%h/.local/state/podcd
+Volume=%h/.config/containers/systemd:%h/.config/containers/systemd
+
+[Service]
+Restart=always
+RestartSec=10
+
+[Install]
+WantedBy=default.target
