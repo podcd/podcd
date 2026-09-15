@@ -112,7 +112,7 @@ func (ix *Index) Resolve(ctx context.Context, opts ResolveOptions) (model.Desire
 	if err != nil {
 		return zero, err
 	}
-	v := view{ix, rendered}
+	docs := hostDocuments{ix, rendered}
 
 	var p problems
 	var apps []model.Application
@@ -125,7 +125,7 @@ func (ix *Index) Resolve(ctx context.Context, opts ResolveOptions) (model.Desire
 			origins []string
 			err     error
 		)
-		if doc, ok := v.pod(name); ok {
+		if doc, ok := docs.pod(name); ok {
 			pod := doc.Spec
 			src = doc.Source
 			origins, err = overlay(layers, name, "pod", src, func(o Override) (e error) {
@@ -133,9 +133,9 @@ func (ix *Index) Resolve(ctx context.Context, opts ResolveOptions) (model.Desire
 				return e
 			})
 			if err == nil {
-				app, err = v.podToApplication(ctx, name, pod, opts.Secrets)
+				app, err = docs.podToApplication(ctx, name, pod, opts.Secrets)
 			}
-		} else if doc, ok := v.application(name); ok {
+		} else if doc, ok := docs.application(name); ok {
 			spec := doc.Spec
 			src = doc.Source
 			origins, err = overlay(layers, name, "application", src, func(o Override) error {
@@ -261,43 +261,45 @@ func (ix *Index) checkNoOverlap(rendered *documents) error {
 	return nil
 }
 
-// view is what one host sees: the plain documents, plus what its templates
-// rendered to. Lookups try the plain set first; checkNoOverlap has already
-// made sure a name cannot be in both.
-type view struct {
+// hostDocuments is every document one particular host can see: the plain
+// ones every host shares (the Index), plus the ones this host's templates
+// rendered to with its own values. Two hosts get two different sets from the
+// same templates - that is the point of templating. Lookups try the plain
+// set first; checkNoOverlap has already made sure a name cannot be in both.
+type hostDocuments struct {
 	*Index
 	rendered *documents
 }
 
-func (v view) application(name string) (Doc[AppSpec], bool) {
-	if d, ok := v.Applications[name]; ok {
+func (h hostDocuments) application(name string) (Doc[AppSpec], bool) {
+	if d, ok := h.Applications[name]; ok {
 		return d, true
 	}
-	d, ok := v.rendered.Applications[name]
+	d, ok := h.rendered.Applications[name]
 	return d, ok
 }
 
-func (v view) pod(name string) (Doc[corev1.Pod], bool) {
-	if d, ok := v.Pods[name]; ok {
+func (h hostDocuments) pod(name string) (Doc[corev1.Pod], bool) {
+	if d, ok := h.Pods[name]; ok {
 		return d, true
 	}
-	d, ok := v.rendered.Pods[name]
+	d, ok := h.rendered.Pods[name]
 	return d, ok
 }
 
-func (v view) configMap(name string) (Doc[corev1.ConfigMap], bool) {
-	if d, ok := v.ConfigMaps[name]; ok {
+func (h hostDocuments) configMap(name string) (Doc[corev1.ConfigMap], bool) {
+	if d, ok := h.ConfigMaps[name]; ok {
 		return d, true
 	}
-	d, ok := v.rendered.ConfigMaps[name]
+	d, ok := h.rendered.ConfigMaps[name]
 	return d, ok
 }
 
-func (v view) secret(name string) (Doc[corev1.Secret], bool) {
-	if d, ok := v.Secrets[name]; ok {
+func (h hostDocuments) secret(name string) (Doc[corev1.Secret], bool) {
+	if d, ok := h.Secrets[name]; ok {
 		return d, true
 	}
-	d, ok := v.rendered.Secrets[name]
+	d, ok := h.rendered.Secrets[name]
 	return d, ok
 }
 
