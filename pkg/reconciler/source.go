@@ -43,7 +43,7 @@ type LoadResult struct {
 // resolves them for this host.
 func (s *Source) LoadDesiredState(ctx context.Context) (LoadResult, error) {
 	var result LoadResult
-	index, revisions, offline, err := s.LoadIndex(ctx)
+	index, values, revisions, offline, err := s.LoadIndex(ctx)
 	if err != nil {
 		return result, err
 	}
@@ -52,6 +52,7 @@ func (s *Source) LoadDesiredState(ctx context.Context) (LoadResult, error) {
 		Host:      s.Host,
 		Secrets:   s.Secrets,
 		Revisions: revisions,
+		Values:    values,
 	})
 	if err != nil {
 		return result, err
@@ -60,24 +61,23 @@ func (s *Source) LoadDesiredState(ctx context.Context) (LoadResult, error) {
 	return result, nil
 }
 
-// LoadIndex fetches every repository and loads its documents, without resolving them for a host
-// It returns the commits loaded and the repositories that could not be refreshed.
-func (s *Source) LoadIndex(ctx context.Context, only ...string) (*config.Index, map[string]string, []string, error) {
+// LoadIndex fetches every repository and loads its documents, without
+// resolving them for a host. It returns the index, the agent.yaml values
+// fallback (the lowest-precedence input to templating - see
+// config.ResolveOptions.Values), the commits loaded, and the repositories
+// that could not be refreshed.
+func (s *Source) LoadIndex(ctx context.Context, only ...string) (*config.Index, config.Values, map[string]string, []string, error) {
 	index := config.NewIndex()
 	revisions := map[string]string{}
 	var offline []string
-	var synced []*git.Repository
 	values := config.Values{}
 
-	// Every repository is synced, and its values loaded, before any tree is
-	// parsed: values apply across repositories, so a document in one
-	// repository can be templated against a values file that lives in another.
 	for _, repo := range s.Repos {
 		if len(only) > 0 && !slices.Contains(only, repo.Name) {
 			continue
 		}
 		if err := s.resolveAuth(ctx, repo); err != nil {
-			return nil, nil, nil, err
+			return nil, nil, nil, nil, err
 		}
 		sha, err := repo.Sync(ctx)
 		switch {
@@ -87,27 +87,22 @@ func (s *Source) LoadIndex(ctx context.Context, only ...string) (*config.Index, 
 			s.logWarn("git remote unreachable, using the commit already on disk",
 				"repo", repo.Name, "revision", sha, "error", err)
 		default:
-			return nil, nil, nil, fmt.Errorf("repository %s: %w", repo.Name, err)
+			return nil, nil, nil, nil, fmt.Errorf("repository %s: %w", repo.Name, err)
 		}
 		revisions[repo.Name] = sha
-		synced = append(synced, repo)
 
 		for _, vf := range s.ValuesFiles[repo.Name] {
 			v, err := config.LoadValuesFile(filepath.Join(repo.TreePath(), vf))
 			if err != nil {
-				return nil, nil, nil, fmt.Errorf("repository %s: %w", repo.Name, err)
+				return nil, nil, nil, nil, fmt.Errorf("repository %s: %w", repo.Name, err)
 			}
 			values = config.MergeValues(values, v)
 		}
-	}
-
-	index.Values = values
-	for _, repo := range synced {
 		if err := index.LoadTree(repo.Name, repo.TreePath()); err != nil {
-			return nil, nil, nil, err
+			return nil, nil, nil, nil, err
 		}
 	}
-	return index, revisions, offline, nil
+	return index, values, revisions, offline, nil
 }
 
 // resolveAuth turns a repository's token reference into a value, on every

@@ -6,6 +6,8 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"github.com/podcd/podcd/pkg/secrets"
 )
 
 func TestMergeValuesDeepMergesMapsAndReplacesEverythingElse(t *testing.T) {
@@ -98,18 +100,178 @@ func TestRenderTemplateBadSyntaxNamesTheFile(t *testing.T) {
 	}
 }
 
-// TestLoaderTemplatesOnlyFilesThatOptIn is an end-to-end check: a repository
-// with a plain file and a templated one, loaded and resolved for a host,
-// produces the value that came from the values file - and a file that never
-// writes "{{" is never even parsed as a template.
-func TestLoaderTemplatesOnlyFilesThatOptIn(t *testing.T) {
+// TestTemplateIsDeclaredByFileNameNotContents is the rule everything else
+// rests on: a *.tpl renders, a .yaml does not - however either one looks
+// inside. "{{" in a plain document is just text, so a comment mentioning the
+// syntax, or a value that genuinely contains braces, can never opt a file
+// into templating by accident.
+func TestTemplateIsDeclaredByFileNameNotContents(t *testing.T) {
 	files := map[string]string{
-		"app.yaml": `
+		"templated.yaml.tpl": `
 apiVersion: gitops.podcd.io/v1
 kind: Application
 metadata: {name: web}
 spec:
   image: "{{ .Values.image.repository }}:{{ .Values.image.tag }}"
+`,
+		"plain.yaml": `
+# This comment mentions {{ .Values }} and {{ if }} and that is fine.
+apiVersion: gitops.podcd.io/v1
+kind: Application
+metadata: {name: literal}
+spec:
+  image: "example.com/literal:{{ not a template }}"
+`,
+		"host.yaml": `
+apiVersion: gitops.podcd.io/v1
+kind: Host
+metadata: {name: vm-1}
+spec: {applications: [web, literal]}
+`,
+	}
+	ix := loadIndex(t, files)
+	if len(ix.Templates()) != 1 || len(ix.Applications) != 1 {
+		t.Fatalf("want 1 template and 1 plain application after load, got %d and %d", len(ix.Templates()), len(ix.Applications))
+	}
+
+	values := Values{"image": map[string]any{"repository": "example.com/web", "tag": "2.0"}}
+	desired, err := ix.Resolve(context.Background(), ResolveOptions{Host: "vm-1", Values: values})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if app, _ := desired.App("web"); app.Image != "example.com/web:2.0" {
+		t.Fatalf("template was not rendered: %+v", app)
+	}
+	if app, _ := desired.App("literal"); app.Image != "example.com/literal:{{ not a template }}" {
+		t.Fatalf("a plain .yaml must never be rendered; got %+v", app)
+	}
+}
+
+// TestEnvironmentGroupAndHostValuesMergeInOverridePrecedence checks that a
+// Host's own values:, a Group's, an Environment's, and the agent.yaml
+// fallback (ResolveOptions.Values) merge with exactly the precedence
+// overrides already use: environment < group < host, host winning.
+func TestEnvironmentGroupAndHostValuesMergeInOverridePrecedence(t *testing.T) {
+	files := map[string]string{
+		"app.yaml.tpl": `
+apiVersion: gitops.podcd.io/v1
+kind: Application
+metadata: {name: web}
+spec:
+  image: '{{ .Values.tag }}'
+  env:
+    LOG: '{{ .Values.log }}'
+`,
+		"env.yaml": `
+apiVersion: gitops.podcd.io/v1
+kind: Environment
+metadata: {name: prod}
+spec: {applications: [web], values: [values/env.yaml]}
+`,
+		"group.yaml": `
+apiVersion: gitops.podcd.io/v1
+kind: Group
+metadata: {name: web}
+spec: {values: [values/group.yaml]}
+`,
+		"host.yaml": `
+apiVersion: gitops.podcd.io/v1
+kind: Host
+metadata: {name: vm-1}
+spec: {environment: prod, groups: [web], values: [values/host.yaml]}
+`,
+		"values/env.yaml":   "tag: env-tag\n",
+		"values/group.yaml": "tag: group-tag\n",
+		"values/host.yaml":  "tag: host-tag\n",
+	}
+	ix := loadIndex(t, files)
+	baseline := Values{"tag": "baseline-tag", "log": "baseline-log"}
+	desired, err := ix.Resolve(context.Background(), ResolveOptions{Host: "vm-1", Values: baseline})
+	if err != nil {
+		t.Fatal(err)
+	}
+	app, ok := desired.App("web")
+	if !ok || app.Image != "host-tag" {
+		t.Fatalf("the host's own values should win: %+v", app)
+	}
+	if app.Env["LOG"] != "baseline-log" {
+		t.Fatalf("a key no layer touches should still come from the agent.yaml fallback: %+v", app.Env)
+	}
+}
+
+// TestTwoHostsSharingAnEnvironmentGetTheirOwnGroupValues mirrors the real
+// multi-env shape: one Environment two hosts share, two Groups that each
+// supply a different value for the same key.
+func TestTwoHostsSharingAnEnvironmentGetTheirOwnGroupValues(t *testing.T) {
+	files := map[string]string{
+		"app.yaml.tpl": `
+apiVersion: gitops.podcd.io/v1
+kind: Application
+metadata: {name: web}
+spec: {image: '{{ .Values.tag }}'}
+`,
+		"env.yaml": `
+apiVersion: gitops.podcd.io/v1
+kind: Environment
+metadata: {name: prod}
+spec: {applications: [web]}
+`,
+		"groups.yaml": `
+apiVersion: gitops.podcd.io/v1
+kind: Group
+metadata: {name: dmz}
+spec: {values: [values/dmz.yaml]}
+---
+apiVersion: gitops.podcd.io/v1
+kind: Group
+metadata: {name: iso}
+spec: {values: [values/iso.yaml]}
+`,
+		"hosts.yaml": `
+apiVersion: gitops.podcd.io/v1
+kind: Host
+metadata: {name: dmz-host}
+spec: {environment: prod, groups: [dmz]}
+---
+apiVersion: gitops.podcd.io/v1
+kind: Host
+metadata: {name: iso-host}
+spec: {environment: prod, groups: [iso]}
+`,
+		"values/dmz.yaml": "tag: dmz-tag\n",
+		"values/iso.yaml": "tag: iso-tag\n",
+	}
+	ix := loadIndex(t, files)
+
+	dmz, err := ix.Resolve(context.Background(), ResolveOptions{Host: "dmz-host"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if app, _ := dmz.App("web"); app.Image != "dmz-tag" {
+		t.Fatalf("dmz-host should see dmz's value: %+v", app)
+	}
+
+	iso, err := ix.Resolve(context.Background(), ResolveOptions{Host: "iso-host"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if app, _ := iso.App("web"); app.Image != "iso-tag" {
+		t.Fatalf("iso-host should see iso's value, not dmz's leaking across hosts: %+v", app)
+	}
+}
+
+// TestTemplateMistakesSurfaceAtResolve: a template is not decoded until it
+// is rendered, so a structural mistake in one (an unknown field, here) is
+// reported when a host resolves, with the template named - not lost.
+func TestTemplateMistakesSurfaceAtResolve(t *testing.T) {
+	files := map[string]string{
+		"app.yaml.tpl": `
+apiVersion: gitops.podcd.io/v1
+kind: Application
+metadata: {name: web}
+spec:
+  image: '{{ .Values.tag }}'
+  imagee: typo
 `,
 		"host.yaml": `
 apiVersion: gitops.podcd.io/v1
@@ -118,18 +280,322 @@ metadata: {name: vm-1}
 spec: {applications: [web]}
 `,
 	}
-	dir := writeTree(t, files)
-	ix := NewIndex()
-	ix.Values = Values{"image": map[string]any{"repository": "example.com/web", "tag": "2.0"}}
-	if err := ix.LoadTree("test", dir); err != nil {
+	ix := loadIndex(t, files) // loading must succeed: nothing is decided about a template yet
+	_, err := ix.Resolve(context.Background(), ResolveOptions{Host: "vm-1", Values: Values{"tag": "x"}})
+	if err == nil || !strings.Contains(err.Error(), "imagee") || !strings.Contains(err.Error(), "app.yaml.tpl") {
+		t.Fatalf("want an error naming the unknown field and the template, got %v", err)
+	}
+}
+
+// Each host sees its own branch.
+func TestBlockConditionalsWork(t *testing.T) {
+	files := map[string]string{
+		"app.yaml.tpl": `
+apiVersion: gitops.podcd.io/v1
+kind: Application
+metadata:
+  name: web
+spec:
+  image: nginx
+  env:
+{{- if .Values.extra }}
+    EXTRA: '{{ .Values.extra }}'
+{{- end }}
+`,
+		"hosts.yaml": `
+apiVersion: gitops.podcd.io/v1
+kind: Host
+metadata: {name: with-extra}
+spec: {applications: [web]}
+---
+apiVersion: gitops.podcd.io/v1
+kind: Host
+metadata: {name: without-extra}
+spec: {applications: [web]}
+`,
+	}
+	ix := loadIndex(t, files)
+
+	with, err := ix.Resolve(context.Background(), ResolveOptions{Host: "with-extra", Values: Values{"extra": "hi"}})
+	if err != nil {
 		t.Fatal(err)
 	}
-	desired, err := ix.Resolve(context.Background(), ResolveOptions{Host: "vm-1"})
+	if app, _ := with.App("web"); app.Env["EXTRA"] != "hi" {
+		t.Fatalf("the true branch should set EXTRA: %+v", app.Env)
+	}
+
+	without, err := ix.Resolve(context.Background(), ResolveOptions{Host: "without-extra"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if app, _ := without.App("web"); len(app.Env) != 0 {
+		t.Fatalf("the false branch should omit EXTRA entirely, not set it empty: %+v", app.Env)
+	}
+}
+
+// TestTemplatedNameWorks: because a template's identity comes from what it renders to.
+func TestTemplatedNameWorks(t *testing.T) {
+	files := map[string]string{
+		"app.yaml.tpl": `
+apiVersion: gitops.podcd.io/v1
+kind: Application
+metadata:
+  name: '{{ .Values.name }}'
+spec:
+  image: nginx
+`,
+		"host.yaml": `
+apiVersion: gitops.podcd.io/v1
+kind: Host
+metadata: {name: vm-1}
+spec: {applications: [from-values]}
+`,
+	}
+	ix := loadIndex(t, files)
+	desired, err := ix.Resolve(context.Background(), ResolveOptions{Host: "vm-1", Values: Values{"name": "from-values"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, ok := desired.App("from-values"); !ok {
+		t.Fatalf("the rendered name should be what the host finds: %v", desired.Names())
+	}
+}
+
+// TestPodBlockConditionalWorks is TestBlockConditionalsWork for kind: Pod: a
+// conditional around a whole container.
+func TestPodBlockConditionalWorks(t *testing.T) {
+	files := map[string]string{
+		"pod.yaml.tpl": `
+apiVersion: v1
+kind: Pod
+metadata:
+  name: web
+spec:
+  containers:
+    - name: app
+      image: nginx
+{{- if .Values.withSidecar }}
+    - name: sidecar
+      image: envoy
+{{- end }}
+`,
+		"hosts.yaml": `
+apiVersion: gitops.podcd.io/v1
+kind: Host
+metadata: {name: with-sidecar}
+spec: {applications: [web]}
+---
+apiVersion: gitops.podcd.io/v1
+kind: Host
+metadata: {name: without-sidecar}
+spec: {applications: [web]}
+`,
+	}
+	ix := loadIndex(t, files)
+
+	with, err := ix.Resolve(context.Background(), ResolveOptions{Host: "with-sidecar", Values: Values{"withSidecar": true}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if app, _ := with.App("web"); len(app.Images) != 2 {
+		t.Fatalf("want 2 containers, got %v", app.Images)
+	}
+
+	without, err := ix.Resolve(context.Background(), ResolveOptions{Host: "without-sidecar"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if app, _ := without.App("web"); len(app.Images) != 1 {
+		t.Fatalf("want 1 container, got %v", app.Images)
+	}
+}
+
+// TestConfigMapAndSecretTemplates: the two remaining deployable kinds are
+// templates like any other. A Pod may refer to a ConfigMap or a Secret whose
+// own body is templated, block conditionals included, rendered with the same
+// per-host values as the Pod itself.
+func TestConfigMapAndSecretTemplates(t *testing.T) {
+	files := map[string]string{
+		"pod.yaml": `
+apiVersion: v1
+kind: Pod
+metadata:
+  name: web
+spec:
+  containers:
+    - name: app
+      image: nginx
+      envFrom:
+        - configMapRef: {name: web-config}
+      env:
+        - name: DB_PASSWORD
+          valueFrom:
+            secretKeyRef: {name: web-secret, key: password}
+`,
+		"configmap.yaml.tpl": `
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: web-config
+data:
+  LOG_LEVEL: '{{ default "info" .Values.logLevel }}'
+{{- if .Values.extra }}
+  EXTRA: '{{ .Values.extra }}'
+{{- end }}
+`,
+		"secret.yaml.tpl": `
+apiVersion: v1
+kind: Secret
+metadata:
+  name: web-secret
+stringData:
+  password: '{{ .Values.passwordRef }}'
+`,
+		"host.yaml": `
+apiVersion: gitops.podcd.io/v1
+kind: Host
+metadata: {name: vm-1}
+spec: {applications: [web]}
+`,
+	}
+	ix := loadIndex(t, files)
+	t.Setenv("DB_PASSWORD", "hunter2")
+
+	desired, err := ix.Resolve(context.Background(), ResolveOptions{Host: "vm-1", Secrets: secrets.Default("", ""), Values: Values{
+		"logLevel": "debug", "extra": "hi", "passwordRef": "env:DB_PASSWORD",
+	}})
 	if err != nil {
 		t.Fatal(err)
 	}
 	app, ok := desired.App("web")
-	if !ok || app.Image != "example.com/web:2.0" {
-		t.Fatalf("template was not applied: %+v", app)
+	if !ok {
+		t.Fatal("web not resolved")
+	}
+	manifest := string(app.Manifest)
+	if !strings.Contains(manifest, "LOG_LEVEL: debug") || !strings.Contains(manifest, "EXTRA: hi") {
+		t.Fatalf("templated + conditional ConfigMap data missing from manifest:\n%s", manifest)
+	}
+	if !strings.Contains(manifest, "password:") {
+		t.Fatalf("resolved secret missing from manifest:\n%s", manifest)
+	}
+}
+
+// TestSecretTemplateStillRejectsPlaintext: a Secret template goes through the
+// same decode path as a Secret file, reference-only check included - it is
+// not a way to smuggle a literal past the rule.
+func TestSecretTemplateStillRejectsPlaintext(t *testing.T) {
+	files := map[string]string{
+		"pod.yaml": `
+apiVersion: v1
+kind: Pod
+metadata:
+  name: web
+spec:
+  containers:
+    - name: app
+      image: nginx
+      env:
+        - name: DB_PASSWORD
+          valueFrom:
+            secretKeyRef: {name: web-secret, key: password}
+`,
+		"secret.yaml.tpl": `
+apiVersion: v1
+kind: Secret
+metadata:
+  name: web-secret
+stringData:
+  password: '{{ .Values.literal }}'
+`,
+		"host.yaml": `
+apiVersion: gitops.podcd.io/v1
+kind: Host
+metadata: {name: vm-1}
+spec: {applications: [web]}
+`,
+	}
+	ix := loadIndex(t, files)
+	_, err := ix.Resolve(context.Background(), ResolveOptions{Host: "vm-1", Values: Values{"literal": "hunter2"}})
+	if err == nil || !strings.Contains(err.Error(), "reference") {
+		t.Fatalf("a Secret template rendering to a plaintext value must still be rejected, got %v", err)
+	}
+}
+
+// TestTemplateMayNotRenderAHostGroupOrEnvironment: those decide which values
+// a host gets, so they cannot themselves come out of a template.
+func TestTemplateMayNotRenderAHostGroupOrEnvironment(t *testing.T) {
+	files := map[string]string{
+		"group.yaml.tpl": `
+apiVersion: gitops.podcd.io/v1
+kind: Group
+metadata: {name: web}
+spec: {applications: [nginx]}
+`,
+		"host.yaml": `
+apiVersion: gitops.podcd.io/v1
+kind: Host
+metadata: {name: vm-1}
+spec: {applications: []}
+`,
+	}
+	ix := loadIndex(t, files)
+	_, err := ix.Resolve(context.Background(), ResolveOptions{Host: "vm-1"})
+	if err == nil || !strings.Contains(err.Error(), "Group") || !strings.Contains(err.Error(), "template") {
+		t.Fatalf("want a clear error about templating a Group, got %v", err)
+	}
+}
+
+// TestTemplateMayNotShadowAPlainDocument: the "defined twice" rule holds
+// across the two sets, so a template cannot quietly replace a written file.
+func TestTemplateMayNotShadowAPlainDocument(t *testing.T) {
+	files := map[string]string{
+		"app.yaml": `
+apiVersion: gitops.podcd.io/v1
+kind: Application
+metadata: {name: web}
+spec: {image: nginx}
+`,
+		"app.yaml.tpl": `
+apiVersion: gitops.podcd.io/v1
+kind: Application
+metadata: {name: web}
+spec: {image: '{{ .Values.image }}'}
+`,
+		"host.yaml": `
+apiVersion: gitops.podcd.io/v1
+kind: Host
+metadata: {name: vm-1}
+spec: {applications: [web]}
+`,
+	}
+	ix := loadIndex(t, files)
+	_, err := ix.Resolve(context.Background(), ResolveOptions{Host: "vm-1", Values: Values{"image": "x"}})
+	if err == nil || !strings.Contains(err.Error(), "defined twice") {
+		t.Fatalf("want a defined-twice error, got %v", err)
+	}
+}
+
+// TestMissingValuesFileIsAClearResolveError checks that a Host naming a
+// values file nobody loaded fails with a message pointing at the file and
+// the layer that named it, not a generic "not found".
+func TestMissingValuesFileIsAClearResolveError(t *testing.T) {
+	files := map[string]string{
+		"app.yaml": `
+apiVersion: gitops.podcd.io/v1
+kind: Application
+metadata: {name: web}
+spec: {image: nginx}
+`,
+		"host.yaml": `
+apiVersion: gitops.podcd.io/v1
+kind: Host
+metadata: {name: vm-1}
+spec: {applications: [web], values: [values/missing.yaml]}
+`,
+	}
+	ix := loadIndex(t, files)
+	_, err := ix.Resolve(context.Background(), ResolveOptions{Host: "vm-1"})
+	if err == nil || !strings.Contains(err.Error(), "values/missing.yaml") || !strings.Contains(err.Error(), "host/vm-1") {
+		t.Fatalf("want an error naming the file and the layer, got %v", err)
 	}
 }

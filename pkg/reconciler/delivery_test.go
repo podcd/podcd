@@ -307,10 +307,10 @@ func TestIndexCanBeLimitedToNamedRepositories(t *testing.T) {
 	broken.Name, broken.URL, broken.Dir = "broken", filepath.Join(t.TempDir(), "missing"), filepath.Join(t.TempDir(), "broken")
 	e.source.Repos[1] = &broken
 
-	if _, _, _, err := e.Index(context.Background()); err == nil {
+	if _, _, _, _, err := e.Index(context.Background()); err == nil {
 		t.Fatal("fetching every repository must fail on the broken one")
 	}
-	ix, revs, offline, err := e.Index(context.Background(), "infra")
+	ix, _, revs, offline, err := e.Index(context.Background(), "infra")
 	if err != nil {
 		t.Fatal(err)
 	}

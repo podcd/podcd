@@ -1,11 +1,17 @@
-// Values templating lets one set of Application/Host/Group/Environment
-// documents in Git serve several hosts, by filling in the parts that differ
-// (an image tag, a resource limit, a domain) from a values file chosen by
-// each host's own agent configuration - the same shape as `helm template -f`.
+// Values templating lets one set of Application/Pod documents in Git serve
+// several hosts, by filling in the parts that differ (an image tag, a
+// resource limit, a domain) from values chosen by a Host's own Environment,
+// Groups and Host document - the same precedence overrides already use -
+// with an agent.yaml `repositories[].values` list as a last-resort, host-local
+// fallback beneath all of that.
 //
-// A document opts in per file: only files containing "{{" are parsed as a
-// template, so a repository that never uses the feature pays nothing for it
-// and is never surprised by it.
+// A template is a file named *.tpl (edge-api.yaml.tpl, say). Nothing about
+// its contents makes it one, and nothing about a plain .yaml's contents makes
+// it a template - "{{" there is just text. A template is rendered in Resolve,
+// once a host and that host's values are known, and only then decoded, so it
+// may use the whole of text/template: conditionals around entire keys,
+// ranges, a name computed from a value.
+// Index.renderTemplates in resolve.go.
 package config
 
 import (
@@ -25,22 +31,28 @@ import (
 // sequence or nested map JSON/YAML can express is valid.
 type Values map[string]any
 
-// LoadValuesFile reads one YAML values file.
-// A missing or empty file is not an error: it contributes nothing.
+// LoadValuesFile reads one YAML values file from disk.
 func LoadValuesFile(path string) (Values, error) {
 	data, err := os.ReadFile(path)
 	if err != nil {
 		return nil, fmt.Errorf("reading values %s: %w", path, err)
 	}
+	return parseValues(path, data)
+}
+
+// parseValues decodes YAML bytes already in hand - shared by LoadValuesFile
+// (reads from disk) and Index.readValuesFile (reads from the loader's own
+// cache of every file it saw, so a Host/Group/Environment's own `values:`
+// list never touches disk again after the initial load).
+func parseValues(name string, data []byte) (Values, error) {
 	var v Values
 	if err := sigyaml.Unmarshal(data, &v); err != nil {
-		return nil, fmt.Errorf("values %s: %w", path, err)
+		return nil, fmt.Errorf("values %s: %w", name, err)
 	}
 	return v, nil
 }
 
-// LoadValuesFiles reads each file in order and merges them, later files
-// overriding earlier ones - the same precedence as repeating `-f` on helm.
+// LoadValuesFiles reads each file in order and merges them, later files overriding earlier ones
 func LoadValuesFiles(paths ...string) (Values, error) {
 	merged := Values{}
 	for _, p := range paths {

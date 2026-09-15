@@ -43,7 +43,7 @@ func patchPod(pod corev1.Pod, override Override) (corev1.Pod, error) {
 	return out, nil
 }
 
-func (ix *Index) podToApplication(ctx context.Context, name string, pod corev1.Pod, sec *secrets.Resolver) (model.Application, error) {
+func (h hostDocuments) podToApplication(ctx context.Context, name string, pod corev1.Pod, sec *secrets.Resolver) (model.Application, error) {
 	p := problems{prefix: fmt.Sprintf("pod %q: ", name)}
 
 	if !validName(name) {
@@ -94,7 +94,7 @@ func (ix *Index) podToApplication(ctx context.Context, name string, pod corev1.P
 	refs := collectRefs(pod)
 	var configMaps []corev1.ConfigMap
 	for _, cmName := range slices.Sorted(maps.Keys(refs.configMaps)) {
-		doc, ok := ix.ConfigMaps[cmName]
+		doc, ok := h.configMap(cmName)
 		if !ok {
 			if !refs.configMaps[cmName] {
 				p.add("refers to ConfigMap %q, which is not defined", cmName)
@@ -105,7 +105,7 @@ func (ix *Index) podToApplication(ctx context.Context, name string, pod corev1.P
 	}
 	var secretDocs []corev1.Secret
 	for _, secName := range slices.Sorted(maps.Keys(refs.secrets)) {
-		doc, ok := ix.Secrets[secName]
+		doc, ok := h.secret(secName)
 		if !ok {
 			if !refs.secrets[secName] {
 				p.add("refers to Secret %q, which is not defined", secName)

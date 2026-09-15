@@ -12,6 +12,8 @@ import (
 	"strings"
 	"time"
 
+	corev1 "k8s.io/api/core/v1"
+
 	"github.com/podcd/podcd/pkg/model"
 	"github.com/podcd/podcd/pkg/secrets"
 )
@@ -24,6 +26,8 @@ type ResolveOptions struct {
 	Secrets *secrets.Resolver
 	// Revisions is repo name -> commit, carried into the desired state for reporting.
 	Revisions map[string]string
+	// Values is the lowest-precedence input to {{ .Values }} templating
+	Values Values
 }
 
 // Resolve compiles the index into the desired state for one host.
@@ -49,11 +53,16 @@ func (ix *Index) Resolve(ctx context.Context, opts ResolveOptions) (model.Desire
 	// the order documents happened to be written in.
 	var layers []layer
 	selected := map[string]bool{}
-	addLayer := func(label string, spec SelectionSpec) {
+	addLayer := func(label, repo string, spec SelectionSpec) error {
 		for _, n := range spec.Applications {
 			selected[n] = true
 		}
-		layers = append(layers, layer{label, spec.Overrides})
+		values, err := ix.layerValues(repo, spec.Values)
+		if err != nil {
+			return fmt.Errorf("%s: %w", label, err)
+		}
+		layers = append(layers, layer{label, spec.Overrides, values})
+		return nil
 	}
 
 	if e := host.Spec.Environment; e != "" {
@@ -62,7 +71,9 @@ func (ix *Index) Resolve(ctx context.Context, opts ResolveOptions) (model.Desire
 			return zero, fmt.Errorf("%s: environment %q is not defined (known: %s)",
 				host.Source, e, strings.Join(slices.Sorted(maps.Keys(ix.Environments)), ", "))
 		}
-		addLayer("environment/"+e, env.Spec)
+		if err := addLayer("environment/"+e, env.Source.Repo, env.Spec); err != nil {
+			return zero, err
+		}
 	}
 	for _, g := range host.Spec.Groups {
 		group, ok := ix.Groups[g]
@@ -70,9 +81,21 @@ func (ix *Index) Resolve(ctx context.Context, opts ResolveOptions) (model.Desire
 			return zero, fmt.Errorf("%s: group %q is not defined (known: %s)",
 				host.Source, g, strings.Join(slices.Sorted(maps.Keys(ix.Groups)), ", "))
 		}
-		addLayer("group/"+g, group.Spec)
+		if err := addLayer("group/"+g, group.Source.Repo, group.Spec); err != nil {
+			return zero, err
+		}
 	}
-	addLayer("host/"+opts.Host, SelectionSpec{Applications: host.Spec.Applications, Overrides: host.Spec.Overrides})
+	hostSelection := SelectionSpec{Applications: host.Spec.Applications, Overrides: host.Spec.Overrides, Values: host.Spec.Values}
+	if err := addLayer("host/"+opts.Host, host.Source.Repo, hostSelection); err != nil {
+		return zero, err
+	}
+
+	// Values apply in the same precedence as overrides, plus one layer below
+	// all of them: agent.yaml's own fallback.
+	values := opts.Values
+	for _, l := range layers {
+		values = MergeValues(values, l.values)
+	}
 
 	for _, ex := range host.Spec.ExcludeApplications {
 		if !selected[ex] {
@@ -81,6 +104,15 @@ func (ix *Index) Resolve(ctx context.Context, opts ResolveOptions) (model.Desire
 		}
 		delete(selected, ex)
 	}
+
+	// Templates render for this host's values, into a second set of
+	// documents that sits on top of the plain ones. Only now: a template's
+	// kind and name are whatever it renders to.
+	rendered, err := ix.renderTemplates(values)
+	if err != nil {
+		return zero, err
+	}
+	docs := hostDocuments{ix, rendered}
 
 	var p problems
 	var apps []model.Application
@@ -93,7 +125,7 @@ func (ix *Index) Resolve(ctx context.Context, opts ResolveOptions) (model.Desire
 			origins []string
 			err     error
 		)
-		if doc, ok := ix.Pods[name]; ok {
+		if doc, ok := docs.pod(name); ok {
 			pod := doc.Spec
 			src = doc.Source
 			origins, err = overlay(layers, name, "pod", src, func(o Override) (e error) {
@@ -101,9 +133,9 @@ func (ix *Index) Resolve(ctx context.Context, opts ResolveOptions) (model.Desire
 				return e
 			})
 			if err == nil {
-				app, err = ix.podToApplication(ctx, name, pod, opts.Secrets)
+				app, err = docs.podToApplication(ctx, name, pod, opts.Secrets)
 			}
-		} else if doc, ok := ix.Applications[name]; ok {
+		} else if doc, ok := docs.application(name); ok {
 			spec := doc.Spec
 			src = doc.Source
 			origins, err = overlay(layers, name, "application", src, func(o Override) error {
@@ -150,11 +182,125 @@ func (ix *Index) Resolve(ctx context.Context, opts ResolveOptions) (model.Desire
 	}, nil
 }
 
-// layer is one source of overrides, lowest precedence first: the environment,
-// then each group in the order the host lists them, then the host itself.
+// layer is one source of overrides and values, lowest precedence first: the
+// environment, then each group in the order the host lists them, then the
+// host itself.
 type layer struct {
 	label     string
 	overrides map[string]Override
+	values    Values
+}
+
+// layerValues loads and merges a layer's own values files, in list order,
+// resolved against the repository the document naming them came from - the
+// only repository a bare path in that document could sensibly mean.
+func (ix *Index) layerValues(repo string, files []string) (Values, error) {
+	values := Values{}
+	for _, f := range files {
+		v, err := ix.readValuesFile(repo, f)
+		if err != nil {
+			return nil, err
+		}
+		values = MergeValues(values, v)
+	}
+	return values, nil
+}
+
+// renderTemplates renders every template for one host's values and decodes
+// the result through the same path plain documents take, into a second set
+// of documents. Everything about a template is decided here and nowhere
+// earlier: its kind, its name, whether it is valid. A rendered document
+// may not reuse the name of a plain one (or of another rendered one) - the
+// same rule as two files defining the same thing.
+func (ix *Index) renderTemplates(values Values) (*documents, error) {
+	rendered := newDocuments()
+	for _, tpl := range ix.templates {
+		out, err := renderTemplate(tpl.String(), tpl.Raw, values)
+		if err != nil {
+			return nil, err
+		}
+		if err := rendered.addDocuments(tpl.Repo, tpl.Path, out, true); err != nil {
+			return nil, err
+		}
+	}
+	if err := ix.checkNoOverlap(&rendered); err != nil {
+		return nil, err
+	}
+	return &rendered, nil
+}
+
+// checkNoOverlap is put's "defined twice" rule across the two sets, plus
+// the Application/Pod shared-namespace rule.
+func (ix *Index) checkNoOverlap(rendered *documents) error {
+	for name, doc := range rendered.Applications {
+		if prev, ok := ix.Applications[name]; ok {
+			return fmt.Errorf("Application %q is defined twice: %s and %s (rendered)", name, prev.Source, doc.Source)
+		}
+		if prev, ok := ix.Pods[name]; ok {
+			return fmt.Errorf("%q is both a Pod (%s) and an Application (%s, rendered); a host lists both under applications, so the name must be unique", name, prev.Source, doc.Source)
+		}
+	}
+	for name, doc := range rendered.Pods {
+		if prev, ok := ix.Pods[name]; ok {
+			return fmt.Errorf("Pod %q is defined twice: %s and %s (rendered)", name, prev.Source, doc.Source)
+		}
+		if prev, ok := ix.Applications[name]; ok {
+			return fmt.Errorf("%q is both an Application (%s) and a Pod (%s, rendered); a host lists both under applications, so the name must be unique", name, prev.Source, doc.Source)
+		}
+	}
+	for name, doc := range rendered.ConfigMaps {
+		if prev, ok := ix.ConfigMaps[name]; ok {
+			return fmt.Errorf("ConfigMap %q is defined twice: %s and %s (rendered)", name, prev.Source, doc.Source)
+		}
+	}
+	for name, doc := range rendered.Secrets {
+		if prev, ok := ix.Secrets[name]; ok {
+			return fmt.Errorf("Secret %q is defined twice: %s and %s (rendered)", name, prev.Source, doc.Source)
+		}
+	}
+	return nil
+}
+
+// hostDocuments is every document one particular host can see: the plain
+// ones every host shares (the Index), plus the ones this host's templates
+// rendered to with its own values. Two hosts get two different sets from the
+// same templates - that is the point of templating. Lookups try the plain
+// set first; checkNoOverlap has already made sure a name cannot be in both.
+type hostDocuments struct {
+	*Index
+	rendered *documents
+}
+
+func (h hostDocuments) application(name string) (Doc[AppSpec], bool) {
+	if d, ok := h.Applications[name]; ok {
+		return d, true
+	}
+	d, ok := h.rendered.Applications[name]
+	return d, ok
+}
+
+func (h hostDocuments) pod(name string) (Doc[corev1.Pod], bool) {
+	if d, ok := h.Pods[name]; ok {
+		return d, true
+	}
+	d, ok := h.rendered.Pods[name]
+	return d, ok
+}
+
+func (h hostDocuments) configMap(name string) (Doc[corev1.ConfigMap], bool) {
+	if d, ok := h.ConfigMaps[name]; ok {
+		return d, true
+	}
+	d, ok := h.rendered.ConfigMaps[name]
+	return d, ok
+}
+
+func (h hostDocuments) secret(name string) (Doc[corev1.Secret], bool) {
+	if d, ok := h.Secrets[name]; ok {
+		return d, true
+	}
+	d, ok := h.rendered.Secrets[name]
+	return d, ok
 }
 
 // overlay applies every layer's override for name, in order, and returns the

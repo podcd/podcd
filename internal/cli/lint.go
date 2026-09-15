@@ -21,8 +21,9 @@ func newLintCommand() *cobra.Command {
 			"loader and compiles them for every Host they define, applying the same rules a reconcile\n" +
 			"would: known fields, unique names, references that exist, no host port\n" +
 			"conflicts. Secret references are checked for syntax, not looked up, so this runs anywhere.\n" +
-			"--values renders any document containing \"{{\" against the given file(s) first, the same\n" +
-			"way a host's own agent.yaml repositories[].values would.\n" +
+			"*.tpl files are rendered per host against that host's Environment/Group/Host values;\n" +
+			"--values adds the lowest-precedence layer beneath them, the same way a host's own\n" +
+			"agent.yaml repositories[].values would.\n" +
 			"Exits non-zero on any finding.",
 		Args: cobra.ArbitraryArgs,
 		RunE: func(cmd *cobra.Command, args []string) error {
@@ -37,16 +38,16 @@ func newLintCommand() *cobra.Command {
 			ix, findings, err := config.LintPaths(context.Background(), hosts, values, paths...)
 			if err != nil {
 				if errors.Is(err, config.ErrNoHosts) {
-					fmt.Fprintf(cmd.OutOrStdout(), "ok: %d document(s) loaded, but %v\n", countDocs(ix), err)
+					fmt.Fprintf(cmd.OutOrStdout(), "ok: %s loaded, but %v\n", loaded(ix), err)
 					return nil
 				}
 				return err
 			}
 			if out != "" {
-				return out.write(cmd.OutOrStdout(), map[string]any{"documents": countDocs(ix), "hosts": ix.HostNames(), "findings": findings})
+				return out.write(cmd.OutOrStdout(), map[string]any{"documents": countDocs(ix), "templates": len(ix.Templates()), "hosts": ix.HostNames(), "findings": findings})
 			}
 			w := cmd.OutOrStdout()
-			fmt.Fprintf(w, "ok: %d document(s) loaded\n", countDocs(ix))
+			fmt.Fprintf(w, "ok: %s loaded\n", loaded(ix))
 			if len(findings) == 0 {
 				fmt.Fprintf(w, "ok: %d host(s) compile cleanly\n", len(ix.Hosts))
 				return nil
@@ -59,8 +60,17 @@ func newLintCommand() *cobra.Command {
 	}
 	out.addFlag(cmd)
 	cmd.Flags().StringArrayVar(&hosts, "host", nil, "only compile for this host (repeatable; default: every Host defined)")
-	cmd.Flags().StringArrayVar(&valuesFiles, "values", nil, "a values file for {{ .Values }} templating (repeatable; later files win)")
+	cmd.Flags().StringArrayVar(&valuesFiles, "values", nil, "a values file for {{ .Values }} in *.tpl files, beneath what Git declares (repeatable; later files win)")
 	return cmd
+}
+
+// loaded says what was read, in the units a user thinks in.
+func loaded(ix *config.Index) string {
+	s := fmt.Sprintf("%d document(s)", countDocs(ix))
+	if ix != nil && len(ix.Templates()) > 0 {
+		s += fmt.Sprintf(" and %d template(s)", len(ix.Templates()))
+	}
+	return s
 }
 
 func countDocs(ix *config.Index) int {

@@ -12,9 +12,8 @@ import (
 	"github.com/podcd/podcd/pkg/secrets"
 )
 
-func LoadPaths(values Values, paths ...string) (*Index, error) {
+func LoadPaths(paths ...string) (*Index, error) {
 	ix := NewIndex()
-	ix.Values = values
 	for _, p := range paths {
 		info, err := os.Stat(p)
 		if err != nil {
@@ -63,14 +62,15 @@ type Finding struct {
 }
 
 // Lint compiles the index for every Host it defines and returns everything that went wrong, host by host.
-func Lint(ctx context.Context, ix *Index, hosts ...string) []Finding {
+// values is the agent.yaml-fallback baseline, the same as ResolveOptions.Values.
+func Lint(ctx context.Context, ix *Index, values Values, hosts ...string) []Finding {
 	if len(hosts) == 0 {
 		hosts = ix.HostNames()
 	}
 	slices.Sort(hosts)
 	var findings []Finding
 	for _, h := range hosts {
-		_, err := ix.Resolve(ctx, ResolveOptions{Host: h, Secrets: secrets.LintResolver()})
+		_, err := ix.Resolve(ctx, ResolveOptions{Host: h, Secrets: secrets.LintResolver(), Values: values})
 		if err == nil {
 			continue
 		}
@@ -93,7 +93,7 @@ var ErrNoHosts = errors.New("no Host documents found; nothing to compile")
 // An error means a document is wrong in itself (malformed, unknown field, duplicate name) or there was nothing to compile;
 // findings are what does not fit together across the documents that did load, such as a reference to something not defined here.
 func LintPaths(ctx context.Context, hosts []string, values Values, paths ...string) (*Index, []Finding, error) {
-	ix, err := LoadPaths(values, paths...)
+	ix, err := LoadPaths(paths...)
 	if err != nil {
 		return nil, nil, err
 	}
@@ -105,5 +105,5 @@ func LintPaths(ctx context.Context, hosts []string, values Values, paths ...stri
 			return ix, nil, fmt.Errorf("no Host named %q (known: %v)", h, ix.HostNames())
 		}
 	}
-	return ix, Lint(ctx, ix, hosts...), nil
+	return ix, Lint(ctx, ix, values, hosts...), nil
 }

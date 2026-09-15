@@ -93,6 +93,28 @@ func editYAML(data []byte, path []string, value string) ([]byte, error) {
 		path = path[1:]
 	}
 
+	// Appending a scalar to an existing sequence of scalars - repositories.0.values.1,
+	// e.g when values already has one item: one new line, no new header.
+	if len(path) == 1 && section.Kind == yaml.SequenceNode && !holdsMappings(section) {
+		if _, err := strconv.Atoi(path[0]); err == nil {
+			itemIndent := indent + 2
+			if n := len(section.Content); n > 0 {
+				itemIndent = section.Content[n-1].Column - 1 - 2
+			}
+			line := strings.Repeat(" ", itemIndent) + "- " + yamlScalar(value)
+			return join(append(lines[:end], append([]string{line}, lines[end:]...)...)), nil
+		}
+	}
+
+	// A brand-new scalar sequence - repositories.0.values.0, when values does not exist at all yet
+	if len(path) == 2 && section.Kind == yaml.MappingNode {
+		if _, err := strconv.Atoi(path[1]); err == nil {
+			pad := strings.Repeat(" ", indent)
+			block := []string{pad + path[0] + ":", pad + "  - " + yamlScalar(value)}
+			return join(append(lines[:end], append(block, lines[end:]...)...)), nil
+		}
+	}
+
 	// The rest of the path is new. List items are never created here: a repository needs several keys at once, which is an edit, not a set.
 	if _, isIndex := strconv.Atoi(path[0]); isIndex == nil || section.Kind == yaml.SequenceNode {
 		return nil, fmt.Errorf("list item %q does not exist; add it by editing the file", path[0])
@@ -107,6 +129,16 @@ func editYAML(data []byte, path []string, value string) ([]byte, error) {
 		}
 	}
 	return join(append(lines[:end], append(block, lines[end:]...)...)), nil
+}
+
+// holdsMappings reports whether a sequence's items are mappings like repositories, where a new item needs several keys rather than scalars
+func holdsMappings(seq *yaml.Node) bool {
+	for _, c := range seq.Content {
+		if c.Kind == yaml.MappingNode {
+			return true
+		}
+	}
+	return false
 }
 
 func childNode(node *yaml.Node, key string) (*yaml.Node, *yaml.Node) {

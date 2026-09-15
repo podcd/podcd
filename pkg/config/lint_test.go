@@ -152,7 +152,7 @@ func TestSplitDocumentsReportsLinesAndSurvivesOddEndings(t *testing.T) {
 	// A file that ends in garbage is an error naming the line, not a panic.
 	bad := filepath.Join(t.TempDir(), "env.yaml")
 	os.WriteFile(bad, []byte("apiVersion: gitops.podcd.io/v1\nkind: Environment\nmetadata:\n  name: local\nspec:\n  applications:\n    - local\n123"), 0o644)
-	if _, err := LoadPaths(nil, bad); err == nil || !strings.Contains(err.Error(), "env.yaml:1") {
+	if _, err := LoadPaths(bad); err == nil || !strings.Contains(err.Error(), "env.yaml:1") {
 		t.Fatalf("want a located error, got %v", err)
 	}
 }

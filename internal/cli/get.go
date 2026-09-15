@@ -112,11 +112,11 @@ func loadIndex(ctx context.Context, f *configFlags, repo, revision string) (*con
 		if setupErr != nil {
 			return nil, nil, setupErr
 		}
-		ix, _, offline, err := env.engine.Index(ctx)
+		ix, _, _, offline, err := env.engine.Index(ctx)
 		return ix, offline, err
 	}
 	if setupErr == nil && slices.ContainsFunc(env.cfg.Repositories, func(r config.RepositorySpec) bool { return r.Name == repo }) {
-		ix, _, offline, err := env.engine.Index(ctx, repo)
+		ix, _, _, offline, err := env.engine.Index(ctx, repo)
 		return ix, offline, err
 	}
 

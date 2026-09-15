@@ -184,6 +184,53 @@ func TestEditAppendsAnUnknownButValidKey(t *testing.T) {
 	}
 }
 
+func TestEditCreatesAndGrowsAScalarSequence(t *testing.T) {
+	src := "host: vm-1\nrepositories:\n  - name: r\n    url: https://example.com/r.git\n    revision: main\n    path: multi-env\n"
+
+	// First set creates the sequence from nothing.
+	out, err := EditAgentConfigBytes([]byte(src), Setting{"repositories.0.values.0", "values/common.yaml"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := "host: vm-1\nrepositories:\n  - name: r\n    url: https://example.com/r.git\n    revision: main\n    path: multi-env\n    values:\n      - values/common.yaml\n"
+	if string(out) != want {
+		t.Fatalf("--- got ---\n%s--- want ---\n%s", out, want)
+	}
+
+	// Two more sets append to it, one line each, exactly the sequence a
+	// user runs from the CLI: repositories.0.values.0, .1, .2 in turn.
+	out, err = EditAgentConfigBytes(out, Setting{"repositories.0.values.1", "values/zones/dmz.yaml"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	out, err = EditAgentConfigBytes(out, Setting{"repositories.0.values.2", "values/envs/prd.yaml"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	want = "host: vm-1\nrepositories:\n  - name: r\n    url: https://example.com/r.git\n    revision: main\n    path: multi-env\n    values:\n      - values/common.yaml\n      - values/zones/dmz.yaml\n      - values/envs/prd.yaml\n"
+	if string(out) != want {
+		t.Fatalf("--- got ---\n%s--- want ---\n%s", out, want)
+	}
+
+	cfg, err := ParseAgentConfig(out)
+	if err != nil {
+		t.Fatalf("edited config does not parse: %v", err)
+	}
+	if got := strings.Join(cfg.Repositories[0].Values, ","); got != "values/common.yaml,values/zones/dmz.yaml,values/envs/prd.yaml" {
+		t.Fatalf("values = %v", cfg.Repositories[0].Values)
+	}
+}
+
+func TestEditStillRefusesANewRepositoryByIndex(t *testing.T) {
+	// A sequence of mappings is a different story: repositories.1.url with
+	// only one repository configured must still be rejected, not silently
+	// produce a broken new list entry.
+	src := "host: vm-1\nrepositories:\n  - name: r\n    url: https://example.com/r.git\n    revision: main\n"
+	if _, err := EditAgentConfigBytes([]byte(src), Setting{"repositories.1.url", "https://example.com/other.git"}); err == nil || !strings.Contains(err.Error(), "does not exist") {
+		t.Fatalf("want a \"does not exist\" error, got %v", err)
+	}
+}
+
 func TestEditLeavesTheFileAloneOnAnyError(t *testing.T) {
 	src := RenderAgentConfig(minimal())
 	for _, tc := range []struct{ path, value, want string }{
