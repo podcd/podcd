@@ -6,6 +6,7 @@
 </p>
 
 <p align="center">A Git-driven reconciler for Linux workloads.</p>
+<p align="center"><a href="https://podcd.github.io/podcd/">Documentation</a></p>
 
 podcd is a small system for declaring what should be running on a VM in Git, then reconciling the host to match that desired state continuously.
 It is designed for ordinary Linux hosts.

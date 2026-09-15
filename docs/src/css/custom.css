@@ -1,0 +1,132 @@
+@import url("https://fonts.googleapis.com/css2?family=Space+Mono:ital,wght@0,400;0,700;1,400;1,700&family=Public+Sans:wght@400;500;600&display=swap");
+
+:root {
+  --navy: #0f1689;
+  --blue-dark: #090e6f;
+  --blue-light: #1b53c2;
+  --shade-dark: #050843;
+  --shade-mid: #b7c2e9;
+  --shade-light: #dbe1f3;
+  --shade-green-bright: #2ba0d3;
+
+  --ifm-color-primary: var(--navy);
+  --ifm-color-primary-dark: var(--navy);
+  --ifm-color-primary-darker: var(--blue-dark);
+  --ifm-color-primary-darkest: var(--blue-dark);
+  --ifm-color-primary-light: var(--blue-light);
+  --ifm-color-primary-lighter: var(--blue-light);
+  --ifm-color-primary-lightest: var(--blue-light);
+
+  --ifm-code-font-size: 95%;
+  --docusaurus-highlighted-code-line-bg: rgba(0, 0, 0, 0.1);
+  --ifm-font-family-base: "Public Sans", Helvetica, Arial, sans-serif;
+  --ifm-heading-font-family: "Space Mono", "Courier New", monaco, monospace;
+  --ifm-heading-font-weight: 700;
+
+  --ifm-link-color: var(--shade-green-bright);
+  --ifm-link-hover-color: var(--shade-green-bright);
+  --ifm-heading-color: var(--navy);
+
+  --ifm-navbar-height: 4.5rem;
+  --podcd-body-border: 8px;
+}
+
+[data-theme='dark'] {
+  --ifm-color-primary: var(--shade-green-bright);
+  --ifm-color-primary-dark: #2793c1;
+  --ifm-color-primary-darker: #2589b5;
+  --ifm-color-primary-darkest: #1e7095;
+  --ifm-color-primary-light: #3fabd8;
+  --ifm-color-primary-lighter: #4ab1db;
+  --ifm-color-primary-lightest: #6dc0e2;
+
+  --ifm-background-color: var(--shade-dark);
+  --ifm-background-surface-color: var(--blue-dark);
+  --ifm-font-color-base: var(--shade-light);
+  --ifm-heading-color: #ffffff;
+  --ifm-link-color: var(--shade-green-bright);
+  --ifm-link-hover-color: var(--ifm-color-primary-lightest);
+  --ifm-menu-color: var(--shade-mid);
+  --ifm-toc-link-color: var(--shade-mid);
+  --ifm-color-emphasis-300: #2a3299;
+  --ifm-table-stripe-background: rgba(255, 255, 255, 0.03);
+  --ifm-code-background: rgba(255, 255, 255, 0.08);
+  --docusaurus-highlighted-code-line-bg: rgba(255, 255, 255, 0.1);
+}
+
+body {
+  height: fit-content !important;
+  border: var(--podcd-body-border) solid var(--navy);
+}
+
+/* fix headers visually cut off by the fixed navbar */
+.anchor {
+  scroll-margin-top: calc(var(--ifm-navbar-height) + 2rem);
+}
+
+/* --- navbar ------------------------------------------------------------ */
+
+.navbar--fixed-top {
+  margin-top: calc(-1 * var(--podcd-body-border));
+  border-top: var(--podcd-body-border) solid var(--navy);
+}
+
+.navbar__logo {
+  height: 2.75rem;
+}
+
+/* the horizontal logo carries the wordmark */
+.navbar__title {
+  display: none;
+}
+
+.navbar__link {
+  font-family: var(--ifm-heading-font-family);
+  font-weight: var(--ifm-heading-font-weight);
+}
+
+[data-theme='light'] .navbar__link {
+  --ifm-navbar-link-color: var(--navy);
+}
+
+/* --- sidebar / toc ----------------------------------------------------- */
+
+.menu__link--active:not(.menu__link--sublist) {
+  font-weight: 600;
+}
+
+[data-theme='dark'] .menu__link--active:not(.menu__link--sublist) {
+  background: rgba(43, 160, 211, 0.12);
+}
+
+/* --- footer ------------------------------------------------------------ */
+
+.footer--dark {
+  --ifm-footer-color: var(--shade-mid);
+  --ifm-footer-background-color: var(--navy);
+  --ifm-footer-link-color: var(--shade-green-bright);
+  --ifm-footer-link-hover-color: var(--shade-light);
+  --ifm-footer-title-color: #ffffff;
+}
+
+.footer__links,
+.footer__title,
+.footer__bottom {
+  font-family: var(--ifm-heading-font-family);
+}
+
+.footer__bottom {
+  padding: 2rem 0;
+}
+
+/* --- content ----------------------------------------------------------- */
+
+/* Space Mono is wide; rein headings in a little so long ones still fit. */
+h1 { font-size: 2.2rem; }
+h2 { font-size: 1.6rem; }
+h3 { font-size: 1.25rem; }
+
+/* Inline code in headings inherits the heading font: keep it readable. */
+h1 code, h2 code, h3 code {
+  font-size: 0.9em;
+}
