@@ -94,7 +94,7 @@ The files are the **desired state**. podcd reads the repository, resolves the co
 There is no prescribed directory structure. Organize the Git repository however you like.
 
 * `podcd init` scaffolds a basic podcd-gitops repository.
-* `podcd create` to generate a document per kind from flags.
+* `podcd create` to generate a documents.
 * `podcd lint` to lint.
 
 ```bash
@@ -375,7 +375,7 @@ podcd validate    # compile config and check for errors
 podcd lint        # check repository files, for every host, without fetching
 podcd get         # what a repository defines (agent.yaml's, or --repo NAME|DIR|URL)
 podcd init        # scaffold a minimal repository: one host, one nginx
-podcd create      # print a document for a kind, built from flags
+podcd create      # print a document for a kind
 podcd install     # write the systemd user service file for the agent
 podcd uninstall   # stop the agent's systemd user service and remove its unit file
 podcd prune       # stop and remove applications directly, without consulting Git (--all, or by name)
@@ -488,15 +488,6 @@ spec:
 
 Secrets in Git hold references, not plaintext values. The `data:` field is rejected, and every `stringData` entry must resolve to either `env:NAME` or `file:path`. Values are resolved on the host, written to a 0600 file outside the unit directory, and displayed as a hash in `podcd plan`.
 
-Overrides for a Pod use strategic merge semantics. Containers merge by name and ports merge by `containerPort`, which matches the expectation of a Pod author:
-
-```yaml
-overrides:
-  metrics:
-    spec:
-      containers:
-        - name: shipper
-          args: ["--target", "http://127.0.0.1:9200", "--verbose"]
 ```
 
 ### Inheritance and merge rules
@@ -539,7 +530,7 @@ repositories:
 
 ### Values templating
 
-Overrides (above) parametrize one application at a time, by name, and only work for structural differences: which apps run, which port, which interface - an override can only name an application every host in that layer actually runs.
+Overrides parametrize one application by its name as key, an override can only name an application every host in that layer actually runs.
 
 Values templating parametrizes the documents as well, so several hosts can share one `Application`/`Pod` definition and each fill in the parts that differ.
 

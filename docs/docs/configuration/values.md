@@ -30,7 +30,7 @@ spec:
 
 Because rendering happens before anything reads the result, a template gets the whole of Go's [`text/template`](https://pkg.go.dev/text/template): conditionals around entire keys or containers, `range`, even a `metadata.name` computed from a value.
 
-A template may render any deployable kind - `Application`, `Pod`, `ConfigMap`, `Secret` - but not a `Host`, `Group` or `Environment`, since those are what decide a host's values in the first place. A rendered document is validated exactly like a written one: unknown fields, a plaintext `Secret`, a name already taken by a plain file, all fail the same way.
+A template may render any deployable kind - `Application`, `Pod`, `ConfigMap`, `Secret` - but not a `Host`, `Group` or `Environment`, since those are what decide a host's values in the first place.
 
 One consequence of the whole file being a template: inside a `.tpl`, a YAML `#` comment is still template text, so a comment that quotes template syntax literally (a bare `{{ if }}`) fails to parse. Write it as a Go template comment, `{{/* like this */}}`, which renders to nothing.
 
@@ -61,11 +61,7 @@ resources:
   memory: 512M
 ```
 
-Merging is the same rule overrides use: maps merge key by key, recursively; anything else - a string, a number, a list - is replaced wholesale by the later file.
-
-Beneath all of that sits one more, lowest-precedence layer: `agent.yaml`'s own `repositories[].values`, resolved on the host rather than declared in Git. 
-
-Keep it for values that are genuinely host-local (or as a stopgap); prefer a `Host`/`Group`/`Environment`'s own `values:` for anything that is part of the fleet's declared intent - `agent.yaml` is meant to stay a fire-and-forget pointer (which host, which repositories).
+You can also pass value paths from the hosts `agent.yaml` is meant to stay a fire-and-forget pointer (which host, which repositories).
 
 ```yaml
 repositories:
@@ -78,7 +74,7 @@ repositories:
 
 ## Functions
 
-Templates get Go's own `text/template`, plus this small helper set - deliberately not sprig, so podcd stays a dependency-light single binary and a missing value is meant to be visible, not smoothed over:
+Go's own `text/template`, plus a small helper set:
 
 | Function | Use |
 |---|---|
@@ -89,11 +85,12 @@ Templates get Go's own `text/template`, plus this small helper set - deliberatel
 | `replace OLD NEW S` | `strings.ReplaceAll`. |
 | `quote V` | Go-quote a value, for embedding it as a JSON/YAML string literal. |
 
-A missing value that is only printed - `{{ .Values.nope }}` - renders as the literal text `<no value>`, which is valid YAML and will not fail by itself. Use `required` for anything the document cannot do without, and `default` for anything optional.
+A missing value that is only printed - `{{ .Values.nope }}` - renders as the literal text `<no value>`, which is valid YAML and will not fail by itself. Use `required` for anything the resource cannot do without, and `default` for anything optional.
 
 ## Secrets and values
 
-A value is not a secret. A values file is an ordinary file in Git, so a literal password in one is a password in Git. Put a *reference* there instead, and consume it through `secretEnv:` - which resolves `env:`/`file:`/`vault:` references on the host - rather than `env:`, which copies text verbatim:
+For secrets, you can utilize *references* instead, and consume it through `secretEnv:` - which resolves `env:`/`file:`/`vault:` references on the host.
+You can also set values to refer to *references* in Vault.
 
 ```yaml
 spec:
@@ -102,9 +99,3 @@ spec:
 ```
 
 See [Secrets](secrets.md).
-
-## Trying it out
-
-`podcd lint --values values/common.yaml path/to/repo` renders and compiles every host a repository defines, without touching one. `--values` stands in for `agent.yaml`'s fallback layer; a `Host`/`Group`/`Environment`'s own `values:` apply exactly as they would for a real agent.
-
-See [`podcd-gitops/multi-env`](https://github.com/podcd/podcd-gitops/tree/main/multi-env) for a complete example: four hosts across two zones and two environments, using overrides for the structural zone differences and Environment/Group `values:` for the per-environment image tag and sizing that overrides can't reach.

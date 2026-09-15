@@ -3,7 +3,7 @@ id: secrets
 title: Secrets
 ---
 
-The one rule that does not bend: a secret in Git is a *reference* to a value, never the value. References are resolved on the host, at reconcile time. `podcd plan` shows them as a hash; logs and `state.json` never carry them.
+A secret in Git should be a *reference* to a value. References are resolved on the host, at reconcile time. `podcd plan` shows them as a hash; logs and `state.json` never carry them.
 
 A reference is `scheme:locator`. Three schemes exist:
 
@@ -15,7 +15,7 @@ A reference is `scheme:locator`. Three schemes exist:
 
 ## Where references go
 
-On an `Application`, under `secretEnv:` - **not** `env:`, which copies text verbatim and is never resolved:
+On an `Application`, under `secretEnv:` - **not** `env:`, which copies text verbatim:
 
 ```yaml
 spec:
@@ -73,8 +73,4 @@ The agent logs in when it first needs a value, re-logs-in when the token is reje
 
 ## Repository credentials
 
-A private repository's read credential is a reference too - `auth.token: env:GITOPS_TOKEN` in `agent.yaml`, never a literal, because `agent.yaml` is world-readable. It is resolved on every fetch, so a rotated deploy token is picked up without a restart. See [private repositories](../installation.md#private-repositories).
-
-## Templating and secrets
-
-A [values file](values.md) is an ordinary file in Git, so a literal in one is a literal in Git. Template the *reference*, and consume it through `secretEnv:` or a `Secret`'s `stringData:` - a `Secret` rendered from a template is checked for the reference-only rule after rendering, exactly like a written one.
+A private repository's read credential is setup as a reference as well - `auth.token: env:GITOPS_TOKEN` in `agent.yaml`. See [private repositories](../installation.md#private-repositories).

@@ -3,16 +3,15 @@ id: overview
 title: The agent configuration
 ---
 
-There are two kinds of configuration, deliberately kept apart:
+`podcd` requires two things:
 
-- **`agent.yaml`**, on the host - *this page*. Which host this machine is, which Git repositories to trust, and where the agent keeps its files. It is meant to be fire-and-forget: set up once per host, then left alone.
-- **Documents in Git** - the [configuration model](model.md). What should run, on which hosts, with which configuration. Everything that is part of the fleet's declared intent lives here, where it is reviewed and versioned.
-
-If you find yourself encoding what a host is *for* in `agent.yaml`, that belongs in a `Host` document in Git instead.
+- **`agent.yaml`**, on the host, which will tell `podcd` which host this machine is, which Git repositories to reconcile, and where the agent keeps its files. It is meant to be fire-and-forget: set up once per host, then left alone.
+- **IaC in Git** (local repos also supported) - the [configuration model](model.md). What should run, on which hosts, with which configuration. Everything that is part of the fleet's declared intent lives here, where it is reviewed and versioned.
 
 ## agent.yaml
 
-`podcd config create` writes this file with every field documented and its default shown commented out; the reference below is that output. It lives at `~/.config/podcd/agent.yaml` (or `$PODCD_CONFIG`, or `/etc/podcd/agent.yaml`, looked up in that order).
+`podcd config create` writes this file with every field documented and its default shown commented out; the reference below is that output.
+It lives at `~/.config/podcd/agent.yaml` (or `$PODCD_CONFIG`, or `/etc/podcd/agent.yaml`, looked up in that order).
 
 ```yaml
 # podcd agent configuration.
@@ -95,7 +94,7 @@ repositories:
 
 ## Editing it
 
-`podcd config set` edits the file in place, leaving comments where they are. Fields are addressed by their yaml path:
+`podcd config set` edits the file in place. Fields are addressed by their yaml path:
 
 ```bash
 podcd config set revision v1.4.0                 # alias for repositories.0.revision
@@ -107,11 +106,9 @@ podcd config set vault.address=https://vault.example.com vault.roleId=env:VAULT_
 podcd config view
 ```
 
-Every change is validated against the real field list before the file is touched, so a typo names the field that does exist rather than being written and failing later.
-
 ## Multiple repositories
 
-Repositories are composed into one desired state. A name defined twice across them is an error, not a race; `revision` may be a branch, a tag or a commit.
+Repositories are composed into one desired state. (i.e. multiple teams sharing one repository)
 
 ```yaml
 repositories:

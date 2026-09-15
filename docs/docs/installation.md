@@ -13,7 +13,7 @@ sha256sum -c "podcd_${V}_linux_${A}.tar.gz.sha256" && tar -xzf "podcd_${V}_linux
 sudo install -m 0755 podcd /usr/local/bin/podcd
 ```
 
-Building from source instead: `make build` puts the binary in `dist/`.
+You can alternatively build from source instead.
 
 ## Demo deploy
 
@@ -40,9 +40,7 @@ Tear down when done:
 podcd teardown --purge-state --purge-config -y
 ```
 
-This stops and removes every application podcd manages, then stops, disables and removes `podcd-agent.service` - the equivalent of running `systemctl --user disable --now podcd-agent.service` and deleting the unit file by hand. `--purge-state` also deletes `~/.local/state/podcd` (checkouts, played manifests, state.json); `--purge-config` also deletes `~/.config/podcd` (the repository URL, and any secrets in `agent.env`) - both are opt-in and skipped without them.
-
-Building from source instead: `make build`, then the same bootstrap with `--binaries ./dist`.
+This stops and removes every application podcd manages, then stops, disables and removes `podcd-agent.service`.
 
 ## Production deploy
 
@@ -55,7 +53,7 @@ Building from source instead: `make build`, then the same bootstrap with `--bina
 Set up a repository defining at least a `Host` and an `Application` or `Pod`. See [`examples/`](https://github.com/podcd/podcd/tree/main/examples) in the podcd repository, or [podcd/podcd-gitops](https://github.com/podcd/podcd-gitops). The files are the **desired state**: podcd reads the repository, resolves the configuration for a host, validates it, and reconciles the result with the workloads running on that host. There is no prescribed directory structure - organize the Git repository however you like. The [configuration model](configuration/model.md) describes the documents.
 
 - `podcd init` scaffolds a basic podcd-gitops repository.
-- `podcd create` generates a document per kind from flags.
+- `podcd create` to create documents.
 - `podcd lint` checks it.
 
 ```bash
@@ -218,7 +216,5 @@ sudo -u podcd XDG_RUNTIME_DIR="/run/user/$(id -u podcd)" systemctl --user status
 make image                                              # builds podcd:$(VERSION) from Containerfile
 podman run --rm -v /repo:/repo:ro,Z ghcr.io/podcd/podcd:latest lint /repo
 ```
-
-The image runs as a fixed non-root UID (1000); rootless Podman remaps that into your subordinate uid/gid range the same way it does for any other container, nothing special to configure there. On SELinux-enforcing hosts (RHEL, Fedora), add `:z` (shared) or `:Z` (private) to any bind mount as above, or the mount is denied - Debian/Ubuntu/Alpine don't need this since they don't enforce SELinux.
 
 The image carries `git`, `podman` and `systemctl`, so every podcd command runs in it, including `run`/`reconcile` - but those manage *the host's* rootless Podman and systemd `--user` session, so from inside a container they need the host's Podman socket and systemd user bus bind-mounted in.
