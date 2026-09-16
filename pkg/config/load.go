@@ -318,7 +318,7 @@ func addSpec[T any](into map[string]Doc[T], kind, name string, src Source) error
 func checkSecretIsReferenceOnly(spec corev1.Secret, src Source) error {
 	if len(spec.Data) > 0 {
 		return fmt.Errorf("%s: plaintext values in data are not supported; "+
-			"base64 is encoding, not encryption — use stringData with scheme:locator references (env:, file:) instead", src)
+			"base64 is encoding, not encryption - use stringData with scheme:locator references (env:, file:) instead", src)
 	}
 	for k, v := range spec.StringData {
 		if !isSecretRef(v) {

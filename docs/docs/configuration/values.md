@@ -86,13 +86,21 @@ Use `required` for anything the resource cannot do without, and `default` for an
 
 ## Secrets and values
 
-For secrets, you can utilize *references* instead, and consume it through `secretEnv:` - which resolves `env:`/`file:`/`vault:` references on the host.
-You can also set values to refer to *references* in Vault.
+Secret names are safe to use in values - a template can emit an `ExternalSecret` or reference one by name in a Pod spec:
 
 ```yaml
+# apps/api.yaml.tpl
+apiVersion: v1
+kind: Pod
+metadata:
+  name: api
 spec:
-  secretEnv:
-    DB_PASSWORD: '{{ .Values.dbPasswordRef }}'   # values: dbPasswordRef: vault:prod/api/DB_PASSWORD@secret
+  containers:
+    - name: api
+      image: "{{ .Values.image }}"
+      envFrom:
+        - secretRef:
+            name: "{{ .Values.secretName }}"   # values: secretName: db-creds
 ```
 
-See [Secrets](secrets.md).
+The actual secret values never enter the template - only the name does. See [Secrets](secrets.md).

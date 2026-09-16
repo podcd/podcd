@@ -317,6 +317,25 @@ func (h hostDocuments) secret(name string) (Doc[corev1.Secret], bool) {
 	return d, ok
 }
 
+// externalSecretProvidesTarget reports whether any ExternalSecret in the index
+// will provision a Secret named `name` at reconcile time.
+// Used by lint to avoid a false "Secret not defined" error for provisioned secrets.
+func (h hostDocuments) externalSecretProvidesTarget(name string) bool {
+	check := func(ess map[string]Doc[ExternalSecretSpec]) bool {
+		for esName, es := range ess {
+			target := es.Spec.Target.Name
+			if target == "" {
+				target = esName
+			}
+			if target == name {
+				return true
+			}
+		}
+		return false
+	}
+	return check(h.ExternalSecrets) || check(h.rendered.ExternalSecrets)
+}
+
 // overlay applies every layer's override for name, in order, and returns the
 // provenance trail: the document's source, then each layer that touched it.
 func overlay(layers []layer, name, kind string, src Source, apply func(Override) error) ([]string, error) {
@@ -424,7 +443,7 @@ func appSpecToPod(name string, spec AppSpec) (corev1.Pod, error) {
 		WorkingDir: spec.WorkingDir,
 	}
 
-	// env vars — sorted for determinism
+	// env vars - sorted for determinism
 	for _, k := range slices.Sorted(maps.Keys(spec.Env)) {
 		if !validEnvName(k) {
 			p.add("environment variable name %q is not valid", k)
@@ -449,7 +468,7 @@ func appSpecToPod(name string, spec AppSpec) (corev1.Pod, error) {
 		container.EnvFrom = append(container.EnvFrom, src)
 	}
 
-	// ports — sort for deterministic manifest
+	// ports - sort for deterministic manifest
 	sortedPorts := slices.Clone(spec.Ports)
 	slices.SortFunc(sortedPorts, func(a, b model.Port) int {
 		return cmp.Or(cmp.Compare(a.Host, b.Host), cmp.Compare(a.Container, b.Container))
@@ -473,7 +492,7 @@ func appSpecToPod(name string, spec AppSpec) (corev1.Pod, error) {
 		})
 	}
 
-	// volumes — sort first for a deterministic manifest regardless of input order
+	// volumes - sort first for a deterministic manifest regardless of input order
 	sortedVols := slices.Clone(spec.Volumes)
 	slices.SortFunc(sortedVols, func(a, b model.Volume) int {
 		return strings.Compare(a.Destination, b.Destination)
@@ -504,7 +523,7 @@ func appSpecToPod(name string, spec AppSpec) (corev1.Pod, error) {
 		container.VolumeMounts = append(container.VolumeMounts, mount)
 	}
 
-	// user — numeric UID only; kube play does not resolve usernames
+	// user - numeric UID only; kube play does not resolve usernames
 	if spec.User != "" {
 		uid := spec.User
 		if i := strings.Index(uid, ":"); i >= 0 {
@@ -518,7 +537,7 @@ func appSpecToPod(name string, spec AppSpec) (corev1.Pod, error) {
 		}
 	}
 
-	// healthcheck → readiness probe
+	// healthcheck -> readiness probe
 	// The AppSpec healthcheck port is a host port; we need the matching container port.
 	if hc := spec.Healthcheck; hc != nil {
 		set := 0

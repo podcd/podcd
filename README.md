@@ -61,7 +61,7 @@ Building from source: `make build`, then the same bootstrap with `--binaries ./d
 #### 1. Set up the GitOps repository
 
 > [!TIP]
-> `podcd validate` requires Secrets as references (`env:NAME`, `file:path`).
+> `podcd validate` checks every host. Secrets must be declared via `ExternalSecret` + `SecretStore`; plaintext values in `v1/Secret` are rejected.
 
 Set up a repository with at least a `Host` and an `Application` or `Pod`. See [./examples](./examples/) or [podcd/podcd-gitops.git](https://github.com/podcd/podcd-gitops.git). No prescribed directory structure.
 
@@ -95,7 +95,9 @@ On SELinux-enforcing hosts (RHEL default) bind mounts need the `Z` option: `volu
 
 #### 3. Secrets
 
-See [Secrets](https://podcd.github.io/podcd/docs/configuration/secrets) for `env:`, `file:` and `vault:` references.
+Secrets are declared in Git as `ExternalSecret` + `SecretStore` documents - never as plaintext values. The agent fetches and resolves them before building workload manifests. Three backends are supported: the agent's environment (`env`), files on the host (`file`), and HashiCorp Vault (`vault`).
+
+See [Secrets](https://podcd.github.io/podcd/docs/configuration/secrets).
 
 #### 4. Status
 
@@ -182,13 +184,6 @@ repositories:
 # text or json.
 # logFormat: text
 
-# HashiCorp Vault, for vault:<mount>/<path>/<key> (or <path>/<key>@<mount>)
-# references. Vault's own credentials are references as well, so they come
-# from the env file rather than from this file.
-# vault:
-#   address: https://vault.example.com
-#   roleId: env:VAULT_ROLE_ID
-#   secretId: env:VAULT_SECRET_ID
 ```
 
 Fields are addressed by their yaml path:
@@ -197,8 +192,6 @@ Fields are addressed by their yaml path:
 podcd config set revision v1.4.0                 # alias for repositories.0.revision
 podcd config set interval 30s
 podcd config set repositories.0.auth.token env:GITOPS_TOKEN
-# fields that only make sense together are set together and validated once:
-podcd config set vault.address=https://vault.example.com vault.roleId=env:VAULT_ROLE_ID vault.secretId=env:VAULT_SECRET_ID
 podcd config view
 ```
 
@@ -327,9 +320,7 @@ spec:
         httpGet: { path: /ready, port: 9200 }
 ```
 
-Secrets in Git hold references, not plaintext values. The `data:` field is rejected, and every `stringData` entry must resolve to either `env:NAME` or `file:path`. Values are resolved on the host, written to a 0600 file outside the unit directory, and displayed as a hash in `podcd plan`.
-
-```
+Secrets are declared in Git as `ExternalSecret` + `SecretStore` documents and resolved by the agent before the manifest is compiled. The pod references them by name via `secretKeyRef` or `envFrom: secretRef` as normal Kubernetes API. See [Secrets](https://podcd.github.io/podcd/docs/configuration/secrets).
 
 ### Inheritance and merge rules
 
