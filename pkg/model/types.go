@@ -117,16 +117,13 @@ func shorthand(data []byte) (string, bool, error) {
 type HTTPProbe struct {
 	Port    int    `json:"port"`
 	Path    string `json:"path,omitempty"`
-	Host    string `json:"host,omitempty"`   // default 127.0.0.1
 	Scheme  string `json:"scheme,omitempty"` // http (default) or https
-	Expect  int    `json:"expect,omitempty"` // expected status, default 200
 	Timeout string `json:"timeout,omitempty"`
 }
 
 // TCPProbe checks that a TCP port accepts a connection.
 type TCPProbe struct {
 	Port    int    `json:"port"`
-	Host    string `json:"host,omitempty"`
 	Timeout string `json:"timeout,omitempty"`
 }
 
@@ -136,15 +133,19 @@ type ExecProbe struct {
 	Timeout string   `json:"timeout,omitempty"`
 }
 
-// Healthcheck describes how to tell whether an application is working.
-// Exactly one probe may be set; none means "systemd says the unit is active".
+// Healthcheck is an Application's shorthand for a container probe.
+//
+// It is compiled into the pod manifest as a readiness probe and run by podman,
+// not by podcd: the agent only reports back what podman makes of it. Exactly
+// one of http, tcp or exec may be set.
 type Healthcheck struct {
 	HTTP *HTTPProbe `json:"http,omitempty"`
 	TCP  *TCPProbe  `json:"tcp,omitempty"`
 	Exec *ExecProbe `json:"exec,omitempty"`
 
-	// Retries and interval to use while waiting for an app to become healthy after it is applied.
-	Retries  int    `json:"retries,omitempty"`
+	// Retries is how many consecutive failures mark the container unhealthy.
+	Retries int `json:"retries,omitempty"`
+	// Interval is how often podman runs the probe.
 	Interval string `json:"interval,omitempty"`
 }
 
@@ -154,24 +155,13 @@ type Resources struct {
 	CPU    string `json:"cpu,omitempty"`    // e.g. 150% -> CPUQuota
 }
 
-// Workload kinds.
-// A container is one Quadlet .container unit.
-// A kube workload is a pod manifest played by podman through a Quadlet .kube unit.
-const (
-	KindContainer = "container"
-	KindKube      = "kube"
-)
-
 // Application is a fully resolved application.
 // It is the result of compiling environment + group + host + application definitions for one host.
 // Nothing here is inherited or templated any more, it is what should exist on this host.
 type Application struct {
 	Name string `json:"name"`
 
-	// Kind is KindContainer (the default when empty) or KindKube.
-	Kind string `json:"kind,omitempty"`
-
-	// Manifest is the multi-document YAML played by podman for a kube workload.
+	// Manifest is the multi-document YAML played by podman.
 	// It holds the Pod, its ConfigMaps, and its Secrets with values resolved.
 	// It may contain secrets, so it never appears in JSON output.
 	// ManifestHash stands in for it everywhere, including in the spec hash.
@@ -197,16 +187,14 @@ type Application struct {
 	WorkingDir    string `json:"workingDir,omitempty"`
 	StopTimeout   int    `json:"stopTimeout,omitempty"`
 
-	Healthcheck *Healthcheck `json:"healthcheck,omitempty"`
-	Resources   Resources    `json:"resources,omitempty"`
+	Resources Resources `json:"resources,omitempty"`
 
 	// Provenance, for humans debugging on the host.
 	SourceRepo string   `json:"sourceRepo,omitempty"`
 	Origins    []string `json:"origins,omitempty"`
 }
 
-// ImageList returns every image the workload runs.
-// One for a container, one per container for a pod.
+// ImageList returns every image the workload runs, one per container.
 func (a Application) ImageList() []string {
 	if len(a.Images) > 0 {
 		return a.Images
@@ -216,9 +204,6 @@ func (a Application) ImageList() []string {
 	}
 	return []string{a.Image}
 }
-
-// IsKube reports whether the workload is a pod manifest rather than a container.
-func (a Application) IsKube() bool { return a.Kind == KindKube }
 
 // SetManifest stores a kube manifest and its hash together, so the two can never disagree.
 func (a *Application) SetManifest(manifest []byte) {
@@ -393,7 +378,6 @@ const (
 type Health struct {
 	App       string       `json:"app"`
 	Status    HealthStatus `json:"status"`
-	Probe     string       `json:"probe"`
 	Message   string       `json:"message,omitempty"`
 	CheckedAt time.Time    `json:"checkedAt"`
 }

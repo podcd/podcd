@@ -42,7 +42,7 @@ func patchPod(pod corev1.Pod, override Override) (corev1.Pod, error) {
 	return out, nil
 }
 
-func (h hostDocuments) podToApplication(ctx context.Context, name string, pod corev1.Pod, provisionedSecrets map[string]corev1.Secret) (model.Application, error) {
+func (h hostDocuments) podToApplication(ctx context.Context, name string, pod corev1.Pod, provisioner SecretProvisioner) (model.Application, error) {
 	p := problems{prefix: fmt.Sprintf("pod %q: ", name)}
 
 	if !validName(name) {
@@ -54,7 +54,6 @@ func (h hostDocuments) podToApplication(ctx context.Context, name string, pod co
 
 	app := model.Application{
 		Name:          name,
-		Kind:          model.KindKube,
 		RestartPolicy: kubeRestartPolicy(pod.Spec.RestartPolicy),
 		Labels:        maps.Clone(pod.Labels),
 	}
@@ -133,24 +132,31 @@ func (h hostDocuments) podToApplication(ctx context.Context, name string, pod co
 		}
 		configMaps = append(configMaps, doc.Spec)
 	}
+	// An ExternalSecret wins over a Git Secret of the same name, and is fetched
+	// here rather than up front: only the secrets this pod names are worth a
+	// round trip to a store.
 	var secretDocs []corev1.Secret
 	for _, secName := range slices.Sorted(maps.Keys(refs.secrets)) {
-		if s, ok := provisionedSecrets[secName]; ok {
-			secretDocs = append(secretDocs, s)
-			continue
+		if provisioner != nil {
+			sec, ok, err := provisioner.ProvisionSecret(ctx, secName)
+			if err != nil {
+				p.add("Secret %q: %v", secName, err)
+				continue
+			}
+			if ok {
+				secretDocs = append(secretDocs, sec)
+				continue
+			}
 		}
 		doc, ok := h.secret(secName)
 		if !ok {
-			optional := refs.secrets[secName]
-			if !optional && !h.externalSecretProvidesTarget(secName) {
-				p.add("refers to Secret %q, which is not defined (define it in Git or provision it via ExternalSecret)", secName)
+			if !refs.secrets[secName] {
+				p.add("refers to Secret %q, which is not defined (define it in Git or provision it with an ExternalSecret)", secName)
 			}
 			continue
 		}
 		secretDocs = append(secretDocs, doc.Spec)
 	}
-
-	app.Healthcheck = kubeHealthcheck(pod)
 
 	if err := p.err(); err != nil {
 		return model.Application{}, err
@@ -274,57 +280,6 @@ func collectRefs(pod corev1.Pod) refSet {
 		mark(r.secrets, ips.Name, nil)
 	}
 	return r
-}
-
-// kubeHealthcheck derives the health check from the first readiness, liveness
-// or startup probe that targets a published port; nil when there is none.
-func kubeHealthcheck(pod corev1.Pod) *model.Healthcheck {
-	for _, c := range pod.Spec.Containers {
-		probe := c.ReadinessProbe
-		if probe == nil {
-			probe = c.LivenessProbe
-		}
-		if probe == nil {
-			probe = c.StartupProbe
-		}
-		if probe == nil {
-			continue
-		}
-		switch {
-		case probe.HTTPGet != nil:
-			hostPort, hostIP, ok := hostPortFor(c, probe.HTTPGet.Port.IntValue(), probe.HTTPGet.Port.String())
-			if !ok {
-				continue
-			}
-			return &model.Healthcheck{HTTP: &model.HTTPProbe{
-				Port:   hostPort,
-				Host:   hostIP,
-				Path:   probe.HTTPGet.Path,
-				Scheme: strings.ToLower(string(probe.HTTPGet.Scheme)),
-			}}
-		case probe.TCPSocket != nil:
-			hostPort, hostIP, ok := hostPortFor(c, probe.TCPSocket.Port.IntValue(), probe.TCPSocket.Port.String())
-			if !ok {
-				continue
-			}
-			return &model.Healthcheck{TCP: &model.TCPProbe{Port: hostPort, Host: hostIP}}
-		}
-	}
-	return nil
-}
-
-// hostPortFor maps a probe's container port (number or name) to the host port
-// it is published on.
-func hostPortFor(c corev1.Container, number int, name string) (int, string, bool) {
-	for _, p := range c.Ports {
-		if p.HostPort == 0 {
-			continue
-		}
-		if (number != 0 && int(p.ContainerPort) == number) || (number == 0 && name != "" && p.Name == name) {
-			return int(p.HostPort), p.HostIP, true
-		}
-	}
-	return 0, "", false
 }
 
 func kubeRestartPolicy(p corev1.RestartPolicy) string {

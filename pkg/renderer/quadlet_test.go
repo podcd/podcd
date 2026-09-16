@@ -35,7 +35,6 @@ func TestQuadletAcceptsAKubeUnitWithResources(t *testing.T) {
 	dir := t.TempDir()
 	app := model.Application{
 		Name:          "kitchen-sink",
-		Kind:          model.KindKube,
 		RestartPolicy: "on-failure",
 		StopTimeout:   30,
 		Resources:     model.Resources{Memory: "256M", CPU: "50%"},

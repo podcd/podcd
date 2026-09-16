@@ -27,7 +27,6 @@ const (
 	// markerManifest records the hash of the played manifest.
 	// The unit bytes alone say whether a kube workload changed.
 	markerManifest = "# podcd-manifest-hash: "
-	markerKind     = "# podcd-kind: "
 )
 
 // Version is bumped when the rendered output format changes.
@@ -58,36 +57,14 @@ type Unit struct {
 	ManifestHash string
 }
 
-// IsKube reports whether this unit plays a manifest rather than running a container.
-func (u Unit) IsKube() bool { return u.ManifestPath != "" }
-
 // ServiceName returns the systemd service name for an application.
 func ServiceName(app string) string { return Prefix + app + ".service" }
 
-// FileName returns the Quadlet file name for a container application.
-func FileName(app string) string { return Prefix + app + ".container" }
-
-// KubeFileName returns the Quadlet file name for a kube workload.
+// KubeFileName returns the Quadlet file name for an application.
 func KubeFileName(app string) string { return Prefix + app + ".kube" }
 
-// FileNameFor returns the Quadlet file name for an application of either kind.
-func FileNameFor(app model.Application) string {
-	if app.IsKube() {
-		return KubeFileName(app.Name)
-	}
-	return FileName(app.Name)
-}
-
-// ContainerName returns the container name podman will use.
-func ContainerName(app string) string { return Prefix + app }
-
-// UnitPath is where the unit for an application of either kind lives.
-func (r *Renderer) UnitPath(app model.Application) string {
-	return filepath.Join(r.UnitDir, FileNameFor(app))
-}
-
-// ManifestPath is where a kube workload's played manifest goes, or "" when
-// no kube directory is configured.
+// ManifestPath is where the played manifest goes, or "" when no kube directory
+// is configured.
 func (r *Renderer) ManifestPath(app string) string {
 	if r.KubeDir == "" {
 		return ""
@@ -95,19 +72,16 @@ func (r *Renderer) ManifestPath(app string) string {
 	return filepath.Join(r.KubeDir, app+".yaml")
 }
 
-// AppFromFileName returns the application name for a managed unit file, and whether it is one of ours by name.
-// Both .container and .kube files qualify, they map to the same service name.
-// So one application can only ever be one of them.
+// AppFromFileName returns the application name for a managed unit file, and
+// whether it is one of ours by name.
 func AppFromFileName(name string) (string, bool) {
 	if !strings.HasPrefix(name, Prefix) {
 		return "", false
 	}
-	for _, ext := range []string{".container", ".kube"} {
-		if strings.HasSuffix(name, ext) {
-			return strings.TrimSuffix(strings.TrimPrefix(name, Prefix), ext), true
-		}
+	if !strings.HasSuffix(name, ".kube") {
+		return "", false
 	}
-	return "", false
+	return strings.TrimSuffix(strings.TrimPrefix(name, Prefix), ".kube"), true
 }
 
 // Render produces the .kube unit and manifest for one application.
@@ -138,7 +112,7 @@ func (r *Renderer) renderKube(app model.Application, u Unit) (Unit, error) {
 	u.ManifestHash = app.ManifestHash
 
 	var b bytes.Buffer
-	writeHeader(&b, u, model.KindKube)
+	writeHeader(&b, u)
 	fmt.Fprintf(&b, "[Unit]\nDescription=podcd pod %s\n\n", app.Name)
 	fmt.Fprintf(&b, "[Kube]\nYaml=%s\n", u.ManifestPath)
 	for _, n := range app.Networks {
@@ -154,12 +128,9 @@ func (r *Renderer) renderKube(app model.Application, u Unit) (Unit, error) {
 }
 
 // writeHeader writes the marker comments the agent recognises its own work by.
-func writeHeader(b *bytes.Buffer, u Unit, kind string) {
+func writeHeader(b *bytes.Buffer, u Unit) {
 	b.WriteString(markerManaged + "\n")
 	b.WriteString(markerApp + u.App + "\n")
-	if kind != "" {
-		b.WriteString(markerKind + kind + "\n")
-	}
 	b.WriteString(markerSpec + u.SpecHash + "\n")
 	if u.ManifestHash != "" {
 		b.WriteString(markerManifest + u.ManifestHash + "\n")
@@ -196,7 +167,6 @@ func writeInstall(b *bytes.Buffer) {
 type Markers struct {
 	Managed      bool
 	App          string
-	Kind         string
 	SpecHash     string
 	ManifestHash string
 	Version      string
@@ -217,8 +187,6 @@ func ParseMarkers(content []byte) Markers {
 			m.Version = strings.TrimSpace(strings.TrimPrefix(line, markerVersion))
 		case strings.HasPrefix(line, markerManifest):
 			m.ManifestHash = strings.TrimSpace(strings.TrimPrefix(line, markerManifest))
-		case strings.HasPrefix(line, markerKind):
-			m.Kind = strings.TrimSpace(strings.TrimPrefix(line, markerKind))
 		case strings.HasPrefix(line, "["):
 			return m // markers are only ever in the header
 		}

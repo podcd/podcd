@@ -20,14 +20,24 @@ import (
 	"github.com/podcd/podcd/pkg/model"
 )
 
+// SecretProvisioner fetches a Secret that an ExternalSecret declares but Git
+// does not contain.
+//
+// It is asked only for the names a workload on this host actually references,
+// so a host never reaches out to a secret store on behalf of somebody else's
+// machine. ok is false when no ExternalSecret targets that name.
+type SecretProvisioner interface {
+	ProvisionSecret(ctx context.Context, name string) (sec corev1.Secret, ok bool, err error)
+}
+
 // ResolveOptions controls one compilation of the index for one host.
 type ResolveOptions struct {
 	// Host is the identity of this host. It must match a Host document.
 	Host string
-	// ProvisionedSecrets is the output of the provision phase: secrets fetched
-	// from external stores and ready to be bundled into kube manifests.
-	// Keyed by Secret name; takes priority over Git-defined Secrets.
-	ProvisionedSecrets map[string]corev1.Secret
+	// Secrets resolves ExternalSecret targets on demand. May be nil, in which
+	// case only Secrets defined in Git are available - that is what `podcd lint`
+	// does, since linting must not talk to Vault.
+	Secrets SecretProvisioner
 	// Revisions is repo name -> commit, carried into the desired state for reporting.
 	Revisions map[string]string
 	// Values is the lowest-precedence input to {{ .Values }} templating
@@ -137,7 +147,7 @@ func (ix *Index) Resolve(ctx context.Context, opts ResolveOptions) (model.Desire
 				return e
 			})
 			if err == nil {
-				app, err = docs.podToApplication(ctx, name, pod, opts.ProvisionedSecrets)
+				app, err = docs.podToApplication(ctx, name, pod, opts.Secrets)
 			}
 		} else if doc, ok := docs.application(name); ok {
 			spec := doc.Spec
@@ -151,7 +161,7 @@ func (ix *Index) Resolve(ctx context.Context, opts ResolveOptions) (model.Desire
 				var pod corev1.Pod
 				pod, err = appSpecToPod(name, spec)
 				if err == nil {
-					app, err = docs.podToApplication(ctx, name, pod, opts.ProvisionedSecrets)
+					app, err = docs.podToApplication(ctx, name, pod, opts.Secrets)
 					if err == nil && spec.Resources != nil {
 						app.Resources = *spec.Resources
 					}
@@ -315,25 +325,6 @@ func (h hostDocuments) secret(name string) (Doc[corev1.Secret], bool) {
 	}
 	d, ok := h.rendered.Secrets[name]
 	return d, ok
-}
-
-// externalSecretProvidesTarget reports whether any ExternalSecret in the index
-// will provision a Secret named `name` at reconcile time.
-// Used by lint to avoid a false "Secret not defined" error for provisioned secrets.
-func (h hostDocuments) externalSecretProvidesTarget(name string) bool {
-	check := func(ess map[string]Doc[ExternalSecretSpec]) bool {
-		for esName, es := range ess {
-			target := es.Spec.Target.Name
-			if target == "" {
-				target = esName
-			}
-			if target == name {
-				return true
-			}
-		}
-		return false
-	}
-	return check(h.ExternalSecrets) || check(h.rendered.ExternalSecrets)
 }
 
 // overlay applies every layer's override for name, in order, and returns the
@@ -537,8 +528,7 @@ func appSpecToPod(name string, spec AppSpec) (corev1.Pod, error) {
 		}
 	}
 
-	// healthcheck -> readiness probe
-	// The AppSpec healthcheck port is a host port; we need the matching container port.
+	// healthcheck -> readiness probe, which podman runs once the pod is played.
 	if hc := spec.Healthcheck; hc != nil {
 		set := 0
 		if hc.HTTP != nil {
@@ -577,6 +567,8 @@ func appSpecToPod(name string, spec AppSpec) (corev1.Pod, error) {
 		// Build the probe only when validation passed.
 		if probe := appHealthcheckToProbe(hc, spec.Ports); probe != nil {
 			container.ReadinessProbe = probe
+		} else if set == 1 {
+			p.add("healthcheck port is not published by this application; add it to ports")
 		}
 	}
 
@@ -625,8 +617,12 @@ func appRestartPolicyToKube(s string) corev1.RestartPolicy {
 	}
 }
 
-// appHealthcheckToProbe converts a model healthcheck to a Kubernetes probe.
-// The AppSpec healthcheck port is the host port; we look up the container port from ports.
+// appHealthcheckToProbe converts an Application's healthcheck shorthand into the
+// readiness probe podman will run.
+//
+// The shorthand names a host port, because that is the number the author wrote
+// under ports; the probe runs inside the pod and needs the container port it
+// maps to. An unpublished port has no such mapping, and returns nil.
 func appHealthcheckToProbe(hc *model.Healthcheck, ports []model.Port) *corev1.Probe {
 	containerPort := func(hostPort int) (int, bool) {
 		for _, p := range ports {
@@ -662,7 +658,23 @@ func appHealthcheckToProbe(hc *model.Healthcheck, ports []model.Port) *corev1.Pr
 	default:
 		return nil
 	}
+	probe.FailureThreshold = int32(hc.Retries)
+	probe.PeriodSeconds = probeSeconds(hc.Interval)
+	probe.TimeoutSeconds = probeSeconds(probeTimeout(hc))
 	return &probe
+}
+
+// probeSeconds renders a spec duration as the whole seconds a Kubernetes probe
+// field takes. Zero means unset, which leaves podman on its own default.
+func probeSeconds(s string) int32 {
+	if s == "" {
+		return 0
+	}
+	d, err := time.ParseDuration(s)
+	if err != nil || d < time.Second {
+		return 0
+	}
+	return int32(d / time.Second)
 }
 
 func validPort(n int) bool { return n >= 1 && n <= 65535 }

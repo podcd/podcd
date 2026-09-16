@@ -9,6 +9,7 @@ import (
 
 func TestTeardownAsksBeforeActingWithoutYes(t *testing.T) {
 	agentConfig(t)
+	requirePodman(t)
 	// stdin is not a terminal here, so the prompt reads EOF: that is a "no".
 	out, code := run(t, "teardown")
 	if code != 0 {
@@ -21,6 +22,7 @@ func TestTeardownAsksBeforeActingWithoutYes(t *testing.T) {
 
 func TestTeardownRemovesTheServiceFile(t *testing.T) {
 	home := agentConfig(t)
+	requirePodman(t)
 	dest := filepath.Join(home, ".config", "systemd", "user", "podcd-agent.service")
 	if err := os.MkdirAll(filepath.Dir(dest), 0o755); err != nil {
 		t.Fatal(err)
@@ -40,6 +42,7 @@ func TestTeardownRemovesTheServiceFile(t *testing.T) {
 
 func TestTeardownLeavesStateAndConfigByDefault(t *testing.T) {
 	home := agentConfig(t)
+	requirePodman(t)
 	configPath := filepath.Join(home, ".config", "podcd", "agent.yaml")
 
 	if out, code := run(t, "teardown", "-y"); code != 0 {
@@ -52,6 +55,7 @@ func TestTeardownLeavesStateAndConfigByDefault(t *testing.T) {
 
 func TestTeardownPurgesStateAndConfigWhenAsked(t *testing.T) {
 	home := agentConfig(t)
+	requirePodman(t)
 	configDir := filepath.Join(home, ".config", "podcd")
 	stateDir := filepath.Join(home, ".local", "state", "podcd")
 	if err := os.MkdirAll(stateDir, 0o755); err != nil {

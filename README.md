@@ -300,7 +300,6 @@ Pods are validated by the same rules as applications:
 
 - referenced ConfigMaps and Secrets that must exist or be optional
 - host port conflicts
-- the first readiness or liveness probe on a published port becoming the health check
 
 ```yaml
 apiVersion: v1

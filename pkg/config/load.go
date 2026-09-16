@@ -283,7 +283,7 @@ func (d *documents) add(env document, src Source) error {
 		case KindConfigMap:
 			return addObject(d.ConfigMaps, env.Kind, name, src, nil)
 		case KindSecret:
-			return addObject(d.Secrets, env.Kind, name, src, checkSecretIsReferenceOnly)
+			return addObject(d.Secrets, env.Kind, name, src, nil)
 		}
 		return fmt.Errorf("%s: kind %q is not supported from apiVersion v1 (Pod, ConfigMap, Secret are)", src, env.Kind)
 	case ExternalSecretsAPIVersion:
@@ -310,36 +310,6 @@ func addSpec[T any](into map[string]Doc[T], kind, name string, src Source) error
 		return err
 	}
 	return put(into, kind, name, src, doc.Spec)
-}
-
-// checkSecretIsReferenceOnly rejects Secret documents that embed plaintext values.
-// Secrets in Git must store scheme:locator references (env:KEY, file:/path) so
-// that no plaintext credential ever lands in the repository.
-func checkSecretIsReferenceOnly(spec corev1.Secret, src Source) error {
-	if len(spec.Data) > 0 {
-		return fmt.Errorf("%s: plaintext values in data are not supported; "+
-			"base64 is encoding, not encryption - use stringData with scheme:locator references (env:, file:) instead", src)
-	}
-	for k, v := range spec.StringData {
-		if !isSecretRef(v) {
-			return fmt.Errorf("%s: secret key %q: values in Git must be references (scheme:locator, e.g. env:KEY or file:/path), got %q", src, k, v)
-		}
-	}
-	return nil
-}
-
-// isSecretRef reports whether v has the shape of a scheme:locator reference.
-func isSecretRef(v string) bool {
-	scheme, locator, ok := strings.Cut(v, ":")
-	if !ok || scheme == "" || locator == "" {
-		return false
-	}
-	for _, r := range scheme {
-		if r < 'a' || r > 'z' {
-			return false
-		}
-	}
-	return true
 }
 
 // addObject decodes a whole core/v1 object and indexes it, after an optional

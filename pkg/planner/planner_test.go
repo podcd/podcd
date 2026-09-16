@@ -14,7 +14,6 @@ func rend() *renderer.Renderer { return &renderer.Renderer{UnitDir: "/units", Ku
 func app(name, image string) model.Application {
 	a := model.Application{
 		Name:          name,
-		Kind:          model.KindKube,
 		RestartPolicy: "always",
 	}
 	manifest := fmt.Sprintf("apiVersion: v1\nkind: Pod\nmetadata:\n  name: %s\nspec:\n  containers:\n    - name: %s\n      image: %s\n", name, name, image)
@@ -194,7 +193,7 @@ func TestPlanIsStableAcrossRuns(t *testing.T) {
 }
 
 func TestDriftedManifestIsReappliedEvenWhenTheUnitMatches(t *testing.T) {
-	a := model.Application{Name: "api", Kind: model.KindKube, Images: []string{"img@sha256:b"}, RestartPolicy: "always"}
+	a := model.Application{Name: "api", Images: []string{"img@sha256:b"}, RestartPolicy: "always"}
 	a.SetManifest([]byte("apiVersion: v1\nkind: Pod\nmetadata:\n  name: api\n"))
 	r := &renderer.Renderer{UnitDir: "/units", KubeDir: "/kube"}
 	u, err := r.Render(a)
@@ -223,14 +222,14 @@ func TestDriftedManifestIsReappliedEvenWhenTheUnitMatches(t *testing.T) {
 
 func TestPlanNeverPrintsManifestSecretValues(t *testing.T) {
 	// Secrets in manifests are corev1.Secret documents; the planner must redact them.
-	a := model.Application{Name: "api", Kind: model.KindKube, RestartPolicy: "always"}
+	a := model.Application{Name: "api", RestartPolicy: "always"}
 	secret := "apiVersion: v1\nkind: Secret\nmetadata:\n  name: mysecret\ndata:\n  password: aHVudGVyMg==\n"
 	pod := "apiVersion: v1\nkind: Pod\nmetadata:\n  name: api\n"
 	a.SetManifest([]byte(pod + "\n---\n" + secret))
 	cur := running(t, a)
 
 	// rotate: change the secret
-	rotated := model.Application{Name: "api", Kind: model.KindKube, RestartPolicy: "always"}
+	rotated := model.Application{Name: "api", RestartPolicy: "always"}
 	secret2 := "apiVersion: v1\nkind: Secret\nmetadata:\n  name: mysecret\ndata:\n  password: aHVudGVyMw==\n"
 	rotated.SetManifest([]byte(pod + "\n---\n" + secret2))
 

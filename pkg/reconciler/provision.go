@@ -9,80 +9,84 @@ import (
 
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
-	sigyaml "sigs.k8s.io/yaml"
 
 	"github.com/podcd/podcd/pkg/config"
 	"github.com/podcd/podcd/pkg/secrets"
 )
 
-// Provision resolves every ExternalSecret in index into concrete corev1.Secrets.
+// Provisioner fetches ExternalSecret targets from their stores, on demand.
 //
-// Each resolved secret is written to <stateDir>/secrets/<name>.yaml (0600) so
-// a host restart does not require a Vault round-trip before the first reconcile.
-// agentResolver resolves env:/file: references inside SecretStore auth fields.
-//
-// Returns nil, nil when the index contains no ExternalSecrets.
-func Provision(ctx context.Context, index *config.Index, stateDir string, agentResolver *secrets.Resolver) (map[string]corev1.Secret, error) {
-	if len(index.ExternalSecrets) == 0 {
-		return nil, nil
-	}
-	secretsDir := filepath.Join(stateDir, "secrets")
-	if err := os.MkdirAll(secretsDir, 0o700); err != nil {
-		return nil, fmt.Errorf("provision: creating secrets dir: %w", err)
-	}
+// Resolve asks it only for the Secret names a workload on this host references,
+// so a host with no Vault-backed workload never opens a connection to Vault,
+// and a broken store somewhere else in the repository is not this host's
+// problem. Results are cached for the life of one reconcile: two pods sharing a
+// secret cost one fetch.
+type Provisioner struct {
+	index   *config.Index
+	agent   *secrets.Resolver
+	targets map[string]config.Doc[config.ExternalSecretSpec] // target Secret name -> ExternalSecret
+	cache   map[string]corev1.Secret
+}
 
-	out := make(map[string]corev1.Secret, len(index.ExternalSecrets))
-	for name, esDoc := range index.ExternalSecrets {
-		es := esDoc.Spec
-		targetName := es.Target.Name
-		if targetName == "" {
-			targetName = name
+// NewProvisioner indexes the ExternalSecrets by the Secret name each produces.
+// agent resolves the env:/file: references inside a SecretStore's own credentials.
+func NewProvisioner(index *config.Index, agent *secrets.Resolver) *Provisioner {
+	targets := make(map[string]config.Doc[config.ExternalSecretSpec], len(index.ExternalSecrets))
+	for name, doc := range index.ExternalSecrets {
+		target := doc.Spec.Target.Name
+		if target == "" {
+			target = name
 		}
+		targets[target] = doc
+	}
+	return &Provisioner{index: index, agent: agent, targets: targets, cache: map[string]corev1.Secret{}}
+}
 
-		storeDoc, ok := index.SecretStores[es.SecretStoreRef.Name]
-		if !ok {
-			return nil, fmt.Errorf("provision: ExternalSecret %q references unknown SecretStore %q", name, es.SecretStoreRef.Name)
-		}
+// ProvisionSecret implements config.SecretProvisioner.
+func (p *Provisioner) ProvisionSecret(ctx context.Context, name string) (corev1.Secret, bool, error) {
+	if sec, ok := p.cache[name]; ok {
+		return sec, true, nil
+	}
+	doc, ok := p.targets[name]
+	if !ok {
+		return corev1.Secret{}, false, nil
+	}
+	es := doc.Spec
 
-		fb, err := newSecretFetcher(storeDoc.Spec.Provider, agentResolver)
+	storeDoc, ok := p.index.SecretStores[es.SecretStoreRef.Name]
+	if !ok {
+		return corev1.Secret{}, false, fmt.Errorf("references unknown SecretStore %q", es.SecretStoreRef.Name)
+	}
+	fetcher, err := newSecretFetcher(storeDoc.Spec.Provider, p.agent)
+	if err != nil {
+		return corev1.Secret{}, false, err
+	}
+
+	data := make(map[string][]byte)
+	for _, d := range es.Data {
+		val, err := fetcher.fetch(ctx, d.RemoteRef.Key, d.RemoteRef.Property)
 		if err != nil {
-			return nil, fmt.Errorf("provision: ExternalSecret %q: %w", name, err)
+			return corev1.Secret{}, false, fmt.Errorf("key %q: %w", d.SecretKey, err)
 		}
-
-		data := make(map[string][]byte)
-		for _, d := range es.Data {
-			val, err := fb.fetch(ctx, d.RemoteRef.Key, d.RemoteRef.Property)
-			if err != nil {
-				return nil, fmt.Errorf("provision: ExternalSecret %q key %q: %w", name, d.SecretKey, err)
-			}
-			data[d.SecretKey] = []byte(val)
-		}
-		for _, df := range es.DataFrom {
-			all, err := fb.fetchAll(ctx, df.Extract.Key)
-			if err != nil {
-				return nil, fmt.Errorf("provision: ExternalSecret %q dataFrom %q: %w", name, df.Extract.Key, err)
-			}
-			for k, v := range all {
-				data[k] = []byte(v)
-			}
-		}
-
-		sec := corev1.Secret{
-			TypeMeta:   metav1.TypeMeta{APIVersion: "v1", Kind: "Secret"},
-			ObjectMeta: metav1.ObjectMeta{Name: targetName, Labels: map[string]string{"io.podcd.managed": "true"}},
-			Data:       data,
-		}
-		out[targetName] = sec
-
-		raw, err := sigyaml.Marshal(sec)
+		data[d.SecretKey] = []byte(val)
+	}
+	for _, df := range es.DataFrom {
+		all, err := fetcher.fetchAll(ctx, df.Extract.Key)
 		if err != nil {
-			return nil, fmt.Errorf("provision: marshalling %s: %w", targetName, err)
+			return corev1.Secret{}, false, fmt.Errorf("dataFrom %q: %w", df.Extract.Key, err)
 		}
-		if err := os.WriteFile(filepath.Join(secretsDir, targetName+".yaml"), raw, 0o600); err != nil {
-			return nil, fmt.Errorf("provision: writing %s: %w", targetName, err)
+		for k, v := range all {
+			data[k] = []byte(v)
 		}
 	}
-	return out, nil
+
+	sec := corev1.Secret{
+		TypeMeta:   metav1.TypeMeta{APIVersion: config.CoreAPIVersion, Kind: config.KindSecret},
+		ObjectMeta: metav1.ObjectMeta{Name: name, Labels: map[string]string{config.LabelManaged: "true"}},
+		Data:       data,
+	}
+	p.cache[name] = sec
+	return sec, true, nil
 }
 
 // secretFetcher abstracts one SecretStore backend's read operations.

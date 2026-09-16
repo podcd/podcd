@@ -14,11 +14,6 @@ The mechanism is a pair of documents in your gitops repository:
 | `SecretStore` | Configures a backend: the agent's environment, a files directory, or HashiCorp Vault |
 | `ExternalSecret` | Names one or more keys to fetch from a store and assemble into a `v1/Secret` |
 
-At each reconcile the agent runs a **provision phase** before compiling workloads: it reads every `ExternalSecret`, fetches the named keys from the corresponding `SecretStore`, and produces a resolved `v1/Secret` with the actual values. That secret is then bundled into the pod's kube manifest (alongside its ConfigMaps), so `podman kube play` sees a complete, playable document. Change a value in agent.env, and the next reconcile detects the manifest difference and restarts the pod.
-
-The resolved values are written to `~/.local/state/podcd/secrets/<name>.yaml` (0600) between runs so a restart does not force a Vault round-trip before the first reconcile.
-
----
 
 ## `env` store - secrets from agent.env
 
@@ -221,11 +216,8 @@ spec:
 
 ## Git-defined Secrets
 
-A plain `v1/Secret` document can live in Git, but its `stringData` values are **not** resolved at reconcile time - they go into the manifest as literal strings. These documents exist for non-sensitive data that happens to be typed as a Kubernetes Secret (for example, a public TLS certificate chain). They are not a mechanism for injecting env-var or file-backed secrets into containers. Use `ExternalSecret` for that.
+A plain `v1/Secret` document can live in Git. It is bundled into the manifest as written and becomes a podman secret.
 
-The `data:` field (base64-encoded values) is rejected at load time because base64 is encoding, not encryption.
-
----
 
 ## Repository credentials
 

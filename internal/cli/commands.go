@@ -178,15 +178,10 @@ func newValidateCommand(f *configFlags) *cobra.Command {
 			fmt.Fprintf(env.out, "host %s (environment %s, groups %s) at %s\n",
 				d.Host, dash(d.Environment), dash(strings.Join(d.Groups, ",")), d.RevisionString())
 			w := table(env.out)
-			fmt.Fprintln(w, "  APP\tKIND\tIMAGE\tPORTS\tFROM")
+			fmt.Fprintln(w, "  APP\tIMAGE\tPORTS\tFROM")
 			for _, a := range d.Applications {
-				kind := "container"
-				image := shortImage(a.Image)
-				if a.IsKube() {
-					kind = "pod"
-					image = fmt.Sprintf("%d image(s): %s", len(a.ImageList()), shortImage(a.Image))
-				}
-				fmt.Fprintf(w, "  %s\t%s\t%s\t%s\t%s\n", a.Name, kind, image, portList(a.Ports), strings.Join(a.Origins, " → "))
+				image := fmt.Sprintf("%d image(s): %s", len(a.ImageList()), shortImage(a.Image))
+				fmt.Fprintf(w, "  %s\t%s\t%s\t%s\n", a.Name, image, portList(a.Ports), strings.Join(a.Origins, " → "))
 			}
 			w.Flush()
 			fmt.Fprintf(env.out, "%d application(s); configuration is valid\n", len(d.Applications))

@@ -13,7 +13,6 @@ import (
 func kubeApp() model.Application {
 	app := model.Application{
 		Name:          "web",
-		Kind:          model.KindKube,
 		Image:         "example.com/web@sha256:aaaa",
 		RestartPolicy: "always",
 	}
@@ -30,17 +29,17 @@ func TestKubeUnitPointsAtTheManifest(t *testing.T) {
 	if u.FileName != "podcd-web.kube" || u.ServiceName != "podcd-web.service" {
 		t.Errorf("names: %q %q", u.FileName, u.ServiceName)
 	}
-	if u.ManifestPath != "/kube/web.yaml" || !u.IsKube() {
+	if u.ManifestPath != "/kube/web.yaml" {
 		t.Errorf("manifest path = %q", u.ManifestPath)
 	}
 	got := string(u.Content)
-	for _, want := range []string{"[Kube]", "Yaml=/kube/web.yaml", "WantedBy=default.target", "# podcd-kind: kube", "# podcd-manifest-hash: " + u.ManifestHash} {
+	for _, want := range []string{"[Kube]", "Yaml=/kube/web.yaml", "WantedBy=default.target", "# podcd-manifest-hash: " + u.ManifestHash} {
 		if !strings.Contains(got, want) {
 			t.Errorf("unit is missing %q:\n%s", want, got)
 		}
 	}
 	m := ParseMarkers(u.Content)
-	if m.Kind != model.KindKube || m.ManifestHash != u.ManifestHash || !m.Managed {
+	if m.ManifestHash != u.ManifestHash || !m.Managed {
 		t.Errorf("markers did not round-trip: %+v", m)
 	}
 }
@@ -62,11 +61,14 @@ func TestManifestChangeChangesTheUnit(t *testing.T) {
 	}
 }
 
-func TestKubeAndContainerFilesAreBothOurs(t *testing.T) {
-	for _, f := range []string{"podcd-web.kube", "podcd-web.container"} {
-		if app, ok := AppFromFileName(f); !ok || app != "web" {
-			t.Errorf("AppFromFileName(%s) = %q, %v", f, app, ok)
-		}
+func TestOnlyKubeFilesAreOurs(t *testing.T) {
+	if app, ok := AppFromFileName("podcd-web.kube"); !ok || app != "web" {
+		t.Errorf("AppFromFileName(podcd-web.kube) = %q, %v", app, ok)
+	}
+	// podcd writes nothing but .kube units, so a .container sharing the prefix
+	// belongs to somebody else.
+	if _, ok := AppFromFileName("podcd-web.container"); ok {
+		t.Error("a .container unit must not be claimed")
 	}
 }
 

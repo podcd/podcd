@@ -53,7 +53,7 @@ func TestInitProducesARepositoryThatResolves(t *testing.T) {
 		t.Fatalf("vm-1 should run nginx, got %v", desired.Names())
 	}
 	app := desired.Applications[0]
-	if !strings.Contains(app.Image, "@sha256:") || app.Healthcheck == nil || app.Healthcheck.HTTP == nil || app.Ports[0].Host != 8080 {
+	if !strings.Contains(app.Image, "@sha256:") || !strings.Contains(string(app.Manifest), "readinessProbe:") || app.Ports[0].Host != 8080 {
 		t.Fatalf("the scaffolded nginx is not what the README promises: %+v", app)
 	}
 

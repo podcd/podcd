@@ -141,11 +141,14 @@ func TestReconcileEndToEnd(t *testing.T) {
 	if len(pruned.Applied) != 1 || pruned.Applied[0].Type != model.ActionDelete {
 		t.Fatalf("want a delete, got %+v", pruned.Applied)
 	}
-	if _, err := os.Stat(filepath.Join(unitDir, renderer.FileName(appName))); !os.IsNotExist(err) {
+	if _, err := os.Stat(filepath.Join(unitDir, renderer.KubeFileName(appName))); !os.IsNotExist(err) {
 		t.Fatalf("the unit file is still there: %v", err)
 	}
-	if out := runCmdOut(t, "podman", "ps", "--all", "--filter", "name="+renderer.ContainerName(appName), "--format", "{{.Names}}"); strings.TrimSpace(out) != "" {
-		t.Fatalf("the container is still there: %q", out)
+	if out := runCmdOut(t, "podman", "pod", "ps", "--filter", "name="+appName, "--format", "{{.Name}}"); strings.TrimSpace(out) != "" {
+		t.Fatalf("the pod is still there: %q", out)
+	}
+	if out := runCmdOut(t, "podman", "ps", "--all", "--filter", "label="+config.LabelApp+"="+appName, "--format", "{{.Names}}"); strings.TrimSpace(out) != "" {
+		t.Fatalf("the containers are still there: %q", out)
 	}
 }
 
@@ -158,8 +161,10 @@ func TestUnmanagedUnitsAreLeftAlone(t *testing.T) {
 	requireTools(t)
 	unitDir := userUnitDir(t)
 
-	foreign := filepath.Join(unitDir, "podcd-e2e-foreign.container")
-	if err := os.WriteFile(foreign, []byte("[Container]\nImage=docker.io/library/busybox\n"), 0o644); err != nil {
+	// A .kube unit sharing podcd's own prefix: recognised by name, but with no
+	// podcd header, so it is somebody else's and must be left where it is.
+	foreign := filepath.Join(unitDir, "podcd-e2e-foreign.kube")
+	if err := os.WriteFile(foreign, []byte("[Kube]\nYaml=/nonexistent/foreign.yaml\n"), 0o644); err != nil {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { os.Remove(foreign) })
@@ -334,10 +339,37 @@ func runCmdOut(t *testing.T, name string, args ...string) string {
 	return string(out)
 }
 
+// appContainer returns the one container of an application's pod.
+//
+// podman kube play derives the container name from both the pod and the
+// container, so the name is asked for rather than assumed; the infra container
+// carries the same labels and is not what a caller means.
+func appContainer(t *testing.T, app string) string {
+	t.Helper()
+	out, err := exec.Command("podman", "ps", "--filter", "pod="+app, "--format", "{{.Names}}").Output()
+	if err != nil {
+		t.Fatalf("listing the containers of pod %s: %v", app, err)
+	}
+	var names []string
+	for _, n := range strings.Fields(string(out)) {
+		if !strings.HasSuffix(n, "-infra") {
+			names = append(names, n)
+		}
+	}
+	if len(names) != 1 {
+		t.Fatalf("want exactly one container in pod %s, got %v", app, names)
+	}
+	return names[0]
+}
+
 func containerEnv(t *testing.T) string {
 	t.Helper()
-	return runCmdOut(t, "podman", "inspect", renderer.ContainerName(appName),
-		"--format", "{{range .Config.Env}}{{println .}}{{end}}")
+	out, err := exec.Command("podman", "inspect", appContainer(t, appName),
+		"--format", "{{range .Config.Env}}{{println .}}{{end}}").Output()
+	if err != nil {
+		t.Fatalf("inspecting the container of %s: %v", appName, err)
+	}
+	return string(out)
 }
 
 func httpGet(t *testing.T, path string) string {
@@ -368,9 +400,11 @@ func waitForHealthy(t *testing.T, within time.Duration) {
 }
 
 // cleanup removes anything this test left on the host, whether it passed or not.
+// The unit directory is the real one, shared with every other test in this
+// package, so a unit left behind here fails the next test rather than this one.
 func cleanup(unitDir string) {
 	_ = exec.Command("systemctl", "--user", "stop", renderer.ServiceName(appName)).Run()
-	_ = os.Remove(filepath.Join(unitDir, renderer.FileName(appName)))
+	_ = os.Remove(filepath.Join(unitDir, renderer.KubeFileName(appName)))
 	_ = exec.Command("systemctl", "--user", "daemon-reload").Run()
-	_ = exec.Command("podman", "rm", "--force", "--time", "5", renderer.ContainerName(appName)).Run()
+	_ = exec.Command("podman", "pod", "rm", "--force", "--time", "5", appName).Run()
 }

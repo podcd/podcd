@@ -44,7 +44,7 @@ func TestExamplesCompile(t *testing.T) {
 	if app.Image == "" {
 		t.Fatal("local app image is empty")
 	}
-	if app.Healthcheck == nil || app.Healthcheck.HTTP == nil || app.Healthcheck.HTTP.Port != 8080 {
-		t.Fatalf("local app health check is not configured for port 8080: %+v", app.Healthcheck)
+	if !strings.Contains(string(app.Manifest), "readinessProbe:") {
+		t.Fatalf("the local app's healthcheck did not compile into a probe:\n%s", app.Manifest)
 	}
 }

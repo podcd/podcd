@@ -10,7 +10,6 @@ import (
 func testApp() model.Application {
 	app := model.Application{
 		Name:          "api",
-		Kind:          model.KindKube,
 		RestartPolicy: "always",
 		Resources:     model.Resources{Memory: "512M", CPU: "150%"},
 		Networks:      []string{"podman"},
@@ -89,9 +88,6 @@ func TestMarkersRoundTrip(t *testing.T) {
 	if m.SpecHash != u.SpecHash || m.SpecHash == "" {
 		t.Errorf("spec hash marker = %q, want %q", m.SpecHash, u.SpecHash)
 	}
-	if m.Kind != model.KindKube {
-		t.Errorf("kind marker = %q", m.Kind)
-	}
 	if m.Version != Version {
 		t.Errorf("renderer version marker = %q", m.Version)
 	}
@@ -102,11 +98,8 @@ func TestForeignUnitIsNotClaimed(t *testing.T) {
 	if m.Managed {
 		t.Error("a unit without podcd's header must never be treated as managed")
 	}
-	if _, ok := AppFromFileName("someone-elses.container"); ok {
+	if _, ok := AppFromFileName("someone-elses.kube"); ok {
 		t.Error("a file without the podcd- prefix must not be claimed")
-	}
-	if app, ok := AppFromFileName("podcd-api.container"); !ok || app != "api" {
-		t.Errorf("AppFromFileName(podcd-api.container) = %q, %v", app, ok)
 	}
 	if app, ok := AppFromFileName("podcd-api.kube"); !ok || app != "api" {
 		t.Errorf("AppFromFileName(podcd-api.kube) = %q, %v", app, ok)

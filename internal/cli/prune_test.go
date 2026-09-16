@@ -1,9 +1,38 @@
 package cli
 
 import (
+	"bytes"
+	"os"
+	"os/exec"
 	"strings"
 	"testing"
 )
+
+// requirePodman skips a test that reaches the real podman binary. Call it
+// after agentConfig, so the check runs under the same HOME the test does.
+//
+// That ordering is the whole point. These commands inspect the host before they
+// do anything, and there is no seam to fake that through the CLI, so the test
+// needs a podman that answers. On Linux a fresh HOME just yields an empty
+// rootless podman and everything runs; on macOS the machine connection lives in
+// HOME, so pointing HOME at a temp dir hides the VM and podman cannot answer at
+// all. Checking before the HOME swap would pass and then fail in the test.
+func requirePodman(t *testing.T) {
+	t.Helper()
+	// A skip that CI honours is a test that quietly stops running. CI has
+	// podman, so there it is a failure.
+	give := t.Skipf
+	if os.Getenv("CI") != "" {
+		give = t.Fatalf
+	}
+	if _, err := exec.LookPath("podman"); err != nil {
+		give("podman is not installed: %v", err)
+		return
+	}
+	if out, err := exec.Command("podman", "ps", "--format", "json").CombinedOutput(); err != nil {
+		give("podman cannot answer under this test's HOME: %s", bytes.TrimSpace(out))
+	}
+}
 
 // agentConfig writes a minimal agent config under a fresh HOME and returns
 // that HOME, so `setup()` finds it the same way a real invocation would.
@@ -30,6 +59,7 @@ func TestPruneRequiresNamesOrAll(t *testing.T) {
 
 func TestPruneWithNoManagedApplicationsIsANoOp(t *testing.T) {
 	agentConfig(t)
+	requirePodman(t)
 	out, code := run(t, "prune", "--all")
 	if code != 0 {
 		t.Fatalf("prune --all exit code = %d: %s", code, out)
@@ -41,6 +71,7 @@ func TestPruneWithNoManagedApplicationsIsANoOp(t *testing.T) {
 
 func TestPruneReportsAnUnknownNameWithoutAsking(t *testing.T) {
 	agentConfig(t)
+	requirePodman(t)
 	// -y skips the confirmation; there is still nothing on the host by that name.
 	out, code := run(t, "prune", "never-existed", "-y")
 	if code != 0 {
@@ -53,6 +84,7 @@ func TestPruneReportsAnUnknownNameWithoutAsking(t *testing.T) {
 
 func TestPruneAsksBeforeActingWithoutYes(t *testing.T) {
 	agentConfig(t)
+	requirePodman(t)
 	// stdin is not a terminal here, so the prompt reads EOF: that is a "no".
 	out, code := run(t, "prune", "never-existed")
 	if code != 0 {

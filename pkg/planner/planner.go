@@ -102,10 +102,7 @@ func imageDetails(app model.Application) []string {
 	for _, img := range images {
 		out = append(out, "image "+img)
 	}
-	if app.IsKube() {
-		out = append([]string{"pod with " + strconv.Itoa(len(images)) + " container(s), played by podman"}, out...)
-	}
-	return out
+	return append([]string{"pod with " + strconv.Itoa(len(images)) + " container(s), played by podman"}, out...)
 }
 
 func updateReason(cur model.ActualApp, unit renderer.Unit) string {
@@ -115,13 +112,11 @@ func updateReason(cur model.ActualApp, unit renderer.Unit) string {
 	return "unit file differs from the rendered unit (edited by hand, or written by an older podcd)"
 }
 
-// changeDetails explains an update: the unit lines that change and, for a kube workload, the manifest lines that change.
+// changeDetails explains an update: the unit lines that change, and the
+// manifest lines that change with them.
 func changeDetails(cur model.ActualApp, unit renderer.Unit) []string {
 	details := unitDiff(contentLines(string(cur.UnitContent)), contentLines(string(unit.Content)))
-	if unit.IsKube() {
-		details = append(details, unitDiff(manifestLines(cur.ManifestContent), manifestLines(unit.Manifest))...)
-	}
-	return details
+	return append(details, unitDiff(manifestLines(cur.ManifestContent), manifestLines(unit.Manifest))...)
 }
 
 // manifestLines prepares a played manifest for diffing.

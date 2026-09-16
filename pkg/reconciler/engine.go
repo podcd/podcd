@@ -113,32 +113,36 @@ type Result struct {
 	Elapsed time.Duration
 }
 
+// desiredState fetches Git and compiles it for this host.
+//
+// Secrets are fetched through a Provisioner while compiling, so only the ones
+// this host's own workloads name are ever read from a store. Revisions come
+// back even on failure, because a failed reconcile still records where it was.
+func (e *Engine) desiredState(ctx context.Context) (model.DesiredState, []string, map[string]string, error) {
+	index, values, revisions, offline, err := e.source.LoadIndex(ctx)
+	if err != nil {
+		return model.DesiredState{}, offline, nil, err
+	}
+	desired, err := index.Resolve(ctx, config.ResolveOptions{
+		Host:      e.source.Host,
+		Secrets:   NewProvisioner(index, e.source.Secrets),
+		Revisions: revisions,
+		Values:    values,
+	})
+	return desired, offline, revisions, err
+}
+
 // Plan loads Git, observes the host and returns what would change.
 // It makes no changes of its own.
 func (e *Engine) Plan(ctx context.Context) (Result, error) {
 	var res Result
 	res.Started = time.Now()
 
-	index, values, revisions, offline, err := e.source.LoadIndex(ctx)
+	desired, offline, _, err := e.desiredState(ctx)
 	if err != nil {
 		return res, err
 	}
 	res.Offline = offline
-
-	provisioned, err := Provision(ctx, index, e.cfg.StateDir, e.source.Secrets)
-	if err != nil {
-		return res, err
-	}
-
-	desired, err := index.Resolve(ctx, config.ResolveOptions{
-		Host:               e.source.Host,
-		ProvisionedSecrets: provisioned,
-		Revisions:          revisions,
-		Values:             values,
-	})
-	if err != nil {
-		return res, err
-	}
 	res.Desired = desired
 
 	actual, err := e.rt.Inspect(ctx)
@@ -176,29 +180,12 @@ func (e *Engine) Reconcile(ctx context.Context, opts Options) (Result, error) {
 	st.Host = e.ident.Host
 	st.MachineID = e.ident.MachineID
 
-	index, values, revisions, offline, indexErr := e.source.LoadIndex(ctx)
-	if indexErr != nil {
-		e.recordFailure(&st, started, nil, indexErr)
-		return res, indexErr
-	}
-	res.Offline = offline
-
-	provisioned, provErr := Provision(ctx, index, e.cfg.StateDir, e.source.Secrets)
-	if provErr != nil {
-		e.recordFailure(&st, started, revisions, provErr)
-		return res, provErr
-	}
-
-	desired, resolveErr := index.Resolve(ctx, config.ResolveOptions{
-		Host:               e.source.Host,
-		ProvisionedSecrets: provisioned,
-		Revisions:          revisions,
-		Values:             values,
-	})
+	desired, offline, revisions, resolveErr := e.desiredState(ctx)
 	if resolveErr != nil {
 		e.recordFailure(&st, started, revisions, resolveErr)
 		return res, resolveErr
 	}
+	res.Offline = offline
 	res.Desired = desired
 
 	actual, err := e.rt.Inspect(ctx)
@@ -312,7 +299,7 @@ func (e *Engine) checkHealth(ctx context.Context, desired model.DesiredState, ap
 			bad = append(bad, fmt.Sprintf("%s (%s: %s)", app.Name, h.Status, h.Message))
 			e.log.Error("application is not healthy", "app", app.Name, "status", string(h.Status), "detail", h.Message)
 		} else {
-			e.log.Debug("application is healthy", "app", app.Name, "probe", h.Probe, "detail", h.Message)
+			e.log.Debug("application is healthy", "app", app.Name, "detail", h.Message)
 		}
 	}
 	if len(bad) > 0 {
@@ -330,12 +317,12 @@ func (e *Engine) Index(ctx context.Context, only ...string) (*config.Index, conf
 
 // Health probes the desired applications without changing anything.
 func (e *Engine) Health(ctx context.Context) ([]model.Health, error) {
-	load, err := e.source.LoadDesiredState(ctx)
+	desired, _, _, err := e.desiredState(ctx)
 	if err != nil {
 		return nil, err
 	}
 	var out []model.Health
-	for _, app := range load.Desired.Applications {
+	for _, app := range desired.Applications {
 		h, err := e.rt.Health(ctx, app)
 		if err != nil {
 			h = model.Health{App: app.Name, Status: model.HealthUnknown, Message: err.Error(), CheckedAt: time.Now().UTC()}

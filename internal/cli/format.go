@@ -104,7 +104,7 @@ func printHealth(w io.Writer, results []model.Health) {
 	fmt.Fprintln(w, "health")
 	tw := table(w)
 	for _, h := range sorted {
-		fmt.Fprintf(tw, "  %s\t%s\t%s\t%s\n", h.App, h.Status, h.Probe, h.Message)
+		fmt.Fprintf(tw, "  %s\t%s\t%s\n", h.App, h.Status, h.Message)
 	}
 	tw.Flush()
 }

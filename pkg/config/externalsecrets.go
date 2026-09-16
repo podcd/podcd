@@ -76,9 +76,6 @@ type FileStoreProvider struct {
 
 // ExternalSecretSpec is the body of an ExternalSecret document.
 type ExternalSecretSpec struct {
-	// RefreshInterval controls how often the secret is re-fetched on reconcile.
-	// Use "0" to fetch only once. Defaults to the agent's reconcile interval.
-	RefreshInterval string `json:"refreshInterval,omitempty"`
 	// SecretStoreRef names the SecretStore to use.
 	SecretStoreRef SecretStoreRef `json:"secretStoreRef"`
 	// Target describes the Kubernetes Secret to create.

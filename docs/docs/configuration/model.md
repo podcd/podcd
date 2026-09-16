@@ -99,7 +99,6 @@ A host's application list can also name a plain Kubernetes `Pod`, played by podm
 
 - referenced ConfigMaps and Secrets must exist, or be marked optional
 - host port conflicts
-- the first readiness or liveness probe on a published port becomes the health check
 
 ```yaml
 apiVersion: v1
@@ -119,7 +118,7 @@ spec:
         httpGet: { path: /ready, port: 9200 }
 ```
 
-`Secret`s in Git hold references, not plaintext values - see [Secrets](secrets.md). Values are resolved on the host, written to a 0600 file outside the unit directory, and displayed as a hash in `podcd plan`.
+A `Secret` the pod names is either written in Git or fetched on the host over an `ExternalSecret` - see [Secrets](secrets.md).
 
 Overrides for a Pod use strategic merge semantics. Containers merge by name and ports merge by `containerPort`, which matches the expectation of a Pod author:
 
@@ -151,7 +150,7 @@ groups:
 `web` overrides `base`, and the host overrides both. An override merges fields rather than replacing the application:
 
 - scalars: a non-empty value in the higher layer wins
-- maps (`env`, `secretEnv`, `labels`): merged key by key, higher layer wins per key
+- maps (`env`, `labels`): merged key by key, higher layer wins per key
 - lists (`ports`, `volumes`, `networks`, `command`, `entrypoint`): replaced wholesale, never appended - appending to a port list has no sane meaning and hides what is actually running
 
 ```yaml

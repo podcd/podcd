@@ -426,9 +426,9 @@ spec:
       envFrom:
         - configMapRef: {name: web-config}
       env:
-        - name: DB_PASSWORD
+        - name: CA_CERT
           valueFrom:
-            secretKeyRef: {name: web-secret, key: password}
+            secretKeyRef: {name: web-secret, key: ca.crt}
 `,
 		"configmap.yaml.tpl": `
 apiVersion: v1
@@ -447,7 +447,7 @@ kind: Secret
 metadata:
   name: web-secret
 stringData:
-  password: '{{ .Values.passwordRef }}'
+  ca.crt: '{{ .Values.caCert }}'
 `,
 		"host.yaml": `
 apiVersion: gitops.podcd.io/v1
@@ -457,10 +457,9 @@ spec: {applications: [web]}
 `,
 	}
 	ix := loadIndex(t, files)
-	t.Setenv("DB_PASSWORD", "hunter2")
 
 	desired, err := ix.Resolve(context.Background(), ResolveOptions{Host: "vm-1", Values: Values{
-		"logLevel": "debug", "extra": "hi", "passwordRef": "env:DB_PASSWORD",
+		"logLevel": "debug", "extra": "hi", "caCert": "PEM-CHAIN",
 	}})
 	if err != nil {
 		t.Fatal(err)
@@ -473,49 +472,8 @@ spec: {applications: [web]}
 	if !strings.Contains(manifest, "LOG_LEVEL: debug") || !strings.Contains(manifest, "EXTRA: hi") {
 		t.Fatalf("templated + conditional ConfigMap data missing from manifest:\n%s", manifest)
 	}
-	if !strings.Contains(manifest, "password:") {
-		t.Fatalf("resolved secret missing from manifest:\n%s", manifest)
-	}
-}
-
-// TestSecretTemplateStillRejectsPlaintext: a Secret template goes through the
-// same decode path as a Secret file, reference-only check included - it is
-// not a way to smuggle a literal past the rule.
-func TestSecretTemplateStillRejectsPlaintext(t *testing.T) {
-	files := map[string]string{
-		"pod.yaml": `
-apiVersion: v1
-kind: Pod
-metadata:
-  name: web
-spec:
-  containers:
-    - name: app
-      image: nginx
-      env:
-        - name: DB_PASSWORD
-          valueFrom:
-            secretKeyRef: {name: web-secret, key: password}
-`,
-		"secret.yaml.tpl": `
-apiVersion: v1
-kind: Secret
-metadata:
-  name: web-secret
-stringData:
-  password: '{{ .Values.literal }}'
-`,
-		"host.yaml": `
-apiVersion: gitops.podcd.io/v1
-kind: Host
-metadata: {name: vm-1}
-spec: {applications: [web]}
-`,
-	}
-	ix := loadIndex(t, files)
-	_, err := ix.Resolve(context.Background(), ResolveOptions{Host: "vm-1", Values: Values{"literal": "hunter2"}})
-	if err == nil || !strings.Contains(err.Error(), "reference") {
-		t.Fatalf("a Secret template rendering to a plaintext value must still be rejected, got %v", err)
+	if !strings.Contains(manifest, "PEM-CHAIN") {
+		t.Fatalf("templated Secret value missing from manifest:\n%s", manifest)
 	}
 }
 

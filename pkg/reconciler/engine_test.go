@@ -96,9 +96,9 @@ func (f *fakeRuntime) Restart(_ context.Context, app string) error {
 
 func (f *fakeRuntime) Health(_ context.Context, app model.Application) (model.Health, error) {
 	if f.unhealthy[app.Name] {
-		return model.Health{App: app.Name, Status: model.HealthUnhealthy, Probe: "fake", Message: "it is broken"}, nil
+		return model.Health{App: app.Name, Status: model.HealthUnhealthy, Message: "it is broken"}, nil
 	}
-	return model.Health{App: app.Name, Status: model.HealthHealthy, Probe: "fake"}, nil
+	return model.Health{App: app.Name, Status: model.HealthHealthy}, nil
 }
 
 func (f *fakeRuntime) Logs(context.Context, string, int) (string, error) { return "", nil }
