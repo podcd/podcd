@@ -79,6 +79,11 @@ func (h hostDocuments) podToApplication(ctx context.Context, name string, pod co
 		Labels:        maps.Clone(pod.Labels),
 		Networks:      podNetworks(pod),
 	}
+	for _, c := range pod.Spec.InitContainers {
+		if c.Name != "" {
+			app.InitContainers = append(app.InitContainers, c.Name)
+		}
+	}
 
 	seenNames := map[string]bool{}
 	for _, c := range allContainers(pod) {

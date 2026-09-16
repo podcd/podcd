@@ -134,6 +134,10 @@ type Application struct {
 	// Images lists every image a kube workload runs, for reporting.
 	// Image holds the first one, so the common code paths have something to show.
 	Images []string `json:"images,omitempty"`
+	// InitContainers identifies containers that are expected to exit successfully
+	// before the regular workload starts. It is runtime-only metadata derived from
+	// the Pod manifest, never rendered or persisted.
+	InitContainers []string `json:"-"`
 
 	Image      string   `json:"image"`
 	Command    []string `json:"command,omitempty"`

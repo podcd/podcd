@@ -186,8 +186,9 @@ type containerInfo struct {
 	name  string
 	image string
 	// state is podman's own word for it: running, exited, created, paused.
-	state string
-	infra bool
+	state    string
+	exitCode int
+	infra    bool
 }
 
 // listContainers asks Podman for everything labelled as ours, grouped by app.
@@ -205,12 +206,13 @@ func (r *Runtime) listContainers(ctx context.Context, app string) (map[string][]
 		return nil, fmt.Errorf("listing containers: %w", err)
 	}
 	var raw []struct {
-		ID      string            `json:"Id"`
-		Names   []string          `json:"Names"`
-		Image   string            `json:"Image"`
-		State   string            `json:"State"`
-		IsInfra bool              `json:"IsInfra"`
-		Labels  map[string]string `json:"Labels"`
+		ID       string            `json:"Id"`
+		Names    []string          `json:"Names"`
+		Image    string            `json:"Image"`
+		State    string            `json:"State"`
+		ExitCode int               `json:"ExitCode"`
+		IsInfra  bool              `json:"IsInfra"`
+		Labels   map[string]string `json:"Labels"`
 	}
 	trimmed := strings.TrimSpace(out)
 	if trimmed == "" || trimmed == "null" {
@@ -234,7 +236,7 @@ func (r *Runtime) listContainers(ctx context.Context, app string) (map[string][]
 			name = c.Names[0]
 		}
 		result[app] = append(result[app], containerInfo{
-			id: id, name: name, image: c.Image, state: c.State, infra: c.IsInfra,
+			id: id, name: name, image: c.Image, state: c.State, exitCode: c.ExitCode, infra: c.IsInfra,
 		})
 	}
 	for app := range result {
@@ -409,24 +411,59 @@ func (r *Runtime) Restart(ctx context.Context, app string) error {
 	return nil
 }
 
-// Health reports whether every workload container is running. Podman
-// healthchecks are intentionally not part of podcd's readiness decision.
+// Health reports whether the init containers completed successfully and every
+// regular workload container is running. Podman healthchecks are intentionally
+// not part of podcd's readiness decision.
 func (r *Runtime) Health(ctx context.Context, app model.Application) (model.Health, error) {
 	containers, err := r.listContainers(ctx, app.Name)
 	if err != nil {
 		return model.Health{App: app.Name, CheckedAt: time.Now().UTC()}, err
 	}
-	return healthForContainers(app.Name, workload(containers[app.Name]), time.Now().UTC()), nil
+	return healthForContainers(app.Name, workload(containers[app.Name]), app.InitContainers, time.Now().UTC()), nil
 }
 
-func healthForContainers(app string, containers []containerInfo, checkedAt time.Time) model.Health {
+func healthForContainers(app string, containers []containerInfo, initNames []string, checkedAt time.Time) model.Health {
 	h := model.Health{App: app, CheckedAt: checkedAt}
-	if len(containers) == 0 {
+	regular, init := splitInitContainers(containers, initNames)
+	if len(regular) == 0 {
 		h.Status, h.Message = model.HealthUnhealthy, "no containers"
 		return h
 	}
+	var incomplete, failed []string
+	seenInit := make(map[string]bool, len(init))
+	for _, c := range init {
+		for _, name := range initNames {
+			if c.name == name || strings.HasSuffix(c.name, "-"+name) {
+				seenInit[name] = true
+				break
+			}
+		}
+		switch c.state {
+		case "exited":
+			if c.exitCode != 0 {
+				failed = append(failed, fmt.Sprintf("%s exited with code %d", c.name, c.exitCode))
+			}
+		case "running", "created", "configured":
+			incomplete = append(incomplete, c.name)
+		default:
+			failed = append(failed, fmt.Sprintf("%s is %s", c.name, cmp.Or(c.state, "in an unknown state")))
+		}
+	}
+	for _, name := range initNames {
+		if !seenInit[name] {
+			incomplete = append(incomplete, name)
+		}
+	}
+	if len(failed) > 0 {
+		h.Status, h.Message = model.HealthUnhealthy, "init container failed: "+strings.Join(failed, ", ")
+		return h
+	}
+	if len(incomplete) > 0 {
+		h.Status, h.Message = model.HealthUnknown, "init container still running: "+strings.Join(incomplete, ", ")
+		return h
+	}
 	var notRunning []string
-	for _, c := range containers {
+	for _, c := range regular {
 		if c.state != "running" {
 			notRunning = append(notRunning, fmt.Sprintf("%s is %s", c.name, cmp.Or(c.state, "in an unknown state")))
 		}
@@ -437,6 +474,28 @@ func healthForContainers(app string, containers []containerInfo, checkedAt time.
 	}
 	h.Status, h.Message = model.HealthHealthy, "all workload containers running"
 	return h
+}
+
+// splitInitContainers separates completed setup work from the regular workload.
+// podman kube play prefixes a Kubernetes container name with the pod name, so
+// matching the final "-<container>" portion works for both Podman-generated
+// names and plain names returned by other Podman versions.
+func splitInitContainers(containers []containerInfo, initNames []string) (regular, init []containerInfo) {
+	for _, c := range containers {
+		isInit := false
+		for _, name := range initNames {
+			if c.name == name || strings.HasSuffix(c.name, "-"+name) {
+				isInit = true
+				break
+			}
+		}
+		if isInit {
+			init = append(init, c)
+		} else {
+			regular = append(regular, c)
+		}
+	}
+	return regular, init
 }
 
 // WaitHealthy asks again until the application is healthy or the retries run

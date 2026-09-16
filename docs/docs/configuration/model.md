@@ -45,9 +45,9 @@ spec:
         httpGet: { path: /, port: 80 }
 ```
 
-podman runs the `livenessProbe` and reports the verdict; podcd reads it back
-and never probes anything itself. `readinessProbe` and `startupProbe` are
-ignored by podman, so a check written as either does nothing.
+podcd considers a workload healthy when its regular containers are running; it does not interpret container healthchecks. `readinessProbe` and `startupProbe` are ignored by podman, so a check written as either does nothing.
+
+`initContainers` are supported as well. Podman runs them once, in declaration order, before regular containers. A completed init container with exit code zero is expected to be exited; podcd waits while an init container is still running and treats a non-zero exit as an unhealthy workload.
 
 Podman has no field for networks, so podcd takes them as an annotation and
 turns them into the unit's `Network=` lines:

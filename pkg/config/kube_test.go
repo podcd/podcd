@@ -113,6 +113,25 @@ func TestPodProbePassesThroughAndPortsAreCollected(t *testing.T) {
 	}
 }
 
+func TestPodRetainsInitContainerNamesForRuntimeHealth(t *testing.T) {
+	files := strings.Replace(podFiles, "spec:\n  containers:", `spec:
+  initContainers:
+    - name: prepare
+      image: example.com/prepare`+digest+`
+  containers:`, 1)
+	ix := loadIndex(t, map[string]string{"pod.yaml": files})
+	got, err := ix.Resolve(context.Background(), ResolveOptions{Host: "vm-1"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if names := got.Applications[0].InitContainers; len(names) != 1 || names[0] != "prepare" {
+		t.Fatalf("init containers = %v, want [prepare]", names)
+	}
+	if !strings.Contains(string(got.Applications[0].Manifest), "initContainers:") {
+		t.Fatal("the played manifest lost initContainers")
+	}
+}
+
 func TestPodImageMayBeATag(t *testing.T) {
 	files := map[string]string{"pod.yaml": strings.Replace(podFiles, "example.com/side"+digest, "example.com/side:latest", 1)}
 	if _, err := resolvePod(t, files, "vm-1"); err != nil {
