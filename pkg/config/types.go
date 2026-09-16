@@ -10,8 +10,6 @@ import (
 	"fmt"
 
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
-
-	"github.com/podcd/podcd/pkg/model"
 )
 
 // APIVersion is podcd's own API group and version.
@@ -22,7 +20,6 @@ const CoreAPIVersion = "v1"
 
 // Kinds understood by the loader.
 const (
-	KindApplication = "Application"
 	KindGroup       = "Group"
 	KindEnvironment = "Environment"
 	KindHost        = "Host"
@@ -56,53 +53,8 @@ func (s Source) String() string {
 	return fmt.Sprintf("%s/%s:%d", s.Repo, s.Path, s.Line)
 }
 
-// AppSpec is an application definition, or a partial override of one.
-//
-// Merge rules, applied in the documented precedence order:
-//   - scalars: a non-empty value in the higher layer wins
-//   - maps (env, labels): merged key by key, higher layer wins per key
-//   - slices (ports, volumes, networks, command, envFrom): replaced wholesale, never appended
-//   - healthcheck, resources: replaced wholesale when present
-//
-// Slices replace rather than merge, appending has no sane semantics for a port list and hides what is actually running.
-type AppSpec struct {
-	Image      string   `json:"image,omitempty"`
-	Command    []string `json:"command,omitempty"`
-	Entrypoint []string `json:"entrypoint,omitempty"`
-
-	Env     map[string]string `json:"env,omitempty"`
-	EnvFrom []AppEnvFrom      `json:"envFrom,omitempty"`
-
-	Ports    []model.Port      `json:"ports,omitempty"`
-	Volumes  []model.Volume    `json:"volumes,omitempty"`
-	Networks []string          `json:"networks,omitempty"`
-	Labels   map[string]string `json:"labels,omitempty"`
-
-	RestartPolicy string `json:"restartPolicy,omitempty"`
-	User          string `json:"user,omitempty"`
-	WorkingDir    string `json:"workingDir,omitempty"`
-	StopTimeout   *int   `json:"stopTimeout,omitempty"`
-
-	Healthcheck *model.Healthcheck `json:"healthcheck,omitempty"`
-	Resources   *model.Resources   `json:"resources,omitempty"`
-}
-
-// AppEnvFrom injects all keys from a ConfigMap or Secret as environment variables.
-// Mirrors corev1.EnvFromSource for the Application sugar layer.
-type AppEnvFrom struct {
-	ConfigMapRef *AppLocalObjectRef `json:"configMapRef,omitempty"`
-	SecretRef    *AppLocalObjectRef `json:"secretRef,omitempty"`
-	// Prefix prepends a string to every key from the source.
-	Prefix string `json:"prefix,omitempty"`
-}
-
-// AppLocalObjectRef names a ConfigMap or Secret by name.
-type AppLocalObjectRef struct {
-	Name string `json:"name"`
-}
-
 // Override is a partial change to one workload, kept raw until resolution.
-// How it is applied depends on what it targets: an Application takes an AppSpec merge, a Pod takes a strategic merge patch.
+// It is applied to the Pod it targets as a strategic merge patch.
 type Override json.RawMessage
 
 // UnmarshalJSON keeps the raw bytes.

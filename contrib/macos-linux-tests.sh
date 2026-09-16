@@ -67,18 +67,26 @@ podman machine ssh "
   fi
 "
 
-# The image ships no make. Layer it on rather than reimplementing the Makefile
-# here, so every target keeps working as the Makefile grows. --apply-live lands
-# it in the running system, so this needs no reboot.
 if ! podman machine ssh 'command -v make >/dev/null 2>&1'; then
   say "installing make in the VM (rpm-ostree, no reboot)"
   podman machine ssh 'sudo rpm-ostree install --apply-live --allow-inactive -y make' >/dev/null ||
     die "could not install make in the VM; try: podman machine ssh 'sudo rpm-ostree install --apply-live make'"
 fi
 
-# Linger keeps the user manager alive for the systemd units the e2e tests write,
-# instead of tearing them down when the ssh session ends.
+if ! podman machine ssh 'systemctl is-active --quiet network-online.target'; then
+  say "activating network-online.target in the VM (else every unit start stalls)"
+  podman machine ssh '
+    sudo systemctl start network-online.target
+    systemctl --user reset-failed podman-user-wait-network-online.service 2>/dev/null || true
+  '
+fi
+
 podman machine ssh "loginctl enable-linger \$(id -un) 2>/dev/null || true"
+
+if podman machine ssh 'systemctl --user is-active --quiet podcd-agent.service'; then
+  say "WARNING: podcd-agent.service is running in the VM and shares the unit
+    directory with the tests. Stop it first: podman machine ssh 'systemctl --user stop podcd-agent.service'"
+fi
 
 say "running: make ${TARGETS[*]}"
 # CGO_ENABLED=0 because the image has no C compiler, and the Makefile turns the

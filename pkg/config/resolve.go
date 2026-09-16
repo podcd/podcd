@@ -1,21 +1,15 @@
 package config
 
 import (
-	"bytes"
 	"cmp"
 	"context"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"maps"
 	"slices"
-	"strconv"
 	"strings"
-	"time"
 
 	corev1 "k8s.io/api/core/v1"
-	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
-	"k8s.io/apimachinery/pkg/util/intstr"
 
 	"github.com/podcd/podcd/pkg/model"
 )
@@ -139,40 +133,19 @@ func (ix *Index) Resolve(ctx context.Context, opts ResolveOptions) (model.Desire
 			origins []string
 			err     error
 		)
-		if doc, ok := docs.pod(name); ok {
-			pod := doc.Spec
-			src = doc.Source
-			origins, err = overlay(layers, name, "pod", src, func(o Override) (e error) {
-				pod, e = patchPod(pod, o)
-				return e
-			})
-			if err == nil {
-				app, err = docs.podToApplication(ctx, name, pod, opts.Secrets)
-			}
-		} else if doc, ok := docs.application(name); ok {
-			spec := doc.Spec
-			src = doc.Source
-			origins, err = overlay(layers, name, "application", src, func(o Override) error {
-				over, e := decodeAppOverride(o)
-				spec = mergeAppSpec(spec, over)
-				return e
-			})
-			if err == nil {
-				var pod corev1.Pod
-				pod, err = appSpecToPod(name, spec)
-				if err == nil {
-					app, err = docs.podToApplication(ctx, name, pod, opts.Secrets)
-					if err == nil && spec.Resources != nil {
-						app.Resources = *spec.Resources
-					}
-					if err == nil && len(spec.Networks) > 0 {
-						app.Networks = slices.Sorted(slices.Values(spec.Networks))
-					}
-				}
-			}
-		} else {
-			p.add("application %q is referenced by host %q but never defined (as an Application or a Pod)", name, opts.Host)
+		doc, ok := docs.pod(name)
+		if !ok {
+			p.add("application %q is referenced by host %q but no Pod defines it", name, opts.Host)
 			continue
+		}
+		pod := doc.Spec
+		src = doc.Source
+		origins, err = overlay(layers, name, "pod", src, func(o Override) (e error) {
+			pod, e = patchPod(pod, o)
+			return e
+		})
+		if err == nil {
+			app, err = docs.podToApplication(ctx, name, pod, opts.Secrets)
 		}
 		if err != nil {
 			p.errs = append(p.errs, err)
@@ -253,23 +226,11 @@ func (ix *Index) renderTemplates(values Values) (*documents, error) {
 	return &rendered, nil
 }
 
-// checkNoOverlap is put's "defined twice" rule across the two sets, plus
-// the Application/Pod shared-namespace rule.
+// checkNoOverlap is put's "defined twice" rule across the two sets.
 func (ix *Index) checkNoOverlap(rendered *documents) error {
-	for name, doc := range rendered.Applications {
-		if prev, ok := ix.Applications[name]; ok {
-			return fmt.Errorf("Application %q is defined twice: %s and %s (rendered)", name, prev.Source, doc.Source)
-		}
-		if prev, ok := ix.Pods[name]; ok {
-			return fmt.Errorf("%q is both a Pod (%s) and an Application (%s, rendered); a host lists both under applications, so the name must be unique", name, prev.Source, doc.Source)
-		}
-	}
 	for name, doc := range rendered.Pods {
 		if prev, ok := ix.Pods[name]; ok {
 			return fmt.Errorf("Pod %q is defined twice: %s and %s (rendered)", name, prev.Source, doc.Source)
-		}
-		if prev, ok := ix.Applications[name]; ok {
-			return fmt.Errorf("%q is both an Application (%s) and a Pod (%s, rendered); a host lists both under applications, so the name must be unique", name, prev.Source, doc.Source)
 		}
 	}
 	for name, doc := range rendered.ConfigMaps {
@@ -293,14 +254,6 @@ func (ix *Index) checkNoOverlap(rendered *documents) error {
 type hostDocuments struct {
 	*Index
 	rendered *documents
-}
-
-func (h hostDocuments) application(name string) (Doc[AppSpec], bool) {
-	if d, ok := h.Applications[name]; ok {
-		return d, true
-	}
-	d, ok := h.rendered.Applications[name]
-	return d, ok
 }
 
 func (h hostDocuments) pod(name string) (Doc[corev1.Pod], bool) {
@@ -367,353 +320,6 @@ func overlay(layers []layer, name, kind string, src Source, apply func(Override)
 	return origins, nil
 }
 
-// decodeAppOverride reads an override aimed at an Application, strictly.
-func decodeAppOverride(o Override) (AppSpec, error) {
-	var spec AppSpec
-	if len(o) == 0 {
-		return spec, nil
-	}
-	dec := json.NewDecoder(bytes.NewReader(o))
-	dec.DisallowUnknownFields()
-	if err := dec.Decode(&spec); err != nil {
-		return spec, err
-	}
-	return spec, nil
-}
-
-// mergeAppSpec layers over on top of base. See AppSpec for the rules.
-func mergeAppSpec(base, over AppSpec) AppSpec {
-	out := base
-	if over.Image != "" {
-		out.Image = over.Image
-	}
-	if over.Command != nil {
-		out.Command = over.Command
-	}
-	if over.Entrypoint != nil {
-		out.Entrypoint = over.Entrypoint
-	}
-	if over.Env != nil {
-		out.Env = mergeMap(base.Env, over.Env)
-	}
-	if over.Labels != nil {
-		out.Labels = mergeMap(base.Labels, over.Labels)
-	}
-	if over.Ports != nil {
-		out.Ports = over.Ports
-	}
-	if over.Volumes != nil {
-		out.Volumes = over.Volumes
-	}
-	if over.Networks != nil {
-		out.Networks = over.Networks
-	}
-	if over.RestartPolicy != "" {
-		out.RestartPolicy = over.RestartPolicy
-	}
-	if over.User != "" {
-		out.User = over.User
-	}
-	if over.WorkingDir != "" {
-		out.WorkingDir = over.WorkingDir
-	}
-	if over.StopTimeout != nil {
-		out.StopTimeout = over.StopTimeout
-	}
-	if over.Healthcheck != nil {
-		out.Healthcheck = over.Healthcheck
-	}
-	if over.Resources != nil {
-		out.Resources = over.Resources
-	}
-	return out
-}
-
-func mergeMap(base, over map[string]string) map[string]string {
-	out := make(map[string]string, len(base)+len(over))
-	maps.Copy(out, base)
-	maps.Copy(out, over)
-	return out
-}
-
-// appSpecToPod validates a merged AppSpec and converts it to a corev1.Pod.
-// The result is passed to podToApplication, which handles Pod-level validation
-// and manifest assembly.
-func appSpecToPod(name string, spec AppSpec) (corev1.Pod, error) {
-	p := problems{prefix: fmt.Sprintf("application %q: ", name)}
-
-	if !validName(name) {
-		p.add("name must be lowercase letters, digits and dashes")
-	}
-	if spec.Image == "" {
-		p.add("no image")
-	}
-
-	container := corev1.Container{
-		Name:       name,
-		Image:      spec.Image,
-		Args:       slices.Clone(spec.Command),
-		Command:    slices.Clone(spec.Entrypoint),
-		WorkingDir: spec.WorkingDir,
-	}
-
-	// env vars - sorted for determinism
-	for _, k := range slices.Sorted(maps.Keys(spec.Env)) {
-		if !validEnvName(k) {
-			p.add("environment variable name %q is not valid", k)
-			continue
-		}
-		container.Env = append(container.Env, corev1.EnvVar{Name: k, Value: spec.Env[k]})
-	}
-
-	// envFrom (configmap / secret injection)
-	for _, ef := range spec.EnvFrom {
-		src := corev1.EnvFromSource{Prefix: ef.Prefix}
-		if ef.ConfigMapRef != nil {
-			src.ConfigMapRef = &corev1.ConfigMapEnvSource{
-				LocalObjectReference: corev1.LocalObjectReference{Name: ef.ConfigMapRef.Name},
-			}
-		}
-		if ef.SecretRef != nil {
-			src.SecretRef = &corev1.SecretEnvSource{
-				LocalObjectReference: corev1.LocalObjectReference{Name: ef.SecretRef.Name},
-			}
-		}
-		container.EnvFrom = append(container.EnvFrom, src)
-	}
-
-	// ports - sort for deterministic manifest
-	sortedPorts := slices.Clone(spec.Ports)
-	slices.SortFunc(sortedPorts, func(a, b model.Port) int {
-		return cmp.Or(cmp.Compare(a.Host, b.Host), cmp.Compare(a.Container, b.Container))
-	})
-	for _, port := range sortedPorts {
-		proto := corev1.Protocol(strings.ToUpper(cmp.Or(port.Protocol, "tcp")))
-		if proto != corev1.ProtocolTCP && proto != corev1.ProtocolUDP {
-			p.add("port protocol %q must be tcp or udp", port.Protocol)
-		}
-		if !validPort(port.Host) {
-			p.add("host port %d is out of range", port.Host)
-		}
-		if !validPort(port.Container) {
-			p.add("container port %d is out of range", port.Container)
-		}
-		container.Ports = append(container.Ports, corev1.ContainerPort{
-			HostPort:      int32(port.Host),
-			ContainerPort: int32(port.Container),
-			Protocol:      proto,
-			HostIP:        port.HostIP,
-		})
-	}
-
-	// volumes - sort first for a deterministic manifest regardless of input order
-	sortedVols := slices.Clone(spec.Volumes)
-	slices.SortFunc(sortedVols, func(a, b model.Volume) int {
-		return strings.Compare(a.Destination, b.Destination)
-	})
-	var podVolumes []corev1.Volume
-	for i, v := range sortedVols {
-		if v.Source == "" || v.Destination == "" {
-			p.add("volume needs both source and destination")
-			continue
-		}
-		if !strings.HasPrefix(v.Destination, "/") {
-			p.add("volume destination %q must be an absolute path", v.Destination)
-			continue
-		}
-		volName := fmt.Sprintf("vol-%d", i)
-		podVolumes = append(podVolumes, corev1.Volume{
-			Name: volName,
-			VolumeSource: corev1.VolumeSource{
-				HostPath: &corev1.HostPathVolumeSource{Path: v.Source},
-			},
-		})
-		mount := corev1.VolumeMount{Name: volName, MountPath: v.Destination}
-		for _, opt := range strings.Split(v.Options, ",") {
-			if strings.TrimSpace(opt) == "ro" {
-				mount.ReadOnly = true
-			}
-		}
-		container.VolumeMounts = append(container.VolumeMounts, mount)
-	}
-
-	// user - numeric UID only; kube play does not resolve usernames
-	if spec.User != "" {
-		uid := spec.User
-		if i := strings.Index(uid, ":"); i >= 0 {
-			uid = uid[:i]
-		}
-		n, err := strconv.ParseInt(uid, 10, 64)
-		if err != nil {
-			p.add("user %q must be a numeric UID (or UID:GID); names are not supported in kube manifests", spec.User)
-		} else {
-			container.SecurityContext = &corev1.SecurityContext{RunAsUser: &n}
-		}
-	}
-
-	// healthcheck -> readiness probe, which podman runs once the pod is played.
-	if hc := spec.Healthcheck; hc != nil {
-		set := 0
-		if hc.HTTP != nil {
-			set++
-			if !validPort(hc.HTTP.Port) {
-				p.add("healthcheck http port %d is out of range", hc.HTTP.Port)
-			}
-		}
-		if hc.TCP != nil {
-			set++
-			if !validPort(hc.TCP.Port) {
-				p.add("healthcheck tcp port %d is out of range", hc.TCP.Port)
-			}
-		}
-		if hc.Exec != nil {
-			set++
-			if len(hc.Exec.Command) == 0 {
-				p.add("healthcheck exec needs a command")
-			}
-		}
-		if set > 1 {
-			p.add("healthcheck must set at most one of http, tcp, exec")
-		}
-		for _, d := range []string{hc.Interval, probeTimeout(hc)} {
-			if d == "" {
-				continue
-			}
-			if err := checkDuration(d); err != nil {
-				p.add("healthcheck: %v", err)
-			}
-		}
-		if hc.Retries < 0 {
-			p.add("healthcheck retries must not be negative")
-		}
-
-		// Build the probe only when validation passed.
-		if probe := appHealthcheckToProbe(hc, spec.Ports); probe != nil {
-			container.ReadinessProbe = probe
-		} else if set == 1 {
-			p.add("healthcheck port is not published by this application; add it to ports")
-		}
-	}
-
-	restartPolicy := appRestartPolicyToKube(cmp.Or(spec.RestartPolicy, "always"))
-	switch spec.RestartPolicy {
-	case "", "always", "on-failure", "no":
-	default:
-		p.add("restartPolicy %q must be always, on-failure or no", spec.RestartPolicy)
-	}
-
-	var gracePeriod *int64
-	if spec.StopTimeout != nil {
-		t := int64(*spec.StopTimeout)
-		gracePeriod = &t
-	}
-
-	labels := make(map[string]string, len(spec.Labels))
-	for k, v := range spec.Labels {
-		labels[k] = v
-	}
-
-	if err := p.err(); err != nil {
-		return corev1.Pod{}, err
-	}
-
-	return corev1.Pod{
-		ObjectMeta: metav1.ObjectMeta{Name: name, Labels: labels},
-		Spec: corev1.PodSpec{
-			Containers:                    []corev1.Container{container},
-			Volumes:                       podVolumes,
-			RestartPolicy:                 restartPolicy,
-			TerminationGracePeriodSeconds: gracePeriod,
-		},
-	}, nil
-}
-
-// appRestartPolicyToKube maps podcd restart policy names to Kubernetes RestartPolicy values.
-func appRestartPolicyToKube(s string) corev1.RestartPolicy {
-	switch s {
-	case "on-failure":
-		return corev1.RestartPolicyOnFailure
-	case "no":
-		return corev1.RestartPolicyNever
-	default:
-		return corev1.RestartPolicyAlways
-	}
-}
-
-// appHealthcheckToProbe converts an Application's healthcheck shorthand into the
-// readiness probe podman will run.
-//
-// The shorthand names a host port, because that is the number the author wrote
-// under ports; the probe runs inside the pod and needs the container port it
-// maps to. An unpublished port has no such mapping, and returns nil.
-func appHealthcheckToProbe(hc *model.Healthcheck, ports []model.Port) *corev1.Probe {
-	containerPort := func(hostPort int) (int, bool) {
-		for _, p := range ports {
-			if p.Host == hostPort {
-				return p.Container, true
-			}
-		}
-		return 0, false
-	}
-
-	var probe corev1.Probe
-	switch {
-	case hc.HTTP != nil:
-		cp, ok := containerPort(hc.HTTP.Port)
-		if !ok {
-			return nil
-		}
-		probe.HTTPGet = &corev1.HTTPGetAction{
-			Path: cmp.Or(hc.HTTP.Path, "/"),
-			Port: intstr.FromInt32(int32(cp)),
-		}
-		if strings.EqualFold(hc.HTTP.Scheme, "https") {
-			probe.HTTPGet.Scheme = corev1.URISchemeHTTPS
-		}
-	case hc.TCP != nil:
-		cp, ok := containerPort(hc.TCP.Port)
-		if !ok {
-			return nil
-		}
-		probe.TCPSocket = &corev1.TCPSocketAction{Port: intstr.FromInt32(int32(cp))}
-	case hc.Exec != nil:
-		probe.Exec = &corev1.ExecAction{Command: hc.Exec.Command}
-	default:
-		return nil
-	}
-	probe.FailureThreshold = int32(hc.Retries)
-	probe.PeriodSeconds = probeSeconds(hc.Interval)
-	probe.TimeoutSeconds = probeSeconds(probeTimeout(hc))
-	return &probe
-}
-
-// probeSeconds renders a spec duration as the whole seconds a Kubernetes probe
-// field takes. Zero means unset, which leaves podman on its own default.
-func probeSeconds(s string) int32 {
-	if s == "" {
-		return 0
-	}
-	d, err := time.ParseDuration(s)
-	if err != nil || d < time.Second {
-		return 0
-	}
-	return int32(d / time.Second)
-}
-
-func validPort(n int) bool { return n >= 1 && n <= 65535 }
-
-func probeTimeout(h *model.Healthcheck) string {
-	switch {
-	case h.HTTP != nil:
-		return h.HTTP.Timeout
-	case h.TCP != nil:
-		return h.TCP.Timeout
-	case h.Exec != nil:
-		return h.Exec.Timeout
-	}
-	return ""
-}
-
 // checkHostPortConflicts catches two applications publishing the same host port,
 // which would otherwise show up as a container that starts and immediately dies.
 func checkHostPortConflicts(apps []model.Application) []error {
@@ -746,13 +352,6 @@ func comparePorts(a, b model.Port) int {
 	)
 }
 
-func checkDuration(s string) error {
-	if _, err := time.ParseDuration(s); err != nil {
-		return fmt.Errorf("%q is not a duration (try 5s, 500ms, 1m)", s)
-	}
-	return nil
-}
-
 func validName(s string) bool {
 	if s == "" || len(s) > 60 {
 		return false
@@ -761,21 +360,6 @@ func validName(s string) bool {
 		switch {
 		case r >= 'a' && r <= 'z', r >= '0' && r <= '9':
 		case r == '-' && i > 0 && i < len(s)-1:
-		default:
-			return false
-		}
-	}
-	return true
-}
-
-func validEnvName(s string) bool {
-	if s == "" {
-		return false
-	}
-	for i, r := range s {
-		switch {
-		case r >= 'a' && r <= 'z', r >= 'A' && r <= 'Z', r == '_':
-		case r >= '0' && r <= '9' && i > 0:
 		default:
 			return false
 		}

@@ -145,19 +145,21 @@ func TestPodOptionalConfigMapMayBeMissing(t *testing.T) {
 	}
 }
 
-func TestPodAndApplicationCannotShareAName(t *testing.T) {
+func TestTwoPodsCannotShareAName(t *testing.T) {
 	files := map[string]string{"pod.yaml": podFiles, "app.yaml": `
-apiVersion: gitops.podcd.io/v1
-kind: Application
+apiVersion: v1
+kind: Pod
 metadata:
   name: web
 spec:
-  image: example.com/web` + digest + `
+  containers:
+    - name: web
+      image: example.com/web` + digest + `
 `}
 	ix := NewIndex()
 	err := ix.LoadTree("test", writeTree(t, files))
-	if err == nil || !strings.Contains(err.Error(), "both") {
-		t.Fatalf("a Pod and an Application with one name is ambiguous, got: %v", err)
+	if err == nil || !strings.Contains(err.Error(), "defined twice") {
+		t.Fatalf("two Pods with one name is ambiguous, got: %v", err)
 	}
 }
 

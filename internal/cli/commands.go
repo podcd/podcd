@@ -116,7 +116,7 @@ func newHealthCommand(f *configFlags) *cobra.Command {
 	var out outputFormat
 	cmd := &cobra.Command{
 		Use:   "health",
-		Short: "probe the applications this host should be running",
+		Short: "report what podman says about the applications this host runs",
 		Args:  cobra.NoArgs,
 		RunE: withEngine(f, func(ctx context.Context, env *environment) error {
 			results, err := env.engine.Health(ctx)

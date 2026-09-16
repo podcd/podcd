@@ -163,19 +163,23 @@ func runGit(t *testing.T, dir string, args ...string) {
 	}
 }
 
-const twoApps = `apiVersion: gitops.podcd.io/v1
-kind: Application
+const twoApps = `apiVersion: v1
+kind: Pod
 metadata:
   name: api
 spec:
-  image: example.com/api@sha256:aaaa
+  containers:
+    - name: api
+      image: example.com/api@sha256:aaaa
 ---
-apiVersion: gitops.podcd.io/v1
-kind: Application
+apiVersion: v1
+kind: Pod
 metadata:
   name: web
 spec:
-  image: example.com/web@sha256:bbbb
+  containers:
+    - name: web
+      image: example.com/web@sha256:bbbb
 ---
 apiVersion: gitops.podcd.io/v1
 kind: Host
@@ -185,12 +189,14 @@ spec:
   applications: [api, web]
 `
 
-const oneApp = `apiVersion: gitops.podcd.io/v1
-kind: Application
+const oneApp = `apiVersion: v1
+kind: Pod
 metadata:
   name: api
 spec:
-  image: example.com/api@sha256:aaaa
+  containers:
+    - name: api
+      image: example.com/api@sha256:aaaa
 ---
 apiVersion: gitops.podcd.io/v1
 kind: Host

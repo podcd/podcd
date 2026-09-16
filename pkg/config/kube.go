@@ -23,6 +23,27 @@ const (
 	LabelApp     = "io.podcd.app"
 )
 
+// AnnotationNetworks names the podman networks to attach the pod to, comma
+// separated. It is an annotation rather than a spec field because Kubernetes
+// has no equivalent - podman takes networks on the command line, which for a
+// Quadlet unit is the Network= key podcd writes.
+const AnnotationNetworks = "io.podcd.networks"
+
+// podNetworks reads AnnotationNetworks, sorted and deduplicated.
+func podNetworks(pod corev1.Pod) []string {
+	raw := pod.Annotations[AnnotationNetworks]
+	if raw == "" {
+		return nil
+	}
+	seen := map[string]bool{}
+	for _, n := range strings.Split(raw, ",") {
+		if n = strings.TrimSpace(n); n != "" {
+			seen[n] = true
+		}
+	}
+	return slices.Sorted(maps.Keys(seen))
+}
+
 func patchPod(pod corev1.Pod, override Override) (corev1.Pod, error) {
 	if len(bytes.TrimSpace(override)) == 0 {
 		return pod, nil
@@ -56,6 +77,7 @@ func (h hostDocuments) podToApplication(ctx context.Context, name string, pod co
 		Name:          name,
 		RestartPolicy: kubeRestartPolicy(pod.Spec.RestartPolicy),
 		Labels:        maps.Clone(pod.Labels),
+		Networks:      podNetworks(pod),
 	}
 
 	seenNames := map[string]bool{}
@@ -275,9 +297,6 @@ func collectRefs(pod corev1.Pod) refSet {
 				}
 			}
 		}
-	}
-	for _, ips := range pod.Spec.ImagePullSecrets {
-		mark(r.secrets, ips.Name, nil)
 	}
 	return r
 }

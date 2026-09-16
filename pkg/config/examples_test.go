@@ -44,7 +44,4 @@ func TestExamplesCompile(t *testing.T) {
 	if app.Image == "" {
 		t.Fatal("local app image is empty")
 	}
-	if !strings.Contains(string(app.Manifest), "readinessProbe:") {
-		t.Fatalf("the local app's healthcheck did not compile into a probe:\n%s", app.Manifest)
-	}
 }

@@ -113,42 +113,6 @@ func shorthand(data []byte) (string, bool, error) {
 	return s, true, err
 }
 
-// HTTPProbe checks an HTTP endpoint published by the container.
-type HTTPProbe struct {
-	Port    int    `json:"port"`
-	Path    string `json:"path,omitempty"`
-	Scheme  string `json:"scheme,omitempty"` // http (default) or https
-	Timeout string `json:"timeout,omitempty"`
-}
-
-// TCPProbe checks that a TCP port accepts a connection.
-type TCPProbe struct {
-	Port    int    `json:"port"`
-	Timeout string `json:"timeout,omitempty"`
-}
-
-// ExecProbe runs a command inside the container.
-type ExecProbe struct {
-	Command []string `json:"command"`
-	Timeout string   `json:"timeout,omitempty"`
-}
-
-// Healthcheck is an Application's shorthand for a container probe.
-//
-// It is compiled into the pod manifest as a readiness probe and run by podman,
-// not by podcd: the agent only reports back what podman makes of it. Exactly
-// one of http, tcp or exec may be set.
-type Healthcheck struct {
-	HTTP *HTTPProbe `json:"http,omitempty"`
-	TCP  *TCPProbe  `json:"tcp,omitempty"`
-	Exec *ExecProbe `json:"exec,omitempty"`
-
-	// Retries is how many consecutive failures mark the container unhealthy.
-	Retries int `json:"retries,omitempty"`
-	// Interval is how often podman runs the probe.
-	Interval string `json:"interval,omitempty"`
-}
-
 // Resources are the optional systemd resource limits for the unit.
 type Resources struct {
 	Memory string `json:"memory,omitempty"` // e.g. 512M -> MemoryMax

@@ -29,7 +29,7 @@ type RepositorySpec struct {
 	Path     string    `yaml:"path,omitempty" doc:"Read only this subdirectory of the repository."`
 	Values   []string  `yaml:"values,omitempty" doc:"Values file(s), relative to this repository's tree (path, if set), for {{ .Values }} templating of *.tpl files - a host-local fallback beneath what Host, Group and Environment documents declare. Repeated files merge, later ones winning per key."`
 	Insecure bool      `yaml:"insecure,omitempty" doc:"Disable host key / TLS verification. Visible here on purpose, rather than an environment variable nobody sees."`
-	Auth     *RepoAuth `yaml:"auth,omitempty" doc:"A private repository needs a read credential. The token is a secret reference (env:, file:, vault:), never a literal in this file; it is resolved on every fetch. GitLab deploy tokens have their own username."`
+	Auth     *RepoAuth `yaml:"auth,omitempty" doc:"A private repository needs a read credential. The token is a secret reference (env: or file:), never a literal in this file; it is resolved on every fetch. GitLab deploy tokens have their own username."`
 }
 
 // RepoAuth is a repository's read credential.

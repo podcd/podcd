@@ -32,7 +32,7 @@ The runtime (currently podman only) is inspected: which units podcd wrote, their
 Desired and actual are compared per application:
 
 - not present on the host -> **create**
-- the rendered unit differs from the one on disk, or a secret value changed -> **update**
+- the rendered unit, or the manifest it plays, differs from what is on disk -> **update**
 - present and unchanged, but the unit is not active -> **restart**
 - present in the runtime but no longer declared in Git -> **delete** (only when `prune` is on, the default; otherwise reported as a no-op)
 
@@ -41,6 +41,13 @@ Deletes are ordered before creates, so a renamed application frees its host port
 ## Apply
 
 Actions run one at a time under a file lock, so a human running `podcd reconcile` and the agent's own loop cannot fight over the same unit files. A destructive action is logged before it happens. The first failure stops the run and is recorded.
+
+## Health
+
+Health is what podman reports for an application's containers: whether they are
+up, plus the verdict of the container healthcheck when the workload declares a
+probe. podcd runs no probes of its own. After applying a change it waits for the
+application to come back before calling the reconcile a success.
 
 ## Retry
 

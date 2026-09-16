@@ -21,55 +21,14 @@ import (
 	"github.com/podcd/podcd/pkg/model"
 )
 
-// ApplicationOptions describes an Application to generate.
-type ApplicationOptions struct {
+// PodOptions describes a single-container Pod to generate.
+type PodOptions struct {
 	Name  string
 	Image string
 	// Ports are "host:container" pairs, published on 127.0.0.1.
 	Ports []string
 	// Env are "KEY=value" pairs.
 	Env []string
-	// HealthPath, when set, adds an HTTP health check on the first port.
-	HealthPath string
-}
-
-// Application renders an Application document.
-func Application(o ApplicationOptions) ([]byte, error) {
-	if err := checkImage(o.Image); err != nil {
-		return nil, err
-	}
-	spec := config.AppSpec{Image: o.Image, RestartPolicy: "always"}
-	for _, p := range o.Ports {
-		host, container, err := parsePort(p)
-		if err != nil {
-			return nil, err
-		}
-		spec.Ports = append(spec.Ports, model.Port{Host: host, Container: container, HostIP: "127.0.0.1"})
-	}
-	if len(o.Env) > 0 {
-		spec.Env = map[string]string{}
-		for _, e := range o.Env {
-			k, v, ok := strings.Cut(e, "=")
-			if !ok || k == "" {
-				return nil, fmt.Errorf("--env %q: expected KEY=value", e)
-			}
-			spec.Env[k] = v
-		}
-	}
-	if o.HealthPath != "" {
-		if len(spec.Ports) == 0 {
-			return nil, errors.New("--health-path needs a --port to probe")
-		}
-		spec.Healthcheck = &model.Healthcheck{HTTP: &model.HTTPProbe{Port: spec.Ports[0].Host, Path: o.HealthPath}}
-	}
-	return render(config.APIVersion, config.KindApplication, o.Name, spec)
-}
-
-// PodOptions describes a single-container Pod to generate.
-type PodOptions struct {
-	Name  string
-	Image string
-	Ports []string
 }
 
 // Pod renders a core/v1 Pod with one container, the shape people already have.
@@ -84,6 +43,13 @@ func Pod(o PodOptions) ([]byte, error) {
 			return nil, err
 		}
 		container.Ports = append(container.Ports, corev1.ContainerPort{ContainerPort: int32(cport), HostPort: int32(host), HostIP: "127.0.0.1"})
+	}
+	for _, e := range o.Env {
+		k, v, ok := strings.Cut(e, "=")
+		if !ok || k == "" {
+			return nil, fmt.Errorf("--env %q: expected KEY=value", e)
+		}
+		container.Env = append(container.Env, corev1.EnvVar{Name: k, Value: v})
 	}
 	pod := corev1.Pod{
 		TypeMeta:   metav1.TypeMeta{APIVersion: config.CoreAPIVersion, Kind: config.KindPod},
@@ -220,7 +186,7 @@ const nginx = "docker.io/library/nginx@sha256:72ba65eb42c10344912a84ff42408db7d3
 // Init writes the smallest useful repository into dir
 // Existing files are not overwritten unless force is set. It returns the files it wrote.
 func Init(dir, host string, force bool) ([]string, error) {
-	app, err := Application(ApplicationOptions{Name: "nginx", Image: nginx, Ports: []string{"8080:80"}, HealthPath: "/"})
+	app, err := Pod(PodOptions{Name: "nginx", Image: nginx, Ports: []string{"8080:80"}})
 	if err != nil {
 		return nil, err
 	}
@@ -229,7 +195,7 @@ func Init(dir, host string, force bool) ([]string, error) {
 		return nil, err
 	}
 	files := map[string][]byte{
-		"apps.yaml":  append([]byte("# What can run. An Application says what it is, not where it runs.\n"), app...),
+		"apps.yaml":  append([]byte("# What can run. A Pod says what it is, not where it runs.\n"), app...),
 		"hosts.yaml": append([]byte("# Which host runs what. One Host document per machine, named as the agent\n# identifies itself (its hostname, or `host:` in agent.yaml).\n"), hostDoc...),
 		"README.md":  []byte(readme(host)),
 	}

@@ -26,19 +26,27 @@ func TestLintCompilesEveryHost(t *testing.T) {
 	// vm-1 is fine; vm-2 references an undefined application and clashes on a port.
 	_, findings, err := lintFiles(t, map[string]string{
 		"apps.yaml": `
-apiVersion: gitops.podcd.io/v1
-kind: Application
+apiVersion: v1
+kind: Pod
 metadata: {name: web}
 spec:
-  image: example.com/web` + pinned + `
-  ports: ["8080:80"]
+  containers:
+    - name: web
+      image: example.com/web` + pinned + `
+      ports:
+        - containerPort: 80
+          hostPort: 8080
 ---
-apiVersion: gitops.podcd.io/v1
-kind: Application
+apiVersion: v1
+kind: Pod
 metadata: {name: api}
 spec:
-  image: example.com/api` + pinned + `
-  ports: ["8080:8080"]
+  containers:
+    - name: api
+      image: example.com/api` + pinned + `
+      ports:
+        - containerPort: 8080
+          hostPort: 8080
 `,
 		"hosts.yaml": `
 apiVersion: gitops.podcd.io/v1
@@ -73,11 +81,11 @@ spec: {applications: [web, api, missing]}
 }
 
 func TestLintLoaderErrorsAndNoHosts(t *testing.T) {
-	_, _, err := lintFiles(t, map[string]string{"a.yaml": "apiVersion: gitops.podcd.io/v1\nkind: Application\nmetadata: {name: x}\nspec: {imagee: y}\n"})
+	_, _, err := lintFiles(t, map[string]string{"a.yaml": "apiVersion: v1\nkind: Pod\nmetadata: {name: x}\nspec: {containers: [{name: x, imagee: y}]}\n"})
 	if err == nil || !strings.Contains(err.Error(), "imagee") {
 		t.Fatalf("a loader error is returned as an error, not a finding: %v", err)
 	}
-	_, _, err = lintFiles(t, map[string]string{"a.yaml": "apiVersion: gitops.podcd.io/v1\nkind: Application\nmetadata: {name: x}\nspec: {image: y" + pinned + "}\n"})
+	_, _, err = lintFiles(t, map[string]string{"a.yaml": "apiVersion: v1\nkind: Pod\nmetadata: {name: x}\nspec: {containers: [{name: x, image: y" + pinned + "}]}\n"})
 	if !errors.Is(err, ErrNoHosts) {
 		t.Fatalf("documents without a Host should report ErrNoHosts, got %v", err)
 	}
@@ -87,7 +95,7 @@ func TestLintAcceptsFilesAndLimitsToNamedHosts(t *testing.T) {
 	dir := t.TempDir()
 	apps := filepath.Join(dir, "apps.yaml")
 	hosts := filepath.Join(dir, "hosts.yaml")
-	os.WriteFile(apps, []byte("apiVersion: gitops.podcd.io/v1\nkind: Application\nmetadata: {name: web}\nspec: {image: example.com/web"+pinned+"}\n"), 0o644)
+	os.WriteFile(apps, []byte("apiVersion: v1\nkind: Pod\nmetadata: {name: web}\nspec: {containers: [{name: web, image: example.com/web"+pinned+"}]}\n"), 0o644)
 	os.WriteFile(hosts, []byte("apiVersion: gitops.podcd.io/v1\nkind: Host\nmetadata: {name: ok}\nspec: {applications: [web]}\n---\napiVersion: gitops.podcd.io/v1\nkind: Host\nmetadata: {name: bad}\nspec: {applications: [nope]}\n"), 0o644)
 
 	_, findings, err := LintPaths(context.Background(), nil, nil, apps, hosts)

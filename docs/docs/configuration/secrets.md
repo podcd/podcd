@@ -14,6 +14,8 @@ The mechanism is a pair of documents in your gitops repository:
 | `SecretStore` | Configures a backend: the agent's environment, a files directory, or HashiCorp Vault |
 | `ExternalSecret` | Names one or more keys to fetch from a store and assemble into a `v1/Secret` |
 
+A host fetches only the secrets its own workloads reference, so a store nobody on this machine uses is never contacted, and a value shared by two pods costs one fetch. Rotating a value in the backend changes the manifest, and the next reconcile restarts the pod.
+
 
 ## `env` store - secrets from agent.env
 
@@ -126,7 +128,7 @@ spec:
 
 ## `vault` store - HashiCorp Vault KV
 
-Vault configuration moves into a `SecretStore` document in Git. The `vault:` section that used to live in `agent.yaml` is gone; Vault credentials stay in `agent.env` on the host.
+The server, the KV version and the auth method are declared in the `SecretStore`. Vault's own credentials are references resolved from `agent.env` on the host, so they stay out of Git like everything else.
 
 ```yaml
 apiVersion: external-secrets.io/v1beta1

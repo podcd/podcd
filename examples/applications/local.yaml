@@ -1,20 +1,22 @@
-# The base definition of an application. It says what the app *is*, not where
-# it runs. Where it runs is decided by groups and hosts.
-apiVersion: gitops.podcd.io/v1
-kind: Application
+# The base definition of a workload. It says what the app *is*, not where it
+# runs. Where it runs is decided by groups and hosts.
+apiVersion: v1
+kind: Pod
 metadata:
   name: local
 spec:
-  image: docker.io/library/nginx@sha256:72ba65eb42c10344912a84ff42408db7d34f2feb642204570ab8fc5ffd29f1d3
-  ports:
-    - host: 8080
-      container: 80
-      hostIP: 127.0.0.1
-  restartPolicy: always
-  stopTimeout: 30
-  healthcheck:
-    retries: 30
-    interval: 2s
-    http:
-      port: 8080
-      path: /
+  restartPolicy: Always
+  terminationGracePeriodSeconds: 30
+  containers:
+    - name: nginx
+      image: docker.io/library/nginx@sha256:72ba65eb42c10344912a84ff42408db7d34f2feb642204570ab8fc5ffd29f1d3
+      ports:
+        - containerPort: 80
+          hostPort: 8080
+          hostIP: 127.0.0.1
+      livenessProbe:
+        httpGet:
+          path: /
+          port: 80
+        periodSeconds: 5
+        failureThreshold: 6

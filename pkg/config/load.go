@@ -22,15 +22,13 @@ import (
 // documents is every decoded document of every kind, addressed by name.
 //
 // Names are global across repositories on purpose.
-// Two repositories defining the same Application is an ambiguity, and ambiguity is an error here, not a coin flip.
-// Applications and Pods share one namespace too, because a host lists both under `applications:`.
+// Two repositories defining the same Pod is an ambiguity, and ambiguity is an error here, not a coin flip.
 //
 // The Index holds one set for the plain .yaml files in the tree; Resolve
 // builds a second, per host, from what that host's templates render to. Both
 // go through the same decode path (addDocuments), so a rendered document is
 // validated exactly like a written one.
 type documents struct {
-	Applications map[string]Doc[AppSpec]
 	Groups       map[string]Doc[SelectionSpec]
 	Environments map[string]Doc[SelectionSpec]
 	Hosts        map[string]Doc[HostSpec]
@@ -45,7 +43,6 @@ type documents struct {
 
 func newDocuments() documents {
 	return documents{
-		Applications:    map[string]Doc[AppSpec]{},
 		Groups:          map[string]Doc[SelectionSpec]{},
 		Environments:    map[string]Doc[SelectionSpec]{},
 		Hosts:           map[string]Doc[HostSpec]{},
@@ -249,7 +246,7 @@ func (d *documents) addDocuments(repo, path string, data []byte, rendered bool) 
 // to something that decides what a host runs.
 func deployable(kind string) bool {
 	switch kind {
-	case KindApplication, KindPod, KindConfigMap, KindSecret:
+	case KindPod, KindConfigMap, KindSecret:
 		return true
 	}
 	return false
@@ -260,11 +257,6 @@ func (d *documents) add(env document, src Source) error {
 	switch env.APIVersion {
 	case APIVersion:
 		switch env.Kind {
-		case KindApplication:
-			if prev, ok := d.Pods[name]; ok {
-				return fmt.Errorf("%q is both an Application (%s) and a Pod (%s); a host lists both under applications, so the name must be unique", name, src, prev.Source)
-			}
-			return addSpec(d.Applications, env.Kind, name, src)
 		case KindGroup:
 			return addSpec(d.Groups, env.Kind, name, src)
 		case KindEnvironment:
@@ -276,9 +268,6 @@ func (d *documents) add(env document, src Source) error {
 	case CoreAPIVersion:
 		switch env.Kind {
 		case KindPod:
-			if prev, ok := d.Applications[name]; ok {
-				return fmt.Errorf("%q is both a Pod (%s) and an Application (%s); a host lists both under applications, so the name must be unique", name, src, prev.Source)
-			}
 			return addObject(d.Pods, env.Kind, name, src, nil)
 		case KindConfigMap:
 			return addObject(d.ConfigMaps, env.Kind, name, src, nil)

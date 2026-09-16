@@ -11,7 +11,7 @@ Every command takes `-c`/`--config` to point at an `agent.yaml` other than the d
 podcd status      # what is running here and when it last reconciled
 podcd plan        # show changes without making them
 podcd reconcile   # apply the current Git desired state
-podcd health      # probe application health; non-zero exit if anything is unhealthy
+podcd health      # report application health; non-zero exit if anything is unhealthy
 podcd logs api    # recent output for one application (--tail N)
 ```
 

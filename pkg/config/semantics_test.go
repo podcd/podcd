@@ -28,16 +28,23 @@ func resolveOne(t *testing.T, files map[string]string) (model.Application, error
 func TestSlicesReplaceAndMapsMergeAcrossLayers(t *testing.T) {
 	files := baseFiles()
 	files["apps/api.yaml"] = `
-apiVersion: gitops.podcd.io/v1
-kind: Application
+apiVersion: v1
+kind: Pod
 metadata:
   name: api
-spec:
-  image: example.com/api` + digest + `
-  ports: ["8080:8080", "9090:9090"]
-  networks: [a]
-  env: {A: base, B: base}
   labels: {team: core}
+  annotations:
+    io.podcd.networks: "a"
+spec:
+  containers:
+    - name: api
+      image: example.com/api` + digest + `
+      ports:
+        - containerPort: 8080
+          hostPort: 8080
+      env:
+        - name: A
+          value: base
 `
 	files["groups/web.yaml"] = `
 apiVersion: gitops.podcd.io/v1
@@ -48,9 +55,17 @@ spec:
   applications: [api, frontend]
   overrides:
     api:
-      ports: ["8082:8080"]
-      env: {B: group}
-      labels: {tier: web}
+      metadata:
+        labels: {tier: web}
+      spec:
+        containers:
+          - name: api
+            ports:
+              - containerPort: 8080
+                hostPort: 8082
+            env:
+              - name: B
+                value: group
 `
 	app, err := resolveOne(t, files)
 	if err != nil {
@@ -110,75 +125,80 @@ func TestPortAndVolumeShorthands(t *testing.T) {
 	}
 }
 
-func TestCompiledOutputDoesNotDependOnInputOrder(t *testing.T) {
-	spec := func(ports, volumes, networks string) map[string]string {
+// Networks have no Kubernetes equivalent, so they arrive as an annotation and
+// are sorted and deduplicated on the way in. The Network= lines they become are
+// compared byte for byte, so the order a human wrote them must not matter -
+// the manifest still carries the annotation verbatim, as authored.
+func TestNetworksComeFromTheAnnotationSortedAndDeduplicated(t *testing.T) {
+	spec := func(networks string) map[string]string {
 		files := baseFiles()
 		files["apps/api.yaml"] = `
-apiVersion: gitops.podcd.io/v1
-kind: Application
+apiVersion: v1
+kind: Pod
 metadata:
   name: api
+  annotations:
+    io.podcd.networks: "` + networks + `"
 spec:
-  image: example.com/api` + digest + `
-  ports: [` + ports + `]
-  volumes: [` + volumes + `]
-  networks: [` + networks + `]
+  containers:
+    - name: api
+      image: example.com/api` + digest + `
 `
 		return files
 	}
-	a, err := resolveOne(t, spec(`"9090:90", "8080:80"`, `"/y:/y", "/x:/x"`, `b, a`))
+	a, err := resolveOne(t, spec("b, a"))
 	if err != nil {
 		t.Fatal(err)
 	}
-	b, err := resolveOne(t, spec(`"8080:80", "9090:90"`, `"/x:/x", "/y:/y"`, `a, b`))
+	b, err := resolveOne(t, spec("a,b,  a"))
 	if err != nil {
 		t.Fatal(err)
 	}
-	if a.SpecHash() != b.SpecHash() {
-		t.Fatalf("the same spec in a different order must compile to the same hash:\n%+v\n%+v", a, b)
+	if strings.Join(a.Networks, ",") != "a,b" {
+		t.Errorf("networks should be sorted and deduplicated, got %v", a.Networks)
 	}
-	if a.Ports[0].Host != 8080 || a.Volumes[0].Destination != "/x" || a.Networks[0] != "a" {
-		t.Errorf("output is sorted: %+v %+v %v", a.Ports, a.Volumes, a.Networks)
+	if strings.Join(a.Networks, ",") != strings.Join(b.Networks, ",") {
+		t.Errorf("the same networks in a different order must compile the same: %v vs %v", a.Networks, b.Networks)
+	}
+	none, err := resolveOne(t, baseFiles())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(none.Networks) != 0 {
+		t.Errorf("no annotation means no networks, got %v", none.Networks)
 	}
 }
 
+// Every problem with a workload is reported in one go, so the author fixes
+// them in one commit rather than one reconcile at a time.
 func TestAuthorMistakesAreReportedTogether(t *testing.T) {
 	files := baseFiles()
 	files["apps/api.yaml"] = `
-apiVersion: gitops.podcd.io/v1
-kind: Application
+apiVersion: v1
+kind: Pod
 metadata:
   name: api
 spec:
-  image: example.com/api` + digest + `
-  restartPolicy: sometimes
-  ports: ["70000:80", "8080:80/sctp"]
-  volumes: ["/data:relative"]
-  env: {"9BAD": x}
-  healthcheck:
-    http: {port: 8080}
-    tcp: {port: 8080}
-    interval: soon
+  containers:
+    - name: dup
+      image: example.com/one` + digest + `
+    - name: dup
+    - image: example.com/three` + digest + `
 `
 	_, err := resolveOne(t, files)
 	if err == nil {
 		t.Fatal("a spec with this many mistakes must not compile")
 	}
 	for _, want := range []string{
-		`restartPolicy "sometimes"`,
-		"host port 70000 is out of range",
-		`port protocol "sctp"`,
-		`volume destination "relative" must be an absolute path`,
-		`environment variable name "9BAD"`,
-		"at most one of http, tcp, exec",
-		`"soon" is not a duration`,
+		`container "dup" is defined twice`,
+		`container "dup" has no image`,
+		"a container has no name",
 	} {
 		if !strings.Contains(err.Error(), want) {
 			t.Errorf("error should mention %q, got:\n%v", want, err)
 		}
 	}
-	// Every problem is reported in one go, so the author fixes them in one commit.
-	if got := strings.Count(err.Error(), "\n"); got < 6 {
+	if got := strings.Count(err.Error(), "\n"); got < 2 {
 		t.Errorf("want all problems listed on separate lines, got %d newlines:\n%v", got, err)
 	}
 }
@@ -231,10 +251,13 @@ metadata:
 spec:
   overrides:
     api:
-      imagee: nope
+      spec:
+        containers:
+          - name: api
+            imagee: nope
 `
 	_, err := resolveOne(t, files)
-	if err == nil || !strings.Contains(err.Error(), "environment/production: override for application \"api\"") || !strings.Contains(err.Error(), "imagee") {
+	if err == nil || !strings.Contains(err.Error(), "environment/production: override for pod \"api\"") || !strings.Contains(err.Error(), "imagee") {
 		t.Fatalf("the layer and the field should be named, got: %v", err)
 	}
 }
@@ -256,12 +279,12 @@ func TestProvenanceListsEveryLayerThatTouchedTheApplication(t *testing.T) {
 func TestNonYAMLFilesAndDotDirectoriesAreIgnored(t *testing.T) {
 	files := baseFiles()
 	files["README.md"] = "apiVersion: nonsense\n"
-	files["scripts/deploy.sh"] = "kind: Application\n"
-	files[".github/workflows/ci.yaml"] = "kind: Application\nmetadata: {name: ci}\n"
+	files["scripts/deploy.sh"] = "kind: Pod\n"
+	files[".github/workflows/ci.yaml"] = "kind: Pod\nmetadata: {name: ci}\n"
 	files["apps/notes.txt"] = "kind: Host\n"
 	ix := loadIndex(t, files)
-	if len(ix.Applications) != 2 || len(ix.Hosts) != 1 {
-		t.Fatalf("only .yaml/.yml outside dot-directories count: apps=%d hosts=%d", len(ix.Applications), len(ix.Hosts))
+	if len(ix.Pods) != 2 || len(ix.Hosts) != 1 {
+		t.Fatalf("only .yaml/.yml outside dot-directories count: pods=%d hosts=%d", len(ix.Pods), len(ix.Hosts))
 	}
 }
 

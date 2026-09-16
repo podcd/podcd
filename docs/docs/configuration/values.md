@@ -3,7 +3,7 @@ id: values
 title: Values templating
 ---
 
-Overrides parametrize one application at a time, by name, and only work when every host in the layer runs that application. Values templating parametrizes the documents themselves - several hosts can share one `Application`/`Pod` and each fill in the parts that differ.
+Overrides parametrize one application at a time, by name, and only work when every host in the layer runs that application. Values templating parametrizes the documents themselves - several hosts can share one `Pod` and each fill in the parts that differ.
 
 ## Templates
 
@@ -11,22 +11,27 @@ A template is a file named `*.tpl` (e.g. `edge-api.yaml.tpl`). A template is ren
 
 ```yaml
 # apps/edge-api.yaml.tpl
-apiVersion: gitops.podcd.io/v1
-kind: Application
+apiVersion: v1
+kind: Pod
 metadata:
   name: edge-api
 spec:
-  image: "{{ .Values.image.repository }}:{{ .Values.image.tag }}"
-  env:
-    LOG_LEVEL: '{{ default "info" .Values.logLevel }}'
+  containers:
+    - name: edge-api
+      image: "{{ .Values.image.repository }}:{{ .Values.image.tag }}"
+      env:
+        - name: LOG_LEVEL
+          value: '{{ default "info" .Values.logLevel }}'
 {{- if .Values.publicHostname }}
-    PUBLIC_HOSTNAME: '{{ .Values.publicHostname }}'
+        - name: PUBLIC_HOSTNAME
+          value: '{{ .Values.publicHostname }}'
 {{- end }}
-  resources:
-    memory: '{{ default "256M" .Values.resources.memory }}'
+      resources:
+        limits:
+          memory: '{{ default "256Mi" .Values.resources.memory }}'
 ```
 
-A template may render any deployable kind - `Application`, `Pod`, `ConfigMap`, `Secret` - but not a `Host`, `Group` or `Environment`, since those are what decide a host's values in the first place.
+A template may render any deployable kind - `Pod`, `ConfigMap`, `Secret` - but not a `Host`, `Group` or `Environment`, since those are what decide a host's values in the first place.
 
 One consequence of the whole file being a template: inside a `.tpl`, a YAML `#` comment is still template text, so a comment that quotes template syntax literally (a bare `{{ if }}`) fails to parse. Write it as a Go template comment, `{{/* like this */}}`, which renders to nothing.
 

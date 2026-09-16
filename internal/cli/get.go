@@ -34,8 +34,7 @@ type item struct {
 
 // kinds maps every spelling a user might type to a canonical kind.
 var kinds = map[string]string{
-	"application": config.KindApplication, "applications": config.KindApplication, "app": config.KindApplication, "apps": config.KindApplication,
-	"pod": config.KindPod, "pods": config.KindPod,
+	"pod": config.KindPod, "pods": config.KindPod, "app": config.KindPod, "apps": config.KindPod,
 	"host": config.KindHost, "hosts": config.KindHost,
 	"group": config.KindGroup, "groups": config.KindGroup,
 	"environment": config.KindEnvironment, "environments": config.KindEnvironment, "env": config.KindEnvironment, "envs": config.KindEnvironment,
@@ -162,9 +161,6 @@ func collect(ix *config.Index, kind, name string) []item {
 		}
 		items = append(items, item{Kind: k, Name: n, Source: src.String(), Spec: spec, raw: src.Raw, cols: cols})
 	}
-	for n, d := range ix.Applications {
-		add(config.KindApplication, n, d.Source, d.Spec, shortImage(d.Spec.Image), portList(d.Spec.Ports))
-	}
 	for n, d := range ix.Pods {
 		add(config.KindPod, n, d.Source, d.Spec.Spec, containerNames(d.Spec), podPorts(d.Spec))
 	}
@@ -193,7 +189,6 @@ func collect(ix *config.Index, kind, name string) []item {
 
 // headers are the kind-specific columns shown after NAME.
 var headers = map[string][]string{
-	config.KindApplication: {"IMAGE", "PORTS"},
 	config.KindPod:         {"CONTAINERS", "PORTS"},
 	config.KindHost:        {"ENVIRONMENT", "GROUPS", "APPLICATIONS"},
 	config.KindGroup:       {"APPLICATIONS", "OVERRIDES"},
@@ -224,7 +219,7 @@ func printItems(w io.Writer, kind string, items []item) {
 }
 
 func kindOrder(k string) int {
-	for i, o := range []string{config.KindEnvironment, config.KindGroup, config.KindHost, config.KindApplication, config.KindPod, config.KindConfigMap, config.KindSecret} {
+	for i, o := range []string{config.KindEnvironment, config.KindGroup, config.KindHost, config.KindPod, config.KindConfigMap, config.KindSecret} {
 		if o == k {
 			return i
 		}

@@ -66,8 +66,7 @@ func LoadValuesFiles(paths ...string) (Values, error) {
 }
 
 // MergeValues layers src over dst: maps are merged key by key, recursively;
-// anything else (including a slice) is replaced wholesale, the same rule
-// AppSpec overrides use, so one merge algorithm covers both features.
+// anything else (including a slice) is replaced wholesale.
 func MergeValues(dst, src Values) Values {
 	if dst == nil {
 		dst = Values{}

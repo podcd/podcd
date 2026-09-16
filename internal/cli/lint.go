@@ -77,5 +77,5 @@ func countDocs(ix *config.Index) int {
 	if ix == nil {
 		return 0
 	}
-	return len(ix.Applications) + len(ix.Pods) + len(ix.Hosts) + len(ix.Groups) + len(ix.Environments) + len(ix.ConfigMaps) + len(ix.Secrets)
+	return len(ix.Pods) + len(ix.Hosts) + len(ix.Groups) + len(ix.Environments) + len(ix.ConfigMaps) + len(ix.Secrets)
 }

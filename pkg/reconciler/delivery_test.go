@@ -267,7 +267,7 @@ func TestIndexCanBeLimitedToNamedRepositories(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(ix.Applications) != 2 || len(revs) != 1 || len(offline) != 0 {
-		t.Fatalf("only infra should have been loaded: apps=%d revs=%v offline=%v", len(ix.Applications), revs, offline)
+	if len(ix.Pods) != 2 || len(revs) != 1 || len(offline) != 0 {
+		t.Fatalf("only infra should have been loaded: pods=%d revs=%v offline=%v", len(ix.Pods), revs, offline)
 	}
 }

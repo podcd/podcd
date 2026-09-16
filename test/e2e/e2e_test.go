@@ -238,24 +238,22 @@ func writeConfig(t *testing.T, dir, digest string, featureOn bool) {
 	if featureOn {
 		feature = "on"
 	}
-	write(t, filepath.Join(dir, "app.yaml"), fmt.Sprintf(`apiVersion: gitops.podcd.io/v1
-kind: Application
+	write(t, filepath.Join(dir, "app.yaml"), fmt.Sprintf(`apiVersion: v1
+kind: Pod
 metadata:
   name: %s
 spec:
-  image: %s
-  ports:
-    - host: %d
-      container: 80
-      hostIP: 127.0.0.1
-  env:
-    FEATURE_X: "%s"
-  healthcheck:
-    retries: 30
-    interval: 1s
-    http:
-      port: %d
-      path: /
+  restartPolicy: Always
+  containers:
+    - name: nginx
+      image: %s
+      ports:
+        - containerPort: 80
+          hostPort: %d
+          hostIP: 127.0.0.1
+      env:
+        - name: FEATURE_X
+          value: "%s"
 ---
 apiVersion: gitops.podcd.io/v1
 kind: Group
@@ -277,7 +275,7 @@ kind: Environment
 metadata:
   name: e2e
 spec: {}
-`, appName, digest, hostPort, feature, hostPort, appName, hostName))
+`, appName, digest, hostPort, feature, appName, hostName))
 }
 
 // writeEmptyHost leaves the host defined but running nothing.
