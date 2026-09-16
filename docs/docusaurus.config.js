@@ -118,11 +118,6 @@ const config = {
             dropdownActiveClassDisabled: true,
           },
           {
-            href: 'https://github.com/podcd/podcd-gitops',
-            label: 'Examples',
-            position: 'right',
-          },
-          {
             href: 'https://github.com/podcd/podcd',
             label: 'GitHub',
             position: 'right',

@@ -3,6 +3,16 @@ id: secrets
 title: Secrets
 ---
 
+## How it works
+
+podcd manages secrets itself — it does not use `podman secret`. A value is never in Git and never in `state.json`. References are resolved by the agent on the host at reconcile time; `podcd plan` shows a hash of the resolved values, not the values themselves.
+
+How a resolved secret reaches the container depends on the workload kind:
+
+**`Application` (container):** resolved values are written to a 0600 env file at `~/.local/state/podcd/env/<app>.env`. The generated Quadlet unit references it with `EnvironmentFile=`. The container receives the secrets as **environment variables**. There is no file-mount path for `Application` secrets.
+
+**`Pod` (kube manifest):** the entire Kubernetes manifest - including `Secret` resources with their `stringData` resolved to plaintext - is written to `~/.local/state/podcd/kube/<app>.yaml` (0600) and played by `podman kube play`. Kubernetes `Secret` volume mounts work as podman implements them, so secrets **can be mounted as files** inside pod containers.
+
 A secret in Git should be a *reference* to a value. References are resolved on the host, at reconcile time. `podcd plan` shows them as a hash; logs and `state.json` never carry them.
 
 A reference is `scheme:locator`. Three schemes exist:

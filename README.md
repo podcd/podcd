@@ -8,36 +8,12 @@
 <p align="center">A Git-driven reconciler for Linux workloads.</p>
 <p align="center"><a href="https://podcd.github.io/podcd/">Documentation</a></p>
 
-podcd is a small system for declaring what should be running on a VM in Git, then reconciling the host to match that desired state continuously.
-It is designed for ordinary Linux hosts.
-
-The model is intentionally simple:
+podcd reconciles a Linux host to match what is declared in Git.
 
 - Git defines the desired state.
 - A local agent reads that state and identifies the host.
 - The agent compiles the resulting configuration.
 - Quadlet and systemd manage the running containers.
-
-```
-Git desired state
-  -> agent pull + host match + plan
-  -> Quadlet units
-  -> running app
-```
-
-podcd is for teams that want disciplined, declarative deployment on regular Linux VMs while keeping the operational model lightweight and auditable.
-
-## Why podcd?
-
-podcd is built around a few principles:
-
-- Declarative configuration in Git
-- Host-specific reconciliation with explicit inheritance
-- Rootless Podman workloads managed by systemd
-- Deterministic compilation and clear validation errors
-- A small, operationally simple control plane
-
-This is not Kubernetes, it is a focused GitOps model for Linux hosts that need predictable service deployment without a cluster control plane.
 
 ## Get started
 
@@ -53,7 +29,7 @@ sudo install -m 0755 podcd /usr/local/bin/podcd
 
 ### Demo deploy
 
-`bootstrap.sh` will attempt to install Podman, enable lingering so the user's services survive logout, downloads a release and verifies its checksum, points the agent at the example repository (whose `local` Host runs one nginx), and starts the agent as a systemd user service.
+`bootstrap.sh` installs Podman, downloads and verifies the release, points the agent at the example repository (whose `local` Host runs one nginx), and starts the agent as a systemd user service.
 
 ```bash
 curl -fsSL https://raw.githubusercontent.com/podcd/podcd/main/deploy/bootstrap.sh | sudo bash -s -- \
@@ -76,200 +52,63 @@ Tear down when done:
 podcd teardown --purge-state --purge-config -y
 ```
 
-This stops and removes every application podcd manages, then stops, disables and removes `podcd-agent.service`, it is the equivalent of running `systemctl --user disable --now podcd-agent.service` and deleting the unit file by hand. `--purge-state` also deletes `~/.local/state/podcd` (checkouts, played manifests, state.json); `--purge-config` also deletes `~/.config/podcd` (the repository URL, and any secrets in `agent.env`) - both are opt-in and skipped without them.
+Stops all managed applications and removes the agent service. `--purge-state` also deletes `~/.local/state/podcd`; `--purge-config` also deletes `~/.config/podcd`.
 
-Building from source instead: `make build`, then the same bootstrap with `--binaries ./dist`.
-
-For the demo variant of this, use your own user in place of `podcd`, skip step 2's `useradd`, and point step 4 at `https://github.com/podcd/podcd.git` with `--repo-path examples --host local`.
+Building from source: `make build`, then the same bootstrap with `--binaries ./dist`.
 
 ### Production deploy
 
-#### 1. Setup GitOps repository
+#### 1. Set up the GitOps repository
 
 > [!TIP]
 > `podcd validate` requires Secrets as references (`env:NAME`, `file:path`).
 
-Setup a repository defining at least a `Host` and an `Application` or `Pod`. See [./examples](./examples/) or [podcd/podcd-gitops.git](https://github.com/podcd/podcd-gitops.git)
-The files are the **desired state**. podcd reads the repository, resolves the configuration for a host, validates it, and reconciles the result with the workloads running on that host.
-There is no prescribed directory structure. Organize the Git repository however you like.
+Set up a repository with at least a `Host` and an `Application` or `Pod`. See [./examples](./examples/) or [podcd/podcd-gitops.git](https://github.com/podcd/podcd-gitops.git). No prescribed directory structure.
 
-* `podcd init` scaffolds a basic podcd-gitops repository.
-* `podcd create` to generate a documents.
-* `podcd lint` to lint.
+- `podcd init` scaffolds a minimal repository.
+- `podcd create` generates documents.
+- `podcd lint` checks them.
 
-```bash
-podcd lint                 # the current directory
-podcd lint apps.yaml hosts.yaml
-podcd lint --host prod-web-01 ./gitops
-```
-
-`podcd get` shows what a repository defines - by default every repository in `agent.yaml`, fetched as the agent fetches them. `--repo` narrows it to one: a repository name from `agent.yaml`, a local directory, or a git URL (tried in that order):
-
-```bash
-podcd get                          # every document, with its file and line
-podcd get hosts                    # NAME  ENVIRONMENT  GROUPS  APPLICATIONS  SOURCE
-podcd get application api -o yaml  # one document, as written
-podcd get all --repo gitops        # one of the repositories in agent.yaml
-podcd get all --repo ./gitops      # a checkout you are editing
-podcd get pods --repo https://github.com/podcd/podcd-gitops.git
-```
-
-For a private repository, give the agent a read credential in `agent.yaml`.
-A GitHub or GitLab deploy token over HTTPS:
-
-```yaml
-repositories:
-  - name: gitops
-    url: https://gitlab.com/your-user/gitops.git
-    revision: main
-    auth:
-      username: gitlab+deploy-token-42   # GitLab deploy tokens have usernames; PATs and GitHub tokens can omit this
-      token: env:GITOPS_TOKEN
-```
-
-Or an SSH deploy key:
-
-```yaml
-repositories:
-  - name: gitops
-    url: git@github.com:your-user/gitops.git
-    auth:
-      sshKeyPath: /home/podcd/.ssh/deploy_key        # used with IdentitiesOnly
-      sshKnownHostsPath: /home/podcd/.ssh/known_hosts # optional
-```
-
-```bash
-sudo -u podcd bash -lc 'ssh-keygen -t ed25519 -N "" -f ~/.ssh/deploy_key && ssh-keyscan github.com >> ~/.ssh/known_hosts'
-# add ~/.ssh/deploy_key.pub as a read-only deploy key
-```
+For a private repository, add a read credential in `agent.yaml`. See [installation docs](https://podcd.github.io/podcd/docs/installation#private-repositories).
 
 #### 2. Deploy podcd
 
-podcd needs to setup these files:
-```text
-~/.config/podcd/agent.yaml            agent config
-~/.config/podcd/agent.env             secrets, 0600, never in Git
-~/.config/containers/systemd/podcd-agent.
+```bash
+podcd config create --host <hostname> --repo-url <url> --revision main
+podcd install
+systemctl --user daemon-reload && systemctl --user enable --now podcd-agent.service
 ```
 
-And in essence the following needs to happen:
-1. Download `podcd` binary.
-2. `podcd install`: generates a systemd service for the user
-3. `podcd config create --host <host> --repo-url <repo> --revision <target_revision>`
-4. `systemctl --user daemon-reload && systemctl --user enable --now podcd-agent.service`
+`podcd config create` writes `~/.config/podcd/agent.yaml`. `podcd install` writes the systemd user service. Add secrets to `~/.config/podcd/agent.env` (0600, never in Git).
 
-`bootstrap.sh` is not more than a helper utility.
-
-##### 2.1 Automated setup
-
-The same bootstrap as the demo, with a dedicated service user, your repository and a pinned release.
-One command per host; it is idempotent.
+For a fresh machine that also needs Podman installed and a dedicated service user, `bootstrap.sh` handles it. One command per host; idempotent:
 
 ```bash
 curl -fsSL https://raw.githubusercontent.com/podcd/podcd/main/deploy/bootstrap.sh | sudo bash -s -- \
   --release-version 2.3.0 \
   --user podcd \
   --revision main \
-  --host hostname \  # ideally you leave the host out and use machine names in your gitops repo
   --repo-url git@github.com:you/gitops.git
-
 ```
 
-It detects the distribution (apt on Debian/Ubuntu, dnf on the RHEL family), installs Podman, creates the `podcd` service user (no login shell; add `--allow-user-login` only if you want one), grants it a subordinate uid range, enables lingering so applications come back after a reboot, downloads the release you named and verifies its checksum, writes the agent config, installs the user service and starts it.
-
-On SELinux-enforcing hosts (the RHEL default) bind mounts need the `Z` (or `z`) option so the container may read them - `volumes: [{source: /srv/data, destination: /data, options: Z}]`;ConfigMap and Secret volumes on Pods are labelled by podman itself.
-
-Everything the agent owns is under its user `/home/podcd`:
-
-```text
-~/.config/podcd/agent.yaml          agent config
-~/.config/podcd/agent.env           secrets, 0600, never in Git
-~/.config/containers/systemd/       the Quadlet units podcd wrote
-~/.local/state/podcd/               checkouts, played manifests, state.json
-```
-
-##### 2.2 Manual setup
-
-```bash
-# 1.  Packages: rootless Podman 4.4+ (with Quadlet), git
-apt-get install -y podman uidmap dbus-user-session git   # Debian/Ubuntu
-dnf install -y podman shadow-utils git                    # RHEL family
-test -x /usr/libexec/podman/quadlet || echo "this podman has no Quadlet; 4.4+ is required"
-```
-```bash
-# 2.  The service user: no login shell, its own subordinate uid range for rootless containers.
-#     lingering so its services start at boot.
-useradd --create-home --shell /usr/sbin/nologin podcd     # /sbin/nologin on RHEL
-grep -q '^podcd:' /etc/subuid || usermod --add-subuids 200000-265535 --add-subgids 200000-265535 podcd
-loginctl enable-linger podcd
-```
-```bash
-# 3.  The agent config and the secrets file
-sudo -Hu podcd podcd config create --host hostname --repo-url git@github.com:you/gitops.git --revision main
-sudo -Hu podcd bash -c 'umask 077 && touch ~/.config/podcd/agent.env'
-```
-```bash
-# 3.1 or directly as the podcd user
-podcd config create --host hostname --repo-url git@github.com:you/gitops.git --revision main
-touch ~/.config/podcd/agent.env
-# edit/provision secrets in.
-```
-```bash
-# 4.  The user service.
-sudo -Hu podcd podcd install
-sudo -Hu podcd XDG_RUNTIME_DIR="/run/user/$(id -u podcd)" systemctl --user daemon-reload
-sudo -Hu podcd XDG_RUNTIME_DIR="/run/user/$(id -u podcd)" systemctl --user enable --now podcd-agent.service
-```
-```bash
-# 4.1 directly as the user
-podcd install
-systemctl --user daemon-reload
-systemctl --user enable --now podcd-agent.service
-```
+On SELinux-enforcing hosts (RHEL default) bind mounts need the `Z` option: `volumes: [{source: /srv/data, destination: /data, options: Z}]`.
 
 #### 3. Secrets
 
-A secret referenced in Git as `env:DATABASE_PASSWORD` is looked up in the agent's environment, which systemd loads from `~podcd/.config/podcd/agent.env`:
-
-```bash
-sudo -u podcd bash -lc 'umask 077 && printf "DATABASE_PASSWORD=%s\n" "$(cat /path/to/secret)" >> ~/.config/podcd/agent.env'
-```
-
-The agent re-reads that file on every lookup, so no restart is needed: rotating a value changes the application's spec hash and the next reconcile restarts the application. `file:` references read files under `secretsDir` instead; use that for values delivered by another tool.
-
-**HashiCorp Vault.** With a `vault:` section in `agent.yaml`, references resolve against Vault (KV v1 or v2), authenticated with AppRole or a token. Both of these name the same value - the key is always the last segment:
-
-```text
-vault:secret/prod/api/DATABASE_PASSWORD     mount first, as in `vault kv get`
-vault:prod/api/DATABASE_PASSWORD@secret     mount after @
-```
-
-```yaml
-vault:
-  address: https://vault.example.com
-  roleId: env:VAULT_ROLE_ID       # from agent.env - Vault credentials are references too
-  secretId: env:VAULT_SECRET_ID
-  # token: env:VAULT_TOKEN        # alternative to AppRole
-  # namespace: team-a             # Vault Enterprise
-  # caCert: /etc/pki/vault-ca.pem
-  # kvVersion: 2
-```
-
-The agent logs in when it first needs a value, re-logs-in when the token is rejected, and caches reads briefly so a reconcile with many keys from one path is one round trip. Only static KV values make sense here: a dynamic credential that changed on every read would restart the application on every reconcile.
+See [Secrets](https://podcd.github.io/podcd/docs/configuration/secrets) for `env:`, `file:` and `vault:` references.
 
 #### 4. Status
 
-The service user by default has no login shell, so run commands through `sudo -u`, from its home (rootless Podman refuses to run from a directory it cannot read):
+When running as a dedicated service user with no login shell:
 
 ```bash
 sudo -u podcd bash -lc 'cd && podcd status'
 sudo -u podcd bash -lc 'cd && podcd health'
 sudo journalctl _UID="$(id -u podcd)" -u podcd-agent --user -f
-# systemctl --user for another user needs its runtime dir spelled out:
 sudo -u podcd XDG_RUNTIME_DIR="/run/user/$(id -u podcd)" systemctl --user status podcd-agent.service
 ```
 
-`status` shows the last successful and failed reconcile and, per application, the unit state, the image and the last health result. `health` exits non-zero if anything is unhealthy, which makes it a usable check for your monitoring; add `-o json` to the commands for a scraper.
+`status` shows the last reconcile and per-application unit state. `health` exits non-zero if anything is unhealthy; add `-o json` for a scraper.
 
 ### Configuration file
 
@@ -401,7 +240,9 @@ make image                                              # builds podcd:$(VERSION
 podman run --rm -v /repo:/repo:ro,Z ghcr.io/podcd/podcd:latest lint /repo
 ```
 
-The image runs as a fixed non-root UID (1000); rootless Podman remaps that into your subordinate uid/gid range the same way it does for any other container, nothing special to configure there. On SELinux-enforcing hosts (RHEL, Fedora), add `:z` (shared) or `:Z` (private) to any bind mount as above, or the mount is denied - Debian/Ubuntu/Alpine don't need this since they don't enforce SELinux.
+The image runs as a fixed non-root UID (1000); rootless Podman remaps that into your subordinate uid/gid range the same way it does for any other container, nothing special to configure here.
+
+On SELinux-enforcing hosts (RHEL, Fedora), add `:z` (shared) or `:Z` (private) to any bind mount as above, or the mount is denied - Debian/Ubuntu/Alpine don't need this since they don't enforce SELinux.
 
 The image carries `git`, `podman` and `systemctl`, so every podcd command runs in it, including `run`/`reconcile` - but those manage *the host's* rootless Podman and systemd `--user` session, so from inside a container they need the host's Podman socket and systemd user bus bind-mounted in.
 
@@ -577,7 +418,7 @@ resources:
   memory: 512M
 ```
 
-Beneath all of that sits one more, lowest-precedence layer: `agent.yaml`'s own `repositories[].values`, resolved on the host rather than declared in Git. Keep it for values that are genuinely host-local (or as a stopgap); prefer a `Host`/`Group`/`Environment`'s own `values:` for anything that is part of the fleet's declared intent - `agent.yaml` is meant to stay a fire-and-forget pointer (which host, which repositories), not a place to encode what a host is *for*.
+`agent.yaml`'s `repositories[].values` adds a lowest-precedence layer, resolved on the host. Use it for host-local fallbacks; prefer declaring values in `Host`/`Group`/`Environment` documents.
 
 ```yaml
 repositories:
@@ -591,7 +432,7 @@ See [`podcd-gitops/multi-env`](https://github.com/podcd/podcd-gitops/tree/main/m
 
 #### Functions
 
-Templates get Go's own `text/template`, plus this small helper set - deliberately not sprig, so podcd stays a dependency-light single binary and a missing value is meant to be visible, not smoothed over:
+Go's `text/template`, plus:
 
 | Function | Use |
 |---|---|
@@ -613,14 +454,12 @@ make lint           # golangci-lint
 
 ## Security
 
-podcd is designed to keep the host-side trust boundary simple and explicit. The agent reads its config pointing to its git repos, resolves secrets locally, and writes generated unit files and runtime state in a controlled location.
-
-Before enabling a deployment, validate the rendered configuration and review the plan output. The project expects deterministic behavior and clear failures when configuration is ambiguous or invalid.
+Report security issues through [GitHub's private vulnerability reporting](https://github.com/podcd/podcd/security/advisories/new).
 
 ## Contributing
 
-Contributions are welcome. If you are working on a change, keep the scope focused and validate the relevant tests before submitting.
+See [Contributing](docs/docs/community/contribution.md).
 
 ## License
 
-This project is licensed under the MIT License. See the license in the repository for full details.
+MIT. See [LICENSE](LICENSE).

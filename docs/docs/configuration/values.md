@@ -3,9 +3,7 @@ id: values
 title: Values templating
 ---
 
-[Overrides](model.md#overrides-inheritance-and-merge-rules) parametrize one application at a time, by name, and only work for structural differences: which apps run, which port, which interface - an override can only name an application every host in that layer actually runs.
-
-Values templating parametrizes the documents themselves, so several hosts can share one `Application`/`Pod` definition and each fill in the parts that differ - an image tag, a resource limit, a domain - including for an application that only exists on some of those hosts, which an override cannot express.
+Overrides parametrize one application at a time, by name, and only work when every host in the layer runs that application. Values templating parametrizes the documents themselves — several hosts can share one `Application`/`Pod` and each fill in the parts that differ: an image tag, a resource limit, a domain.
 
 ## Templates
 

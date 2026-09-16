@@ -28,7 +28,6 @@
   --ifm-heading-color: var(--navy);
 
   --ifm-navbar-height: 4.5rem;
-  --podcd-body-border: 8px;
 }
 
 [data-theme='dark'] {
@@ -60,7 +59,6 @@
 
 body {
   height: fit-content !important;
-  border: var(--podcd-body-border) solid var(--navy);
 }
 
 /* fix headers visually cut off by the fixed navbar */
@@ -69,11 +67,6 @@ body {
 }
 
 /* --- navbar ------------------------------------------------------------ */
-
-.navbar--fixed-top {
-  margin-top: calc(-1 * var(--podcd-body-border));
-  border-top: var(--podcd-body-border) solid var(--navy);
-}
 
 .navbar__logo {
   height: 2.75rem;
