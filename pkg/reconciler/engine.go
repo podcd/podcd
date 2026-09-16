@@ -4,6 +4,7 @@ package reconciler
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log/slog"
 	"os"
@@ -118,10 +119,10 @@ type Result struct {
 // Secrets are fetched through a Provisioner while compiling, so only the ones
 // this host's own workloads name are ever read from a store. Revisions come
 // back even on failure, because a failed reconcile still records where it was.
-func (e *Engine) desiredState(ctx context.Context) (model.DesiredState, []string, map[string]string, error) {
+func (e *Engine) desiredState(ctx context.Context) (model.DesiredState, []string, map[string]string, map[string]bool, error) {
 	index, values, revisions, offline, err := e.source.LoadIndex(ctx)
 	if err != nil {
-		return model.DesiredState{}, offline, nil, err
+		return model.DesiredState{}, offline, nil, nil, err
 	}
 	desired, err := index.Resolve(ctx, config.ResolveOptions{
 		Host:      e.source.Host,
@@ -129,7 +130,18 @@ func (e *Engine) desiredState(ctx context.Context) (model.DesiredState, []string
 		Revisions: revisions,
 		Values:    values,
 	})
-	return desired, offline, revisions, err
+	if err == nil {
+		return desired, offline, revisions, nil, nil
+	}
+	var provisioningErr *config.ProvisioningError
+	if !errors.As(err, &provisioningErr) {
+		return model.DesiredState{}, offline, revisions, nil, err
+	}
+	protected := make(map[string]bool, len(provisioningErr.Applications))
+	for app := range provisioningErr.Applications {
+		protected[app] = true
+	}
+	return desired, offline, revisions, protected, provisioningErr
 }
 
 // Plan loads Git, observes the host and returns what would change.
@@ -138,7 +150,7 @@ func (e *Engine) Plan(ctx context.Context) (Result, error) {
 	var res Result
 	res.Started = time.Now()
 
-	desired, offline, _, err := e.desiredState(ctx)
+	desired, offline, _, _, err := e.desiredState(ctx)
 	if err != nil {
 		return res, err
 	}
@@ -180,8 +192,8 @@ func (e *Engine) Reconcile(ctx context.Context, opts Options) (Result, error) {
 	st.Host = e.ident.Host
 	st.MachineID = e.ident.MachineID
 
-	desired, offline, revisions, resolveErr := e.desiredState(ctx)
-	if resolveErr != nil {
+	desired, offline, revisions, protected, resolveErr := e.desiredState(ctx)
+	if resolveErr != nil && len(protected) == 0 {
 		e.recordFailure(&st, started, revisions, resolveErr)
 		return res, resolveErr
 	}
@@ -195,7 +207,7 @@ func (e *Engine) Reconcile(ctx context.Context, opts Options) (Result, error) {
 	}
 	res.Actual = actual
 
-	plan, err := planner.Build(desired, actual, e.rend, planner.Options{Prune: e.prune(opts.Prune)})
+	plan, err := planner.Build(desired, actual, e.rend, planner.Options{Prune: e.prune(opts.Prune), Protected: protected})
 	if err != nil {
 		e.recordFailure(&st, started, desired.Revisions, err)
 		return res, err
@@ -221,6 +233,10 @@ func (e *Engine) Reconcile(ctx context.Context, opts Options) (Result, error) {
 			e.recordFailure(&st, started, desired.Revisions, unhealthy)
 			return res, unhealthy
 		}
+	}
+	if resolveErr != nil {
+		e.recordFailure(&st, started, desired.Revisions, resolveErr)
+		return res, resolveErr
 	}
 
 	res.Elapsed = time.Since(started)
@@ -317,7 +333,7 @@ func (e *Engine) Index(ctx context.Context, only ...string) (*config.Index, conf
 
 // Health probes the desired applications without changing anything.
 func (e *Engine) Health(ctx context.Context) ([]model.Health, error) {
-	desired, _, _, err := e.desiredState(ctx)
+	desired, _, _, _, err := e.desiredState(ctx)
 	if err != nil {
 		return nil, err
 	}

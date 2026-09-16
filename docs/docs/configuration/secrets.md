@@ -16,6 +16,8 @@ The mechanism is a pair of documents in your gitops repository:
 
 A host fetches only the secrets its own workloads reference, so a store nobody on this machine uses is never contacted, and a value shared by two pods costs one fetch. Rotating a value in the backend changes the manifest, and the next reconcile restarts the pod.
 
+If a secret cannot be provisioned, only the workloads that reference it are held back. Unrelated workloads still reconcile; the failed reconcile is recorded and retried, and the held-back workload is never pruned while its secret is unavailable.
+
 
 ## `env` store - secrets from agent.env
 

@@ -24,6 +24,21 @@ type SecretProvisioner interface {
 	ProvisionSecret(ctx context.Context, name string) (sec corev1.Secret, ok bool, err error)
 }
 
+// ProvisioningError means one application's ExternalSecret could not be
+// materialized. Unlike an invalid document, this is transient: callers can
+// safely reconcile the other applications and retry this one later.
+type ProvisioningError struct {
+	Applications map[string]error
+}
+
+func (e *ProvisioningError) Error() string {
+	var errs []error
+	for _, app := range slices.Sorted(maps.Keys(e.Applications)) {
+		errs = append(errs, fmt.Errorf("application %q: %w", app, e.Applications[app]))
+	}
+	return errors.Join(errs...).Error()
+}
+
 // ResolveOptions controls one compilation of the index for one host.
 type ResolveOptions struct {
 	// Host is the identity of this host. It must match a Host document.
@@ -124,6 +139,7 @@ func (ix *Index) Resolve(ctx context.Context, opts ResolveOptions) (model.Desire
 
 	var p problems
 	var apps []model.Application
+	provisioningFailures := map[string]error{}
 	for _, name := range slices.Sorted(maps.Keys(selected)) {
 		// A pod manifest and a podcd Application are compiled by different
 		// code, but they land in the same canonical type and the same plan.
@@ -148,6 +164,10 @@ func (ix *Index) Resolve(ctx context.Context, opts ResolveOptions) (model.Desire
 			app, err = docs.podToApplication(ctx, name, pod, opts.Secrets)
 		}
 		if err != nil {
+			if isProvisioningFailure(err) {
+				provisioningFailures[name] = err
+				continue
+			}
 			p.errs = append(p.errs, err)
 			continue
 		}
@@ -170,13 +190,34 @@ func (ix *Index) Resolve(ctx context.Context, opts ResolveOptions) (model.Desire
 		return zero, err
 	}
 
-	return model.DesiredState{
+	desired := model.DesiredState{
 		Host:         opts.Host,
 		Environment:  host.Spec.Environment,
 		Groups:       slices.Clone(host.Spec.Groups),
 		Revisions:    opts.Revisions,
 		Applications: apps,
-	}, nil
+	}
+	if len(provisioningFailures) > 0 {
+		return desired, &ProvisioningError{Applications: provisioningFailures}
+	}
+	return desired, nil
+}
+
+func isProvisioningFailure(err error) bool {
+	if joined, ok := err.(interface{ Unwrap() []error }); ok {
+		children := joined.Unwrap()
+		if len(children) == 0 {
+			return false
+		}
+		for _, child := range children {
+			if !isProvisioningFailure(child) {
+				return false
+			}
+		}
+		return true
+	}
+	var provisioningErr *SecretProvisionError
+	return errors.As(err, &provisioningErr)
 }
 
 // layer is one source of overrides and values, lowest precedence first: the

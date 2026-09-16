@@ -17,6 +17,10 @@ type Options struct {
 	// Prune removes managed applications Git no longer declares.
 	// When false, orphans are still reported as no-ops with a reason, never hidden.
 	Prune bool
+	// Protected applications could not be compiled because a transient
+	// dependency failed (such as ExternalSecret provisioning). They must not
+	// be removed merely because they are absent from this partial desired state.
+	Protected map[string]bool
 }
 
 // Build computes the plan that would make actual match desired.
@@ -57,7 +61,7 @@ func Build(desired model.DesiredState, actual model.ActualState, rend *renderer.
 	}
 
 	for _, name := range actual.Names() {
-		if seen[name] || !actual.Apps[name].Managed {
+		if seen[name] || opts.Protected[name] || !actual.Apps[name].Managed {
 			continue // ours and still wanted, or not ours at all
 		}
 		if !opts.Prune {

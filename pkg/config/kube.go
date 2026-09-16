@@ -162,7 +162,7 @@ func (h hostDocuments) podToApplication(ctx context.Context, name string, pod co
 		if provisioner != nil {
 			sec, ok, err := provisioner.ProvisionSecret(ctx, secName)
 			if err != nil {
-				p.add("Secret %q: %v", secName, err)
+				p.errs = append(p.errs, &SecretProvisionError{Secret: secName, Err: err})
 				continue
 			}
 			if ok {
@@ -199,6 +199,16 @@ func (h hostDocuments) podToApplication(ctx context.Context, name string, pod co
 	app.SetManifest(manifest)
 	return app, nil
 }
+
+// SecretProvisionError identifies a failed ExternalSecret fetch, so Resolve
+// can keep compiling unrelated applications and let the reconciler retry it.
+type SecretProvisionError struct {
+	Secret string
+	Err    error
+}
+
+func (e *SecretProvisionError) Error() string { return fmt.Sprintf("Secret %q: %v", e.Secret, e.Err) }
+func (e *SecretProvisionError) Unwrap() error { return e.Err }
 
 // allContainers lists init containers then regular containers.
 func allContainers(pod corev1.Pod) []corev1.Container {

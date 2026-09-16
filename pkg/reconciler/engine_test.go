@@ -206,6 +206,48 @@ spec:
   applications: [api]
 `
 
+const appWithUnavailableExternalSecret = `apiVersion: external-secrets.io/v1beta1
+kind: SecretStore
+metadata: {name: host-env}
+spec:
+  provider:
+    env: {}
+---
+apiVersion: external-secrets.io/v1beta1
+kind: ExternalSecret
+metadata: {name: unavailable}
+spec:
+  secretStoreRef: {name: host-env}
+  target: {name: unavailable}
+  data:
+    - secretKey: token
+      remoteRef: {key: PODCD_MISSING_EXTERNAL_SECRET}
+---
+apiVersion: v1
+kind: Pod
+metadata: {name: needs-secret}
+spec:
+  containers:
+    - name: app
+      image: example.com/needs-secret@sha256:aaaa
+      envFrom:
+        - secretRef: {name: unavailable}
+---
+apiVersion: v1
+kind: Pod
+metadata: {name: independent}
+spec:
+  containers:
+    - name: app
+      image: example.com/independent@sha256:bbbb
+---
+apiVersion: gitops.podcd.io/v1
+kind: Host
+metadata: {name: vm-1}
+spec:
+  applications: [needs-secret, independent]
+`
+
 func TestReconcileAppliesAndRecords(t *testing.T) {
 	rt := newFakeRuntime()
 	e, _ := newTestEngine(t, rt, twoApps)
@@ -245,6 +287,29 @@ func TestReconcileAppliesAndRecords(t *testing.T) {
 	}
 	if len(again.Applied) != 0 {
 		t.Fatalf("the second reconcile was not a no-op: %+v", again.Applied)
+	}
+}
+
+func TestReconcileAppliesIndependentAppsWhenSecretProvisioningFails(t *testing.T) {
+	rt := newFakeRuntime()
+	// A failed provision must not turn this existing app into a prune target.
+	rt.apps["needs-secret"] = model.ActualApp{Name: "needs-secret", Managed: true}
+	e, _ := newTestEngine(t, rt, appWithUnavailableExternalSecret)
+
+	res, err := e.Reconcile(context.Background(), Options{SkipHealth: true})
+	if err == nil || !strings.Contains(err.Error(), "needs-secret") {
+		t.Fatalf("want the provisioning error for needs-secret, got %v", err)
+	}
+	if len(rt.applied) != 1 || rt.applied[0] != "independent" {
+		t.Fatalf("applied = %v, want only independent", rt.applied)
+	}
+	if len(rt.removed) != 0 {
+		t.Fatalf("a blocked app must not be pruned, removed = %v", rt.removed)
+	}
+	for _, action := range res.Plan.Actions {
+		if action.App == "needs-secret" && action.Type == model.ActionDelete {
+			t.Fatalf("blocked app was scheduled for deletion: %+v", action)
+		}
 	}
 }
 
