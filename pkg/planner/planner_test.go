@@ -107,6 +107,19 @@ func TestRestartWhenUnitIsNotRunning(t *testing.T) {
 	}
 }
 
+func TestActivatingUnitIsLeftToFinishStarting(t *testing.T) {
+	a := app("api", "img@sha256:a")
+	cur := running(t, a)
+	cur.UnitState = model.UnitActivating
+	p, err := Build(desired(a), actual(cur), rend(), Options{Prune: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(p.Actions) != 1 || p.Actions[0].Type != model.ActionNoOp || p.Actions[0].Reason != "unit is starting" {
+		t.Fatalf("an activating unit should not restart, got %+v", p.Actions)
+	}
+}
+
 func TestDeleteWhenNoLongerInGit(t *testing.T) {
 	old := app("old", "img@sha256:a")
 	p, err := Build(desired(), actual(running(t, old)), rend(), Options{Prune: true})

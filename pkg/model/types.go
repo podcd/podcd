@@ -230,11 +230,12 @@ func ShortRev(s string) string {
 type UnitState string
 
 const (
-	UnitActive   UnitState = "active"
-	UnitInactive UnitState = "inactive"
-	UnitFailed   UnitState = "failed"
-	UnitMissing  UnitState = "missing"
-	UnitUnknown  UnitState = "unknown"
+	UnitActive     UnitState = "active"
+	UnitActivating UnitState = "activating"
+	UnitInactive   UnitState = "inactive"
+	UnitFailed     UnitState = "failed"
+	UnitMissing    UnitState = "missing"
+	UnitUnknown    UnitState = "unknown"
 )
 
 // ActualApp is what really exists on the host for one application.

@@ -286,6 +286,8 @@ func (r *Runtime) fillUnitStates(ctx context.Context, state model.ActualState) e
 			app.UnitState = model.UnitMissing
 		case props["ActiveState"] == "active":
 			app.UnitState = model.UnitActive
+		case props["ActiveState"] == "activating":
+			app.UnitState = model.UnitActivating
 		case props["ActiveState"] == "failed":
 			app.UnitState = model.UnitFailed
 		case props["ActiveState"] == "inactive":
@@ -293,7 +295,7 @@ func (r *Runtime) fillUnitStates(ctx context.Context, state model.ActualState) e
 		case props["ActiveState"] == "":
 			app.UnitState = model.UnitUnknown
 		default:
-			// activating, deactivating, reloading: not yet running.
+			// deactivating, reloading, or a systemd state podcd does not know.
 			app.UnitState = model.UnitState(props["ActiveState"])
 		}
 		state.Apps[n] = app
