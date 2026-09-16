@@ -44,9 +44,8 @@ Actions run one at a time under a file lock, so a human running `podcd reconcile
 
 ## Health
 
-Health is what podman reports for an application's containers: whether they are
-up, plus the verdict of the container healthcheck when the workload declares a
-probe. podcd runs no probes of its own. After applying a change it waits for the
+Health is whether every workload container is running. podcd does not run or
+interpret container healthchecks. After applying a change it waits for the
 application to come back before calling the reconcile a success.
 
 ## Retry

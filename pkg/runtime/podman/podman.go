@@ -187,11 +187,7 @@ type containerInfo struct {
 	image string
 	// state is podman's own word for it: running, exited, created, paused.
 	state string
-	// status is the human column from `podman ps`, which carries the verdict of
-	// the container's healthcheck when the workload defines one:
-	// "Up 2 minutes (healthy)".
-	status string
-	infra  bool
+	infra bool
 }
 
 // listContainers asks Podman for everything labelled as ours, grouped by app.
@@ -213,7 +209,6 @@ func (r *Runtime) listContainers(ctx context.Context, app string) (map[string][]
 		Names   []string          `json:"Names"`
 		Image   string            `json:"Image"`
 		State   string            `json:"State"`
-		Status  string            `json:"Status"`
 		IsInfra bool              `json:"IsInfra"`
 		Labels  map[string]string `json:"Labels"`
 	}
@@ -239,7 +234,7 @@ func (r *Runtime) listContainers(ctx context.Context, app string) (map[string][]
 			name = c.Names[0]
 		}
 		result[app] = append(result[app], containerInfo{
-			id: id, name: name, image: c.Image, state: c.State, status: c.Status, infra: c.IsInfra,
+			id: id, name: name, image: c.Image, state: c.State, infra: c.IsInfra,
 		})
 	}
 	for app := range result {
@@ -414,48 +409,34 @@ func (r *Runtime) Restart(ctx context.Context, app string) error {
 	return nil
 }
 
-// Health reports what podman says about an application's containers.
-//
-// podcd runs no probes of its own. If the workload declares a probe, podman
-// runs it and folds the verdict into the status line that `podman ps` prints;
-// if it declares none, the answer is simply whether the containers are up.
-// Either way the reported health is podman's, not podcd's.
+// Health reports whether every workload container is running. Podman
+// healthchecks are intentionally not part of podcd's readiness decision.
 func (r *Runtime) Health(ctx context.Context, app model.Application) (model.Health, error) {
-	h := model.Health{App: app.Name, CheckedAt: time.Now().UTC()}
-
 	containers, err := r.listContainers(ctx, app.Name)
 	if err != nil {
-		return h, err
+		return model.Health{App: app.Name, CheckedAt: time.Now().UTC()}, err
 	}
-	running := workload(containers[app.Name])
-	if len(running) == 0 {
-		h.Status = model.HealthUnhealthy
-		h.Message = "no containers"
-		return h, nil
-	}
+	return healthForContainers(app.Name, workload(containers[app.Name]), time.Now().UTC()), nil
+}
 
-	var notUp, unhealthy, starting []string
-	for _, c := range running {
-		switch {
-		case c.state != "running":
-			notUp = append(notUp, fmt.Sprintf("%s is %s", c.name, cmp.Or(c.state, "in an unknown state")))
-		case strings.Contains(c.status, "(unhealthy)"):
-			unhealthy = append(unhealthy, c.name)
-		case strings.Contains(c.status, "(starting)"):
-			starting = append(starting, c.name)
+func healthForContainers(app string, containers []containerInfo, checkedAt time.Time) model.Health {
+	h := model.Health{App: app, CheckedAt: checkedAt}
+	if len(containers) == 0 {
+		h.Status, h.Message = model.HealthUnhealthy, "no containers"
+		return h
+	}
+	var notRunning []string
+	for _, c := range containers {
+		if c.state != "running" {
+			notRunning = append(notRunning, fmt.Sprintf("%s is %s", c.name, cmp.Or(c.state, "in an unknown state")))
 		}
 	}
-	switch {
-	case len(notUp) > 0:
-		h.Status, h.Message = model.HealthUnhealthy, strings.Join(notUp, ", ")
-	case len(unhealthy) > 0:
-		h.Status, h.Message = model.HealthUnhealthy, "podman reports unhealthy: "+strings.Join(unhealthy, ", ")
-	case len(starting) > 0:
-		h.Status, h.Message = model.HealthUnknown, "healthcheck still starting: "+strings.Join(starting, ", ")
-	default:
-		h.Status, h.Message = model.HealthHealthy, running[0].status
+	if len(notRunning) > 0 {
+		h.Status, h.Message = model.HealthUnhealthy, strings.Join(notRunning, ", ")
+		return h
 	}
-	return h, nil
+	h.Status, h.Message = model.HealthHealthy, "all workload containers running"
+	return h
 }
 
 // WaitHealthy asks again until the application is healthy or the retries run
