@@ -60,7 +60,7 @@ func (f *fakeRuntime) Apply(_ context.Context, app model.Application) error {
 		return f.applyErr
 	}
 	f.applied = append(f.applied, app.Name)
-	r := &renderer.Renderer{UnitDir: "/units", EnvDir: "/env"}
+	r := &renderer.Renderer{UnitDir: "/units", KubeDir: "/kube"}
 	u, err := r.Render(app)
 	if err != nil {
 		return err
@@ -68,7 +68,7 @@ func (f *fakeRuntime) Apply(_ context.Context, app model.Application) error {
 	f.apps[app.Name] = model.ActualApp{
 		Name: app.Name, Managed: true, UnitFile: u.Path,
 		UnitFileHash: model.HashBytes(u.Content), UnitContent: u.Content,
-		SpecHash: u.SpecHash, SecretsHash: u.SecretsHash, UnitState: model.UnitActive,
+		SpecHash: u.SpecHash, UnitState: model.UnitActive,
 	}
 	return nil
 }
@@ -130,7 +130,7 @@ func newTestEngine(t *testing.T, rt *fakeRuntime, docs string) (*Engine, string)
 	e := &Engine{
 		cfg:   cfg,
 		rt:    rt,
-		rend:  &renderer.Renderer{UnitDir: "/units", EnvDir: "/env"},
+		rend:  &renderer.Renderer{UnitDir: "/units", KubeDir: "/kube"},
 		store: state.NewFileStore(cfg.StatePath()),
 		log:   log,
 	}

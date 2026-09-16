@@ -9,21 +9,25 @@ import (
 	"fmt"
 	"maps"
 	"slices"
+	"strconv"
 	"strings"
 	"time"
 
 	corev1 "k8s.io/api/core/v1"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/util/intstr"
 
 	"github.com/podcd/podcd/pkg/model"
-	"github.com/podcd/podcd/pkg/secrets"
 )
 
 // ResolveOptions controls one compilation of the index for one host.
 type ResolveOptions struct {
 	// Host is the identity of this host. It must match a Host document.
 	Host string
-	// Secrets resolves secretEnv references. May be nil if no app uses secrets.
-	Secrets *secrets.Resolver
+	// ProvisionedSecrets is the output of the provision phase: secrets fetched
+	// from external stores and ready to be bundled into kube manifests.
+	// Keyed by Secret name; takes priority over Git-defined Secrets.
+	ProvisionedSecrets map[string]corev1.Secret
 	// Revisions is repo name -> commit, carried into the desired state for reporting.
 	Revisions map[string]string
 	// Values is the lowest-precedence input to {{ .Values }} templating
@@ -133,7 +137,7 @@ func (ix *Index) Resolve(ctx context.Context, opts ResolveOptions) (model.Desire
 				return e
 			})
 			if err == nil {
-				app, err = docs.podToApplication(ctx, name, pod, opts.Secrets)
+				app, err = docs.podToApplication(ctx, name, pod, opts.ProvisionedSecrets)
 			}
 		} else if doc, ok := docs.application(name); ok {
 			spec := doc.Spec
@@ -144,7 +148,17 @@ func (ix *Index) Resolve(ctx context.Context, opts ResolveOptions) (model.Desire
 				return e
 			})
 			if err == nil {
-				app, err = specToApplication(ctx, name, spec, opts.Secrets)
+				var pod corev1.Pod
+				pod, err = appSpecToPod(name, spec)
+				if err == nil {
+					app, err = docs.podToApplication(ctx, name, pod, opts.ProvisionedSecrets)
+					if err == nil && spec.Resources != nil {
+						app.Resources = *spec.Resources
+					}
+					if err == nil && len(spec.Networks) > 0 {
+						app.Networks = slices.Sorted(slices.Values(spec.Networks))
+					}
+				}
 			}
 		} else {
 			p.add("application %q is referenced by host %q but never defined (as an Application or a Pod)", name, opts.Host)
@@ -349,9 +363,6 @@ func mergeAppSpec(base, over AppSpec) AppSpec {
 	if over.Env != nil {
 		out.Env = mergeMap(base.Env, over.Env)
 	}
-	if over.SecretEnv != nil {
-		out.SecretEnv = mergeMap(base.SecretEnv, over.SecretEnv)
-	}
 	if over.Labels != nil {
 		out.Labels = mergeMap(base.Labels, over.Labels)
 	}
@@ -392,52 +403,60 @@ func mergeMap(base, over map[string]string) map[string]string {
 	return out
 }
 
-// specToApplication validates a merged spec and converts it to the canonical form.
-func specToApplication(ctx context.Context, name string, spec AppSpec, sec *secrets.Resolver) (model.Application, error) {
+// appSpecToPod validates a merged AppSpec and converts it to a corev1.Pod.
+// The result is passed to podToApplication, which handles Pod-level validation
+// and manifest assembly.
+func appSpecToPod(name string, spec AppSpec) (corev1.Pod, error) {
 	p := problems{prefix: fmt.Sprintf("application %q: ", name)}
 
 	if !validName(name) {
 		p.add("name must be lowercase letters, digits and dashes")
 	}
-
-	app := model.Application{
-		Name:          name,
-		Image:         spec.Image,
-		Command:       slices.Clone(spec.Command),
-		Entrypoint:    slices.Clone(spec.Entrypoint),
-		Env:           mergeMap(nil, spec.Env),
-		Labels:        mergeMap(nil, spec.Labels),
-		Networks:      slices.Sorted(slices.Values(spec.Networks)),
-		RestartPolicy: cmp.Or(spec.RestartPolicy, "always"),
-		User:          spec.User,
-		WorkingDir:    spec.WorkingDir,
-		Healthcheck:   spec.Healthcheck,
-	}
-	if spec.StopTimeout != nil {
-		app.StopTimeout = *spec.StopTimeout
-	}
-	if spec.Resources != nil {
-		app.Resources = *spec.Resources
-	}
-	switch app.RestartPolicy {
-	case "always", "on-failure", "no":
-	default:
-		p.add("restartPolicy %q must be always, on-failure or no", app.RestartPolicy)
-	}
-
 	if spec.Image == "" {
 		p.add("no image")
 	}
 
-	for k := range app.Env {
-		if !validEnvName(k) {
-			p.add("environment variable name %q is not valid", k)
-		}
+	container := corev1.Container{
+		Name:       name,
+		Image:      spec.Image,
+		Args:       slices.Clone(spec.Command),
+		Command:    slices.Clone(spec.Entrypoint),
+		WorkingDir: spec.WorkingDir,
 	}
 
-	for _, port := range spec.Ports {
-		port.Protocol = cmp.Or(strings.ToLower(port.Protocol), "tcp")
-		if port.Protocol != "tcp" && port.Protocol != "udp" {
+	// env vars — sorted for determinism
+	for _, k := range slices.Sorted(maps.Keys(spec.Env)) {
+		if !validEnvName(k) {
+			p.add("environment variable name %q is not valid", k)
+			continue
+		}
+		container.Env = append(container.Env, corev1.EnvVar{Name: k, Value: spec.Env[k]})
+	}
+
+	// envFrom (configmap / secret injection)
+	for _, ef := range spec.EnvFrom {
+		src := corev1.EnvFromSource{Prefix: ef.Prefix}
+		if ef.ConfigMapRef != nil {
+			src.ConfigMapRef = &corev1.ConfigMapEnvSource{
+				LocalObjectReference: corev1.LocalObjectReference{Name: ef.ConfigMapRef.Name},
+			}
+		}
+		if ef.SecretRef != nil {
+			src.SecretRef = &corev1.SecretEnvSource{
+				LocalObjectReference: corev1.LocalObjectReference{Name: ef.SecretRef.Name},
+			}
+		}
+		container.EnvFrom = append(container.EnvFrom, src)
+	}
+
+	// ports — sort for deterministic manifest
+	sortedPorts := slices.Clone(spec.Ports)
+	slices.SortFunc(sortedPorts, func(a, b model.Port) int {
+		return cmp.Or(cmp.Compare(a.Host, b.Host), cmp.Compare(a.Container, b.Container))
+	})
+	for _, port := range sortedPorts {
+		proto := corev1.Protocol(strings.ToUpper(cmp.Or(port.Protocol, "tcp")))
+		if proto != corev1.ProtocolTCP && proto != corev1.ProtocolUDP {
 			p.add("port protocol %q must be tcp or udp", port.Protocol)
 		}
 		if !validPort(port.Host) {
@@ -446,25 +465,62 @@ func specToApplication(ctx context.Context, name string, spec AppSpec, sec *secr
 		if !validPort(port.Container) {
 			p.add("container port %d is out of range", port.Container)
 		}
-		app.Ports = append(app.Ports, port)
+		container.Ports = append(container.Ports, corev1.ContainerPort{
+			HostPort:      int32(port.Host),
+			ContainerPort: int32(port.Container),
+			Protocol:      proto,
+			HostIP:        port.HostIP,
+		})
 	}
-	slices.SortFunc(app.Ports, comparePorts)
 
-	for _, v := range spec.Volumes {
+	// volumes — sort first for a deterministic manifest regardless of input order
+	sortedVols := slices.Clone(spec.Volumes)
+	slices.SortFunc(sortedVols, func(a, b model.Volume) int {
+		return strings.Compare(a.Destination, b.Destination)
+	})
+	var podVolumes []corev1.Volume
+	for i, v := range sortedVols {
 		if v.Source == "" || v.Destination == "" {
 			p.add("volume needs both source and destination")
 			continue
 		}
 		if !strings.HasPrefix(v.Destination, "/") {
 			p.add("volume destination %q must be an absolute path", v.Destination)
+			continue
 		}
-		app.Volumes = append(app.Volumes, v)
+		volName := fmt.Sprintf("vol-%d", i)
+		podVolumes = append(podVolumes, corev1.Volume{
+			Name: volName,
+			VolumeSource: corev1.VolumeSource{
+				HostPath: &corev1.HostPathVolumeSource{Path: v.Source},
+			},
+		})
+		mount := corev1.VolumeMount{Name: volName, MountPath: v.Destination}
+		for _, opt := range strings.Split(v.Options, ",") {
+			if strings.TrimSpace(opt) == "ro" {
+				mount.ReadOnly = true
+			}
+		}
+		container.VolumeMounts = append(container.VolumeMounts, mount)
 	}
-	slices.SortFunc(app.Volumes, func(a, b model.Volume) int {
-		return cmp.Or(cmp.Compare(a.Destination, b.Destination), cmp.Compare(a.Source, b.Source))
-	})
 
-	if hc := app.Healthcheck; hc != nil {
+	// user — numeric UID only; kube play does not resolve usernames
+	if spec.User != "" {
+		uid := spec.User
+		if i := strings.Index(uid, ":"); i >= 0 {
+			uid = uid[:i]
+		}
+		n, err := strconv.ParseInt(uid, 10, 64)
+		if err != nil {
+			p.add("user %q must be a numeric UID (or UID:GID); names are not supported in kube manifests", spec.User)
+		} else {
+			container.SecurityContext = &corev1.SecurityContext{RunAsUser: &n}
+		}
+	}
+
+	// healthcheck → readiness probe
+	// The AppSpec healthcheck port is a host port; we need the matching container port.
+	if hc := spec.Healthcheck; hc != nil {
 		set := 0
 		if hc.HTTP != nil {
 			set++
@@ -498,32 +554,96 @@ func specToApplication(ctx context.Context, name string, spec AppSpec, sec *secr
 		if hc.Retries < 0 {
 			p.add("healthcheck retries must not be negative")
 		}
-	}
 
-	if len(spec.SecretEnv) > 0 {
-		if sec == nil {
-			p.add("uses secretEnv but no secret provider is configured")
-		} else {
-			app.SecretEnv = make(map[string]string, len(spec.SecretEnv))
-			for _, k := range slices.Sorted(maps.Keys(spec.SecretEnv)) {
-				if !validEnvName(k) {
-					p.add("secret environment variable name %q is not valid", k)
-					continue
-				}
-				v, err := sec.Resolve(ctx, spec.SecretEnv[k])
-				if err != nil {
-					p.add("%v", err)
-					continue
-				}
-				app.SecretEnv[k] = v
-			}
+		// Build the probe only when validation passed.
+		if probe := appHealthcheckToProbe(hc, spec.Ports); probe != nil {
+			container.ReadinessProbe = probe
 		}
 	}
 
-	if err := p.err(); err != nil {
-		return model.Application{}, err
+	restartPolicy := appRestartPolicyToKube(cmp.Or(spec.RestartPolicy, "always"))
+	switch spec.RestartPolicy {
+	case "", "always", "on-failure", "no":
+	default:
+		p.add("restartPolicy %q must be always, on-failure or no", spec.RestartPolicy)
 	}
-	return app, nil
+
+	var gracePeriod *int64
+	if spec.StopTimeout != nil {
+		t := int64(*spec.StopTimeout)
+		gracePeriod = &t
+	}
+
+	labels := make(map[string]string, len(spec.Labels))
+	for k, v := range spec.Labels {
+		labels[k] = v
+	}
+
+	if err := p.err(); err != nil {
+		return corev1.Pod{}, err
+	}
+
+	return corev1.Pod{
+		ObjectMeta: metav1.ObjectMeta{Name: name, Labels: labels},
+		Spec: corev1.PodSpec{
+			Containers:                    []corev1.Container{container},
+			Volumes:                       podVolumes,
+			RestartPolicy:                 restartPolicy,
+			TerminationGracePeriodSeconds: gracePeriod,
+		},
+	}, nil
+}
+
+// appRestartPolicyToKube maps podcd restart policy names to Kubernetes RestartPolicy values.
+func appRestartPolicyToKube(s string) corev1.RestartPolicy {
+	switch s {
+	case "on-failure":
+		return corev1.RestartPolicyOnFailure
+	case "no":
+		return corev1.RestartPolicyNever
+	default:
+		return corev1.RestartPolicyAlways
+	}
+}
+
+// appHealthcheckToProbe converts a model healthcheck to a Kubernetes probe.
+// The AppSpec healthcheck port is the host port; we look up the container port from ports.
+func appHealthcheckToProbe(hc *model.Healthcheck, ports []model.Port) *corev1.Probe {
+	containerPort := func(hostPort int) (int, bool) {
+		for _, p := range ports {
+			if p.Host == hostPort {
+				return p.Container, true
+			}
+		}
+		return 0, false
+	}
+
+	var probe corev1.Probe
+	switch {
+	case hc.HTTP != nil:
+		cp, ok := containerPort(hc.HTTP.Port)
+		if !ok {
+			return nil
+		}
+		probe.HTTPGet = &corev1.HTTPGetAction{
+			Path: cmp.Or(hc.HTTP.Path, "/"),
+			Port: intstr.FromInt32(int32(cp)),
+		}
+		if strings.EqualFold(hc.HTTP.Scheme, "https") {
+			probe.HTTPGet.Scheme = corev1.URISchemeHTTPS
+		}
+	case hc.TCP != nil:
+		cp, ok := containerPort(hc.TCP.Port)
+		if !ok {
+			return nil
+		}
+		probe.TCPSocket = &corev1.TCPSocketAction{Port: intstr.FromInt32(int32(cp))}
+	case hc.Exec != nil:
+		probe.Exec = &corev1.ExecAction{Command: hc.Exec.Command}
+	default:
+		return nil
+	}
+	return &probe
 }
 
 func validPort(n int) bool { return n >= 1 && n <= 65535 }

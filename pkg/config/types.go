@@ -60,8 +60,8 @@ func (s Source) String() string {
 //
 // Merge rules, applied in the documented precedence order:
 //   - scalars: a non-empty value in the higher layer wins
-//   - maps (env, secretEnv, labels): merged key by key, higher layer wins per key
-//   - slices (ports, volumes, networks, command): replaced wholesale, never appended
+//   - maps (env, labels): merged key by key, higher layer wins per key
+//   - slices (ports, volumes, networks, command, envFrom): replaced wholesale, never appended
 //   - healthcheck, resources: replaced wholesale when present
 //
 // Slices replace rather than merge, appending has no sane semantics for a port list and hides what is actually running.
@@ -70,8 +70,8 @@ type AppSpec struct {
 	Command    []string `json:"command,omitempty"`
 	Entrypoint []string `json:"entrypoint,omitempty"`
 
-	Env       map[string]string `json:"env,omitempty"`
-	SecretEnv map[string]string `json:"secretEnv,omitempty"` // env var name -> secret reference
+	Env     map[string]string `json:"env,omitempty"`
+	EnvFrom []AppEnvFrom      `json:"envFrom,omitempty"`
 
 	Ports    []model.Port      `json:"ports,omitempty"`
 	Volumes  []model.Volume    `json:"volumes,omitempty"`
@@ -85,6 +85,20 @@ type AppSpec struct {
 
 	Healthcheck *model.Healthcheck `json:"healthcheck,omitempty"`
 	Resources   *model.Resources   `json:"resources,omitempty"`
+}
+
+// AppEnvFrom injects all keys from a ConfigMap or Secret as environment variables.
+// Mirrors corev1.EnvFromSource for the Application sugar layer.
+type AppEnvFrom struct {
+	ConfigMapRef *AppLocalObjectRef `json:"configMapRef,omitempty"`
+	SecretRef    *AppLocalObjectRef `json:"secretRef,omitempty"`
+	// Prefix prepends a string to every key from the source.
+	Prefix string `json:"prefix,omitempty"`
+}
+
+// AppLocalObjectRef names a ConfigMap or Secret by name.
+type AppLocalObjectRef struct {
+	Name string `json:"name"`
 }
 
 // Override is a partial change to one workload, kept raw until resolution.

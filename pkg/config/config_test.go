@@ -6,8 +6,6 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
-
-	"github.com/podcd/podcd/pkg/secrets"
 )
 
 // writeTree writes files into a temporary directory and returns its path.
@@ -325,69 +323,6 @@ spec:
 	}
 }
 
-func TestSecretsAreResolvedAndNeverInGit(t *testing.T) {
-	files := baseFiles()
-	files["apps/api.yaml"] = `
-apiVersion: gitops.podcd.io/v1
-kind: Application
-metadata:
-  name: api
-spec:
-  image: example.com/api` + digest + `
-  secretEnv:
-    API_TOKEN: env:TEST_API_TOKEN
-`
-	t.Setenv("TEST_API_TOKEN", "s3cret")
-	ix := loadIndex(t, files)
-	got, err := ix.Resolve(context.Background(), ResolveOptions{
-		Host:    "prod-web-01",
-		Secrets: secrets.Default("", ""),
-	})
-	if err != nil {
-		t.Fatalf("resolve: %v", err)
-	}
-	if got.Applications[0].SecretEnv["API_TOKEN"] != "s3cret" {
-		t.Errorf("secret was not resolved: %v", got.Applications[0].SecretEnv)
-	}
-}
-
-func TestMissingSecretFailsTheReconcile(t *testing.T) {
-	files := baseFiles()
-	files["apps/api.yaml"] = `
-apiVersion: gitops.podcd.io/v1
-kind: Application
-metadata:
-  name: api
-spec:
-  image: example.com/api` + digest + `
-  secretEnv:
-    API_TOKEN: env:DEFINITELY_NOT_SET_12345
-`
-	ix := loadIndex(t, files)
-	_, err := ix.Resolve(context.Background(), ResolveOptions{Host: "prod-web-01", Secrets: secrets.Default("", "")})
-	if err == nil || !strings.Contains(err.Error(), "secret not found") {
-		t.Fatalf("a missing secret must fail loudly, got: %v", err)
-	}
-}
-
-func TestPlaintextSecretReferenceIsRejected(t *testing.T) {
-	files := baseFiles()
-	files["apps/api.yaml"] = `
-apiVersion: gitops.podcd.io/v1
-kind: Application
-metadata:
-  name: api
-spec:
-  image: example.com/api` + digest + `
-  secretEnv:
-    API_TOKEN: hunter2
-`
-	ix := loadIndex(t, files)
-	_, err := ix.Resolve(context.Background(), ResolveOptions{Host: "prod-web-01", Secrets: secrets.Default("", "")})
-	if err == nil || !strings.Contains(err.Error(), "scheme:locator") {
-		t.Fatalf("a literal secret value must not work, got: %v", err)
-	}
-}
 
 func TestAgentConfigDefaultsAndValidation(t *testing.T) {
 	dir := t.TempDir()

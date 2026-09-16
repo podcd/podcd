@@ -123,7 +123,7 @@ func TestConfigCreateWritesTheFullAnnotatedSpec(t *testing.T) {
 	}
 	// Every other field is present, as a commented default - documented, but
 	// not pinning this machine's paths or the current defaults into the file.
-	for _, field := range []string{"host", "jitter", "retryInterval", "maxRetryInterval", "runtime", "stateDir", "unitDir", "secretsDir", "envFile", "prune", "logFormat", "vault"} {
+	for _, field := range []string{"host", "jitter", "retryInterval", "maxRetryInterval", "runtime", "stateDir", "unitDir", "secretsDir", "envFile", "prune", "logFormat"} {
 		if !strings.Contains(text, "\n# "+field+":") {
 			t.Errorf("config should show %q as a commented default:\n%s", field, text)
 		}
@@ -131,7 +131,7 @@ func TestConfigCreateWritesTheFullAnnotatedSpec(t *testing.T) {
 			t.Errorf("config should not activate the default %q:\n%s", field, text)
 		}
 	}
-	for _, want := range []string{"#   token: env:GITOPS_TOKEN", "#   roleId: env:VAULT_ROLE_ID"} {
+	for _, want := range []string{"#   token: env:GITOPS_TOKEN"} {
 		if !strings.Contains(text, want) {
 			t.Errorf("config should show the %q example:\n%s", want, text)
 		}

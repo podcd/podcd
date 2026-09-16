@@ -4,8 +4,6 @@ import (
 	"context"
 	"strings"
 	"testing"
-
-	"github.com/podcd/podcd/pkg/secrets"
 )
 
 const podFiles = `
@@ -52,7 +50,7 @@ func resolvePod(t *testing.T, files map[string]string, host string) (string, err
 	if err := ix.LoadTree("test", writeTree(t, files)); err != nil {
 		return "", err
 	}
-	got, err := ix.Resolve(context.Background(), ResolveOptions{Host: host, Secrets: secrets.Default("", "")})
+	got, err := ix.Resolve(context.Background(), ResolveOptions{Host: host})
 	if err != nil {
 		return "", err
 	}
@@ -231,36 +229,6 @@ data:
 	}
 }
 
-func TestPodSecretIsResolvedOnTheHost(t *testing.T) {
-	t.Setenv("TEST_DB_PASSWORD", "resolved-on-host")
-	files := map[string]string{"pod.yaml": strings.Replace(podFiles, "      envFrom:\n", `      env:
-        - name: PASSWORD
-          valueFrom:
-            secretKeyRef:
-              name: db
-              key: PASSWORD
-      envFrom:
-`, 1) + `
----
-apiVersion: v1
-kind: Secret
-metadata:
-  name: db
-stringData:
-  PASSWORD: env:TEST_DB_PASSWORD
-`}
-	manifest, err := resolvePod(t, files, "vm-1")
-	if err != nil {
-		t.Fatal(err)
-	}
-	// podman reads data (base64); "resolved-on-host" base64-encodes to this.
-	if !strings.Contains(manifest, "PASSWORD: cmVzb2x2ZWQtb24taG9zdA==") {
-		t.Errorf("the secret was not resolved into the manifest:\n%s", manifest)
-	}
-	if strings.Contains(manifest, "env:TEST_DB_PASSWORD") {
-		t.Error("the reference should have been replaced by the value")
-	}
-}
 
 func TestPodMissingSecretFailsTheReconcile(t *testing.T) {
 	files := map[string]string{"pod.yaml": strings.Replace(podFiles, "      envFrom:\n", `      env:

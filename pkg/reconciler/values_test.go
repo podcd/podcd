@@ -68,7 +68,7 @@ spec: {applications: [web]}
 		e := &Engine{
 			cfg:   cfg,
 			rt:    newFakeRuntime(),
-			rend:  &renderer.Renderer{UnitDir: "/units", EnvDir: "/env"},
+			rend:  &renderer.Renderer{UnitDir: "/units", KubeDir: "/kube"},
 			store: state.NewFileStore(cfg.StatePath()),
 			log:   log,
 		}

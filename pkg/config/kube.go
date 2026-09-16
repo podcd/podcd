@@ -15,7 +15,6 @@ import (
 	sigyaml "sigs.k8s.io/yaml"
 
 	"github.com/podcd/podcd/pkg/model"
-	"github.com/podcd/podcd/pkg/secrets"
 )
 
 // Labels podcd stamps on every pod it plays, so it can recognise its own work.
@@ -43,7 +42,7 @@ func patchPod(pod corev1.Pod, override Override) (corev1.Pod, error) {
 	return out, nil
 }
 
-func (h hostDocuments) podToApplication(ctx context.Context, name string, pod corev1.Pod, sec *secrets.Resolver) (model.Application, error) {
+func (h hostDocuments) podToApplication(ctx context.Context, name string, pod corev1.Pod, provisionedSecrets map[string]corev1.Secret) (model.Application, error) {
 	p := problems{prefix: fmt.Sprintf("pod %q: ", name)}
 
 	if !validName(name) {
@@ -57,6 +56,7 @@ func (h hostDocuments) podToApplication(ctx context.Context, name string, pod co
 		Name:          name,
 		Kind:          model.KindKube,
 		RestartPolicy: kubeRestartPolicy(pod.Spec.RestartPolicy),
+		Labels:        maps.Clone(pod.Labels),
 	}
 
 	seenNames := map[string]bool{}
@@ -88,6 +88,36 @@ func (h hostDocuments) podToApplication(ctx context.Context, name string, pod co
 	}
 	slices.SortFunc(app.Ports, comparePorts)
 
+	// Populate Env and Volumes from the first container so callers can inspect the
+	// effective config without parsing the manifest YAML.
+	if len(pod.Spec.Containers) > 0 {
+		c := pod.Spec.Containers[0]
+		for _, e := range c.Env {
+			if e.ValueFrom == nil {
+				if app.Env == nil {
+					app.Env = make(map[string]string)
+				}
+				app.Env[e.Name] = e.Value
+			}
+		}
+		// Map volume mounts back to model.Volume via pod.Spec.Volumes lookup.
+		volByName := make(map[string]corev1.Volume, len(pod.Spec.Volumes))
+		for _, v := range pod.Spec.Volumes {
+			volByName[v.Name] = v
+		}
+		for _, m := range c.VolumeMounts {
+			pv, ok := volByName[m.Name]
+			if !ok || pv.HostPath == nil {
+				continue
+			}
+			v := model.Volume{Source: pv.HostPath.Path, Destination: m.MountPath}
+			if m.ReadOnly {
+				v.Options = "ro"
+			}
+			app.Volumes = append(app.Volumes, v)
+		}
+	}
+
 	// ConfigMaps and Secrets the pod refers to must exist in Git, unless the
 	// reference is marked optional.
 	// Missing ones would only fail inside podman, later, with a worse message.
@@ -105,19 +135,18 @@ func (h hostDocuments) podToApplication(ctx context.Context, name string, pod co
 	}
 	var secretDocs []corev1.Secret
 	for _, secName := range slices.Sorted(maps.Keys(refs.secrets)) {
+		if s, ok := provisionedSecrets[secName]; ok {
+			secretDocs = append(secretDocs, s)
+			continue
+		}
 		doc, ok := h.secret(secName)
 		if !ok {
 			if !refs.secrets[secName] {
-				p.add("refers to Secret %q, which is not defined", secName)
+				p.add("refers to Secret %q, which is not defined (define it in Git or provision it via ExternalSecret)", secName)
 			}
 			continue
 		}
-		resolved, err := resolveSecret(ctx, doc.Spec, sec)
-		if err != nil {
-			p.add("%v", err)
-			continue
-		}
-		secretDocs = append(secretDocs, resolved)
+		secretDocs = append(secretDocs, doc.Spec)
 	}
 
 	app.Healthcheck = kubeHealthcheck(pod)
@@ -178,25 +207,6 @@ func renderManifest(pod corev1.Pod, configMaps []corev1.ConfigMap, secretDocs []
 		b.Write(out)
 	}
 	return b.Bytes(), nil
-}
-
-// resolveSecret turns a reference-only Secret into one podman can use: every
-// stringData reference is looked up on the host and the result goes into data.
-func resolveSecret(ctx context.Context, in corev1.Secret, sec *secrets.Resolver) (corev1.Secret, error) {
-	out := in
-	out.StringData = nil
-	out.Data = map[string][]byte{}
-	if sec == nil && len(in.StringData) > 0 {
-		return out, fmt.Errorf("Secret %q needs a secret provider, but none is configured", in.Name)
-	}
-	for _, k := range slices.Sorted(maps.Keys(in.StringData)) {
-		v, err := sec.Resolve(ctx, in.StringData[k])
-		if err != nil {
-			return out, fmt.Errorf("Secret %q key %s: %w", in.Name, k, err)
-		}
-		out.Data[k] = []byte(v)
-	}
-	return out, nil
 }
 
 // refSet collects referenced names; the bool is "optional". A name that is

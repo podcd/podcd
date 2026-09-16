@@ -53,7 +53,7 @@ func NewEngine(cfg config.AgentConfig, log *slog.Logger) (*Engine, error) {
 	var rend *renderer.Renderer
 	switch cfg.Runtime {
 	case "podman":
-		p := podman.New(podman.Options{UnitDir: cfg.UnitDir, EnvDir: cfg.SecretEnvDir(), KubeDir: cfg.KubeDir()})
+		p := podman.New(podman.Options{UnitDir: cfg.UnitDir, KubeDir: cfg.KubeDir()})
 		rt, rend = p, p.Renderer()
 	default:
 		return nil, fmt.Errorf("runtime %q is not implemented; the MVP supports rootless podman", cfg.Runtime)
@@ -67,50 +67,16 @@ func NewEngine(cfg config.AgentConfig, log *slog.Logger) (*Engine, error) {
 		store: state.NewFileStore(cfg.StatePath()),
 		log:   log,
 	}
-	resolver, err := newSecretResolver(cfg)
-	if err != nil {
-		return nil, err
-	}
 	repos, tokenRefs, valuesFiles := ReposFromConfig(cfg)
 	e.source = &Source{
 		Repos:       repos,
 		TokenRefs:   tokenRefs,
 		ValuesFiles: valuesFiles,
 		Host:        ident.Host,
-		Secrets:     resolver,
+		Secrets:     secrets.Default(cfg.SecretsDir, cfg.EnvFile),
 		Log:         log,
 	}
 	return e, nil
-}
-
-// newSecretResolver builds the env: and file: providers, vault: when configured.
-func newSecretResolver(cfg config.AgentConfig) (*secrets.Resolver, error) {
-	local := secrets.Default(cfg.SecretsDir, cfg.EnvFile)
-	if cfg.Vault == nil {
-		return local, nil
-	}
-	v := cfg.Vault
-	viaLocal := func(ref string) func(context.Context) (string, error) {
-		if ref == "" {
-			return nil
-		}
-		return func(ctx context.Context) (string, error) { return local.Resolve(ctx, ref) }
-	}
-	vault, err := secrets.NewVaultProvider(secrets.VaultOptions{
-		Address:   v.Address,
-		Namespace: v.Namespace,
-		CACert:    v.CACert,
-		RoleID:    viaLocal(v.RoleID),
-		SecretID:  viaLocal(v.SecretID),
-		AuthMount: v.AuthMount,
-		Token:     viaLocal(v.Token),
-		KVVersion: v.KVVersion,
-		CacheTTL:  v.CacheTTL,
-	})
-	if err != nil {
-		return nil, err
-	}
-	return secrets.NewResolver(secrets.EnvProvider{File: cfg.EnvFile}, secrets.FileProvider{Root: cfg.SecretsDir}, vault), nil
 }
 
 // Config returns the agent configuration in use.
@@ -153,12 +119,27 @@ func (e *Engine) Plan(ctx context.Context) (Result, error) {
 	var res Result
 	res.Started = time.Now()
 
-	load, err := e.source.LoadDesiredState(ctx)
+	index, values, revisions, offline, err := e.source.LoadIndex(ctx)
 	if err != nil {
 		return res, err
 	}
-	res.Desired = load.Desired
-	res.Offline = load.Offline
+	res.Offline = offline
+
+	provisioned, err := Provision(ctx, index, e.cfg.StateDir, e.source.Secrets)
+	if err != nil {
+		return res, err
+	}
+
+	desired, err := index.Resolve(ctx, config.ResolveOptions{
+		Host:               e.source.Host,
+		ProvisionedSecrets: provisioned,
+		Revisions:          revisions,
+		Values:             values,
+	})
+	if err != nil {
+		return res, err
+	}
+	res.Desired = desired
 
 	actual, err := e.rt.Inspect(ctx)
 	if err != nil {
@@ -166,7 +147,7 @@ func (e *Engine) Plan(ctx context.Context) (Result, error) {
 	}
 	res.Actual = actual
 
-	plan, err := planner.Build(load.Desired, actual, e.rend, planner.Options{Prune: e.prune(nil)})
+	plan, err := planner.Build(desired, actual, e.rend, planner.Options{Prune: e.prune(nil)})
 	if err != nil {
 		return res, err
 	}
@@ -195,24 +176,41 @@ func (e *Engine) Reconcile(ctx context.Context, opts Options) (Result, error) {
 	st.Host = e.ident.Host
 	st.MachineID = e.ident.MachineID
 
-	load, loadErr := e.source.LoadDesiredState(ctx)
-	if loadErr != nil {
-		e.recordFailure(&st, started, nil, loadErr)
-		return res, loadErr
+	index, values, revisions, offline, indexErr := e.source.LoadIndex(ctx)
+	if indexErr != nil {
+		e.recordFailure(&st, started, nil, indexErr)
+		return res, indexErr
 	}
-	res.Desired = load.Desired
-	res.Offline = load.Offline
+	res.Offline = offline
+
+	provisioned, provErr := Provision(ctx, index, e.cfg.StateDir, e.source.Secrets)
+	if provErr != nil {
+		e.recordFailure(&st, started, revisions, provErr)
+		return res, provErr
+	}
+
+	desired, resolveErr := index.Resolve(ctx, config.ResolveOptions{
+		Host:               e.source.Host,
+		ProvisionedSecrets: provisioned,
+		Revisions:          revisions,
+		Values:             values,
+	})
+	if resolveErr != nil {
+		e.recordFailure(&st, started, revisions, resolveErr)
+		return res, resolveErr
+	}
+	res.Desired = desired
 
 	actual, err := e.rt.Inspect(ctx)
 	if err != nil {
-		e.recordFailure(&st, started, load.Desired.Revisions, err)
+		e.recordFailure(&st, started, desired.Revisions, err)
 		return res, err
 	}
 	res.Actual = actual
 
-	plan, err := planner.Build(load.Desired, actual, e.rend, planner.Options{Prune: e.prune(opts.Prune)})
+	plan, err := planner.Build(desired, actual, e.rend, planner.Options{Prune: e.prune(opts.Prune)})
 	if err != nil {
-		e.recordFailure(&st, started, load.Desired.Revisions, err)
+		e.recordFailure(&st, started, desired.Revisions, err)
 		return res, err
 	}
 	res.Plan = plan
@@ -222,24 +220,24 @@ func (e *Engine) Reconcile(ctx context.Context, opts Options) (Result, error) {
 		return res, nil
 	}
 
-	applied, applyErr := e.apply(ctx, plan, load.Desired, &st)
+	applied, applyErr := e.apply(ctx, plan, desired, &st)
 	res.Applied = applied
 	if applyErr != nil {
-		e.recordFailure(&st, started, load.Desired.Revisions, applyErr)
+		e.recordFailure(&st, started, desired.Revisions, applyErr)
 		return res, applyErr
 	}
 
 	if !opts.SkipHealth {
-		health, unhealthy := e.checkHealth(ctx, load.Desired, applied, &st)
+		health, unhealthy := e.checkHealth(ctx, desired, applied, &st)
 		res.Health = health
 		if unhealthy != nil {
-			e.recordFailure(&st, started, load.Desired.Revisions, unhealthy)
+			e.recordFailure(&st, started, desired.Revisions, unhealthy)
 			return res, unhealthy
 		}
 	}
 
 	res.Elapsed = time.Since(started)
-	e.recordSuccess(&st, started, load.Desired.Revisions, applied, res.Elapsed)
+	e.recordSuccess(&st, started, desired.Revisions, applied, res.Elapsed)
 	return res, nil
 }
 

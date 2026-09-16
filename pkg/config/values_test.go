@@ -6,8 +6,6 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
-
-	"github.com/podcd/podcd/pkg/secrets"
 )
 
 func TestMergeValuesDeepMergesMapsAndReplacesEverythingElse(t *testing.T) {
@@ -461,7 +459,7 @@ spec: {applications: [web]}
 	ix := loadIndex(t, files)
 	t.Setenv("DB_PASSWORD", "hunter2")
 
-	desired, err := ix.Resolve(context.Background(), ResolveOptions{Host: "vm-1", Secrets: secrets.Default("", ""), Values: Values{
+	desired, err := ix.Resolve(context.Background(), ResolveOptions{Host: "vm-1", Values: Values{
 		"logLevel": "debug", "extra": "hi", "passwordRef": "env:DB_PASSWORD",
 	}})
 	if err != nil {

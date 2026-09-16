@@ -50,7 +50,6 @@ func (s *Source) LoadDesiredState(ctx context.Context) (LoadResult, error) {
 	result.Offline = offline
 	desired, err := index.Resolve(ctx, config.ResolveOptions{
 		Host:      s.Host,
-		Secrets:   s.Secrets,
 		Revisions: revisions,
 		Values:    values,
 	})

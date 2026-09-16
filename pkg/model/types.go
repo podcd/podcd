@@ -187,10 +187,6 @@ type Application struct {
 
 	Env map[string]string `json:"env,omitempty"`
 
-	// SecretEnv holds resolved secret values.
-	// It is redacted by MarshalJSON and never written to a unit file, the renderer puts it in a 0600 env file.
-	SecretEnv map[string]string `json:"secretEnv,omitempty"`
-
 	Ports    []Port            `json:"ports,omitempty"`
 	Volumes  []Volume          `json:"volumes,omitempty"`
 	Networks []string          `json:"networks,omitempty"`
@@ -230,19 +226,6 @@ func (a *Application) SetManifest(manifest []byte) {
 	a.ManifestHash = HashBytes(manifest)
 }
 
-// MarshalJSON redacts secret values, so logs, `podcd plan` output, and the local state file never carry them.
-func (a Application) MarshalJSON() ([]byte, error) {
-	type alias Application // avoid recursion
-	clone := alias(a)
-	if len(a.SecretEnv) > 0 {
-		redacted := make(map[string]string, len(a.SecretEnv))
-		for k := range a.SecretEnv {
-			redacted[k] = "[redacted]"
-		}
-		clone.SecretEnv = redacted
-	}
-	return json.Marshal(clone)
-}
 
 // DesiredState is everything that should exist on this host at a given Git revision.
 type DesiredState struct {
@@ -317,8 +300,7 @@ type ActualApp struct {
 	// ManifestContent is the played manifest of a kube workload as read from disk.
 	// Same rules as UnitContent: used for explaining changes, never stored.
 	ManifestContent []byte `json:"-"`
-	SpecHash        string `json:"specHash,omitempty"` // marker written by the renderer
-	SecretsHash     string `json:"secretsHash,omitempty"`
+	SpecHash string `json:"specHash,omitempty"` // marker written by the renderer
 
 	UnitName  string    `json:"unitName,omitempty"`
 	UnitState UnitState `json:"unitState,omitempty"`

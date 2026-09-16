@@ -17,8 +17,6 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	k8syaml "k8s.io/apimachinery/pkg/util/yaml"
 	sigyaml "sigs.k8s.io/yaml"
-
-	"github.com/podcd/podcd/pkg/secrets"
 )
 
 // documents is every decoded document of every kind, addressed by name.
@@ -37,22 +35,25 @@ type documents struct {
 	Environments map[string]Doc[SelectionSpec]
 	Hosts        map[string]Doc[HostSpec]
 
-	// A Secret's values must be references (env:NAME, file:path), never
-	// plaintext; the loader enforces that.
 	Pods       map[string]Doc[corev1.Pod]
 	ConfigMaps map[string]Doc[corev1.ConfigMap]
 	Secrets    map[string]Doc[corev1.Secret]
+
+	SecretStores    map[string]Doc[SecretStoreSpec]
+	ExternalSecrets map[string]Doc[ExternalSecretSpec]
 }
 
 func newDocuments() documents {
 	return documents{
-		Applications: map[string]Doc[AppSpec]{},
-		Groups:       map[string]Doc[SelectionSpec]{},
-		Environments: map[string]Doc[SelectionSpec]{},
-		Hosts:        map[string]Doc[HostSpec]{},
-		Pods:         map[string]Doc[corev1.Pod]{},
-		ConfigMaps:   map[string]Doc[corev1.ConfigMap]{},
-		Secrets:      map[string]Doc[corev1.Secret]{},
+		Applications:    map[string]Doc[AppSpec]{},
+		Groups:          map[string]Doc[SelectionSpec]{},
+		Environments:    map[string]Doc[SelectionSpec]{},
+		Hosts:           map[string]Doc[HostSpec]{},
+		Pods:            map[string]Doc[corev1.Pod]{},
+		ConfigMaps:      map[string]Doc[corev1.ConfigMap]{},
+		Secrets:         map[string]Doc[corev1.Secret]{},
+		SecretStores:    map[string]Doc[SecretStoreSpec]{},
+		ExternalSecrets: map[string]Doc[ExternalSecretSpec]{},
 	}
 }
 
@@ -285,8 +286,16 @@ func (d *documents) add(env document, src Source) error {
 			return addObject(d.Secrets, env.Kind, name, src, checkSecretIsReferenceOnly)
 		}
 		return fmt.Errorf("%s: kind %q is not supported from apiVersion v1 (Pod, ConfigMap, Secret are)", src, env.Kind)
+	case ExternalSecretsAPIVersion:
+		switch env.Kind {
+		case KindSecretStore:
+			return addSpec(d.SecretStores, env.Kind, name, src)
+		case KindExternalSecret:
+			return addSpec(d.ExternalSecrets, env.Kind, name, src)
+		}
+		return fmt.Errorf("%s: kind %q is not supported from apiVersion %s (SecretStore, ExternalSecret are)", src, env.Kind, ExternalSecretsAPIVersion)
 	default:
-		return fmt.Errorf("%s: apiVersion %q is not supported (want %s or %s)", src, env.APIVersion, APIVersion, CoreAPIVersion)
+		return fmt.Errorf("%s: apiVersion %q is not supported (want %s, %s, or %s)", src, env.APIVersion, APIVersion, CoreAPIVersion, ExternalSecretsAPIVersion)
 	}
 }
 
@@ -301,6 +310,36 @@ func addSpec[T any](into map[string]Doc[T], kind, name string, src Source) error
 		return err
 	}
 	return put(into, kind, name, src, doc.Spec)
+}
+
+// checkSecretIsReferenceOnly rejects Secret documents that embed plaintext values.
+// Secrets in Git must store scheme:locator references (env:KEY, file:/path) so
+// that no plaintext credential ever lands in the repository.
+func checkSecretIsReferenceOnly(spec corev1.Secret, src Source) error {
+	if len(spec.Data) > 0 {
+		return fmt.Errorf("%s: plaintext values in data are not supported; "+
+			"base64 is encoding, not encryption — use stringData with scheme:locator references (env:, file:) instead", src)
+	}
+	for k, v := range spec.StringData {
+		if !isSecretRef(v) {
+			return fmt.Errorf("%s: secret key %q: values in Git must be references (scheme:locator, e.g. env:KEY or file:/path), got %q", src, k, v)
+		}
+	}
+	return nil
+}
+
+// isSecretRef reports whether v has the shape of a scheme:locator reference.
+func isSecretRef(v string) bool {
+	scheme, locator, ok := strings.Cut(v, ":")
+	if !ok || scheme == "" || locator == "" {
+		return false
+	}
+	for _, r := range scheme {
+		if r < 'a' || r > 'z' {
+			return false
+		}
+	}
+	return true
 }
 
 // addObject decodes a whole core/v1 object and indexes it, after an optional
@@ -340,29 +379,6 @@ func (ix *Index) readValuesFile(repo, path string) (Values, error) {
 		return nil, fmt.Errorf("values file %q was not loaded from repository %q", path, repo)
 	}
 	return parseValues(Source{Repo: repo, Path: path}.String(), data)
-}
-
-// checkSecretIsReferenceOnly enforces the one rule that does not bend: a Secret in Git carries references to values, never the values.
-//
-// `data` is base64 of plaintext and is refused outright.
-// `stringData` values must look like "scheme:locator", they are resolved on the host at reconcile time by the secrets provider.
-func checkSecretIsReferenceOnly(sec corev1.Secret, src Source) error {
-	if len(sec.Data) > 0 {
-		return fmt.Errorf("%s: Secret %q has plaintext values in data (%s); use stringData with references such as env:NAME or file:path",
-			src, sec.Name, strings.Join(slices.Sorted(maps.Keys(sec.Data)), ", "))
-	}
-	var literals []string
-	for k, v := range sec.StringData {
-		if !secrets.IsReference(v) {
-			literals = append(literals, k)
-		}
-	}
-	if len(literals) > 0 {
-		slices.Sort(literals)
-		return fmt.Errorf("%s: Secret %q: stringData values must be references like env:NAME or file:path, not literals (keys: %s)",
-			src, sec.Name, strings.Join(literals, ", "))
-	}
-	return nil
 }
 
 // strictDecode decodes a YAML document against its real Go type and rejects unknown fields.

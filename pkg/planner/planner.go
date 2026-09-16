@@ -49,8 +49,6 @@ func Build(desired model.DesiredState, actual model.ActualState, rend *renderer.
 				"remove it by hand or restore its podcd header before reconciling", app.Name, cur.UnitFile)
 		case cur.UnitFileHash != model.HashBytes(unit.Content):
 			act(model.ActionUpdate, updateReason(cur, unit), changeDetails(cur, unit)...)
-		case cur.SecretsHash != unit.SecretsHash:
-			act(model.ActionUpdate, "secret values changed")
 		case cur.UnitState != model.UnitActive:
 			act(model.ActionRestart, fmt.Sprintf("unit is %s, should be running", cmp.Or(cur.UnitState, model.UnitUnknown)))
 		default:

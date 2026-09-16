@@ -108,15 +108,16 @@ podcd config view
 
 ## Multiple repositories
 
-Repositories are composed into one desired state. (i.e. multiple teams sharing one repository)
+Repositories are composed into one desired state. (i.e. multiple teams sharing one host)
 
 ```yaml
 repositories:
-  - name: infrastructure
-    url: https://github.com/podcd/podcd.git
+  - name: team-1
+    url: https://github.com/team-1/podcd-gitops.git
     revision: main
-    path: examples
-  - name: applications
-    url: https://github.com/your-user/applications.git
-    revision: v1.4.0
+    path: prd
+  - name: team-2
+    url: https://github.com/team-2/podcd-gitops.git
+    revision: main
+    path: prd
 ```

@@ -32,8 +32,6 @@ metadata: {name: web}
 spec:
   image: example.com/web` + pinned + `
   ports: ["8080:80"]
-  secretEnv:
-    TOKEN: env:WEB_TOKEN
 ---
 apiVersion: gitops.podcd.io/v1
 kind: Application
@@ -74,32 +72,6 @@ spec: {applications: [web, api, missing]}
 	}
 }
 
-func TestLintChecksSecretReferencesForShapeOnly(t *testing.T) {
-	_, findings, err := lintFiles(t, map[string]string{
-		"all.yaml": `
-apiVersion: gitops.podcd.io/v1
-kind: Application
-metadata: {name: web}
-spec:
-  image: example.com/web` + pinned + `
-  secretEnv:
-    A: env:NOT_SET_ANYWHERE
-    B: vault:secret/prod/web/token
-    C: vault:nokey
----
-apiVersion: gitops.podcd.io/v1
-kind: Host
-metadata: {name: vm-1}
-spec: {applications: [web]}
-`,
-	})
-	if err != nil {
-		t.Fatal(err)
-	}
-	if len(findings) != 1 || !strings.Contains(findings[0].Err, "vault:nokey") {
-		t.Fatalf("only the malformed vault reference should be reported, got %v", findings)
-	}
-}
 
 func TestLintLoaderErrorsAndNoHosts(t *testing.T) {
 	_, _, err := lintFiles(t, map[string]string{"a.yaml": "apiVersion: gitops.podcd.io/v1\nkind: Application\nmetadata: {name: x}\nspec: {imagee: y}\n"})

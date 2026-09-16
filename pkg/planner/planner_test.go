@@ -1,6 +1,7 @@
 package planner
 
 import (
+	"fmt"
 	"strings"
 	"testing"
 
@@ -8,10 +9,17 @@ import (
 	"github.com/podcd/podcd/pkg/renderer"
 )
 
-func rend() *renderer.Renderer { return &renderer.Renderer{UnitDir: "/units", EnvDir: "/env"} }
+func rend() *renderer.Renderer { return &renderer.Renderer{UnitDir: "/units", KubeDir: "/kube"} }
 
 func app(name, image string) model.Application {
-	return model.Application{Name: name, Image: image, RestartPolicy: "always"}
+	a := model.Application{
+		Name:          name,
+		Kind:          model.KindKube,
+		RestartPolicy: "always",
+	}
+	manifest := fmt.Sprintf("apiVersion: v1\nkind: Pod\nmetadata:\n  name: %s\nspec:\n  containers:\n    - name: %s\n      image: %s\n", name, name, image)
+	a.SetManifest([]byte(manifest))
+	return a
 }
 
 func desired(apps ...model.Application) model.DesiredState {
@@ -32,7 +40,6 @@ func running(t *testing.T, a model.Application) model.ActualApp {
 		UnitFileHash: model.HashBytes(u.Content),
 		UnitContent:  u.Content,
 		SpecHash:     u.SpecHash,
-		SecretsHash:  u.SecretsHash,
 		UnitName:     u.ServiceName,
 		UnitState:    model.UnitActive,
 	}
@@ -85,10 +92,6 @@ func TestUpdateWhenImageChanges(t *testing.T) {
 	}
 	if p.Actions[0].Reason != "configuration in Git changed" {
 		t.Errorf("reason = %q", p.Actions[0].Reason)
-	}
-	details := strings.Join(p.Actions[0].Details, "\n")
-	if !strings.Contains(details, "- Image=img@sha256:a") || !strings.Contains(details, "+ Image=img@sha256:b") {
-		t.Errorf("the diff should show the image change, got:\n%s", details)
 	}
 }
 
@@ -168,23 +171,6 @@ func TestDeletesAreOrderedBeforeCreates(t *testing.T) {
 	}
 }
 
-func TestSecretRotationPlansAnUpdate(t *testing.T) {
-	a := app("api", "img@sha256:a")
-	a.SecretEnv = map[string]string{"TOKEN": "old"}
-	cur := running(t, a)
-
-	rotated := app("api", "img@sha256:a")
-	rotated.SecretEnv = map[string]string{"TOKEN": "new"}
-
-	p, err := Build(desired(rotated), actual(cur), rend(), Options{Prune: true})
-	if err != nil {
-		t.Fatal(err)
-	}
-	if p.Empty() || p.Actions[0].Type != model.ActionUpdate {
-		t.Fatalf("a rotated secret must be applied, got %+v", p.Actions)
-	}
-}
-
 func TestPlanIsStableAcrossRuns(t *testing.T) {
 	d := desired(app("b", "img@sha256:b"), app("a", "img@sha256:a"))
 	var first string
@@ -207,31 +193,10 @@ func TestPlanIsStableAcrossRuns(t *testing.T) {
 	}
 }
 
-func TestKindChangeIsAnUpdate(t *testing.T) {
-	// A container becomes a pod manifest between commits. Same name, same
-	// service, different unit: it is an update, with the pod described.
-	before := app("api", "img@sha256:a")
-	after := model.Application{Name: "api", Kind: model.KindKube, Images: []string{"img@sha256:b"}, RestartPolicy: "always"}
-	after.SetManifest([]byte("apiVersion: v1\nkind: Pod\nmetadata:\n  name: api\n"))
-	r := &renderer.Renderer{UnitDir: "/units", EnvDir: "/env", KubeDir: "/kube"}
-
-	p, err := Build(desired(after), actual(running(t, before)), r, Options{Prune: true})
-	if err != nil {
-		t.Fatal(err)
-	}
-	changes := p.Changes()
-	if len(changes) != 1 || changes[0].Type != model.ActionUpdate || changes[0].App != "api" {
-		t.Fatalf("want one update, got %+v", changes)
-	}
-	if details := strings.Join(changes[0].Details, "\n"); !strings.Contains(details, "+ [Kube]") || !strings.Contains(details, "- [Container]") {
-		t.Errorf("the change should show the unit turning into a kube unit:\n%s", details)
-	}
-}
-
 func TestDriftedManifestIsReappliedEvenWhenTheUnitMatches(t *testing.T) {
 	a := model.Application{Name: "api", Kind: model.KindKube, Images: []string{"img@sha256:b"}, RestartPolicy: "always"}
 	a.SetManifest([]byte("apiVersion: v1\nkind: Pod\nmetadata:\n  name: api\n"))
-	r := &renderer.Renderer{UnitDir: "/units", EnvDir: "/env", KubeDir: "/kube"}
+	r := &renderer.Renderer{UnitDir: "/units", KubeDir: "/kube"}
 	u, err := r.Render(a)
 	if err != nil {
 		t.Fatal(err)
@@ -256,12 +221,18 @@ func TestDriftedManifestIsReappliedEvenWhenTheUnitMatches(t *testing.T) {
 	}
 }
 
-func TestPlanNeverPrintsSecretValues(t *testing.T) {
-	a := app("api", "img@sha256:a")
-	a.SecretEnv = map[string]string{"TOKEN": "hunter2"}
+func TestPlanNeverPrintsManifestSecretValues(t *testing.T) {
+	// Secrets in manifests are corev1.Secret documents; the planner must redact them.
+	a := model.Application{Name: "api", Kind: model.KindKube, RestartPolicy: "always"}
+	secret := "apiVersion: v1\nkind: Secret\nmetadata:\n  name: mysecret\ndata:\n  password: aHVudGVyMg==\n"
+	pod := "apiVersion: v1\nkind: Pod\nmetadata:\n  name: api\n"
+	a.SetManifest([]byte(pod + "\n---\n" + secret))
 	cur := running(t, a)
-	rotated := a
-	rotated.SecretEnv = map[string]string{"TOKEN": "hunter3"}
+
+	// rotate: change the secret
+	rotated := model.Application{Name: "api", Kind: model.KindKube, RestartPolicy: "always"}
+	secret2 := "apiVersion: v1\nkind: Secret\nmetadata:\n  name: mysecret\ndata:\n  password: aHVudGVyMw==\n"
+	rotated.SetManifest([]byte(pod + "\n---\n" + secret2))
 
 	p, err := Build(desired(rotated), actual(cur), rend(), Options{Prune: true})
 	if err != nil {

@@ -4,8 +4,6 @@ import (
 	"context"
 	"strings"
 	"testing"
-
-	"github.com/podcd/podcd/pkg/secrets"
 )
 
 func TestExamplesCompile(t *testing.T) {
@@ -25,7 +23,7 @@ func TestExamplesCompile(t *testing.T) {
 	}
 
 	for _, tc := range cases {
-		got, err := ix.Resolve(context.Background(), ResolveOptions{Host: tc.host, Secrets: fakeSecrets()})
+		got, err := ix.Resolve(context.Background(), ResolveOptions{Host: tc.host})
 		if err != nil {
 			t.Fatalf("%s: %v", tc.host, err)
 		}
@@ -35,7 +33,7 @@ func TestExamplesCompile(t *testing.T) {
 	}
 
 	// The minimal local example has a single nginx app.
-	local, err := ix.Resolve(context.Background(), ResolveOptions{Host: "local", Secrets: fakeSecrets()})
+	local, err := ix.Resolve(context.Background(), ResolveOptions{Host: "local"})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -50,5 +48,3 @@ func TestExamplesCompile(t *testing.T) {
 		t.Fatalf("local app health check is not configured for port 8080: %+v", app.Healthcheck)
 	}
 }
-
-func fakeSecrets() *secrets.Resolver { return secrets.Default("", "") }

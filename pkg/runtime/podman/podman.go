@@ -27,9 +27,8 @@ import (
 // Options configures a Runtime.
 type Options struct {
 	UnitDir string
-	EnvDir  string
 	// KubeDir holds the manifests played by .kube units.
-	// Like EnvDir it can contain resolved secrets and is never the unit directory.
+	// It can contain resolved secrets and is never the unit directory.
 	KubeDir string
 
 	// PodmanBin and SystemctlBin default to the names on PATH.
@@ -62,7 +61,7 @@ func New(opts Options) *Runtime {
 		journalctl: "journalctl",
 		timeout:    cmp.Or(opts.Timeout, 2*time.Minute),
 	}
-	r.rend = &renderer.Renderer{UnitDir: opts.UnitDir, EnvDir: opts.EnvDir, KubeDir: opts.KubeDir}
+	r.rend = &renderer.Renderer{UnitDir: opts.UnitDir, KubeDir: opts.KubeDir}
 	r.checker = &health.Checker{Exec: r.execProbe}
 	return r
 }
@@ -131,8 +130,7 @@ func (r *Runtime) Inspect(ctx context.Context) (model.ActualState, error) {
 			UnitFile:     path,
 			UnitFileHash: model.HashBytes(content),
 			UnitContent:  content,
-			SpecHash:     m.SpecHash,
-			SecretsHash:  m.SecretsHash,
+			SpecHash: m.SpecHash,
 			UnitName:     renderer.ServiceName(name),
 			UnitState:    model.UnitUnknown,
 		}
@@ -293,32 +291,14 @@ func (r *Runtime) Apply(ctx context.Context, app model.Application) error {
 		return err
 	}
 
-	if unit.EnvFile != nil {
-		if err := atomicfile.Write(unit.EnvFilePath, unit.EnvFile, 0o600); err != nil {
-			return fmt.Errorf("writing secret env file for %s: %w", app.Name, err)
-		}
-	} else {
-		// The application stopped using secrets: do not leave the old values behind.
-		_ = removeIfExists(r.rend.EnvFilePath(app.Name))
+	// Manifest may contain resolved secrets: readable by the agent user only.
+	if err := atomicfile.Write(unit.ManifestPath, unit.Manifest, 0o600); err != nil {
+		return fmt.Errorf("writing manifest for %s: %w", app.Name, err)
 	}
 
-	if unit.IsKube() {
-		// Resolved secrets may be in here: readable by the agent user only.
-		if err := atomicfile.Write(unit.ManifestPath, unit.Manifest, 0o600); err != nil {
-			return fmt.Errorf("writing manifest for %s: %w", app.Name, err)
-		}
-	} else {
-		_ = removeIfExists(r.rend.ManifestPath(app.Name))
-	}
-
-	// An application can change kind between commits.
-	// Both kinds claim the same service name, so the other kind's unit file must go first.
-	other := renderer.FileName(app.Name)
-	if !unit.IsKube() {
-		other = renderer.KubeFileName(app.Name)
-	}
-	if err := removeIfExists(filepath.Join(r.unitDir, other)); err != nil {
-		return fmt.Errorf("removing stale unit for %s: %w", app.Name, err)
+	// Remove any legacy .container unit left from a previous podcd version.
+	if err := removeIfExists(filepath.Join(r.unitDir, renderer.FileName(app.Name))); err != nil {
+		return fmt.Errorf("removing legacy container unit for %s: %w", app.Name, err)
 	}
 
 	if err := atomicfile.Write(unit.Path, unit.Content, 0o644); err != nil {
@@ -351,7 +331,6 @@ func (r *Runtime) Remove(ctx context.Context, app string) error {
 			return fmt.Errorf("removing unit for %s: %w", app, err)
 		}
 	}
-	_ = removeIfExists(r.rend.EnvFilePath(app))
 	_ = removeIfExists(r.rend.ManifestPath(app))
 	if err := r.daemonReload(ctx); err != nil {
 		return err

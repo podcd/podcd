@@ -22,7 +22,7 @@ func kubeApp() model.Application {
 }
 
 func TestKubeUnitPointsAtTheManifest(t *testing.T) {
-	r := &Renderer{UnitDir: "/units", EnvDir: "/env", KubeDir: "/kube"}
+	r := &Renderer{UnitDir: "/units", KubeDir: "/kube"}
 	u, err := r.Render(kubeApp())
 	if err != nil {
 		t.Fatal(err)
