@@ -127,3 +127,80 @@ func TestSplitDocumentsReportsLinesAndSurvivesOddEndings(t *testing.T) {
 		t.Fatalf("want a located error, got %v", err)
 	}
 }
+
+// Linting must never reach a secret store, so it runs with no provisioner. A
+// Secret that only an ExternalSecret produces still has to pass: it does not
+// exist in Git and will not exist until the agent reconciles.
+func TestLintAcceptsSecretsOnlyAnExternalSecretProduces(t *testing.T) {
+	_, findings, err := lintFiles(t, map[string]string{
+		"repo.yaml": `
+apiVersion: external-secrets.io/v1beta1
+kind: SecretStore
+metadata: {name: vault}
+spec:
+  provider:
+    vault:
+      server: https://vault.example.com
+      auth:
+        tokenSecretRef: {name: env:VAULT_TOKEN}
+---
+apiVersion: external-secrets.io/v1beta1
+kind: ExternalSecret
+metadata: {name: db-creds}
+spec:
+  secretStoreRef: {name: vault}
+  target: {name: renamed-db}
+  data:
+    - secretKey: PASSWORD
+      remoteRef: {key: secret/prod/db, property: password}
+---
+apiVersion: v1
+kind: Pod
+metadata: {name: web}
+spec:
+  containers:
+    - name: app
+      image: example.com/web` + pinned + `
+      envFrom:
+        - secretRef: {name: renamed-db}
+---
+apiVersion: gitops.podcd.io/v1
+kind: Host
+metadata: {name: vm-1}
+spec: {applications: [web]}
+`,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(findings) != 0 {
+		t.Fatalf("an ExternalSecret target must satisfy the reference at lint time: %+v", findings)
+	}
+}
+
+func TestLintStillReportsASecretNobodyProduces(t *testing.T) {
+	_, findings, err := lintFiles(t, map[string]string{
+		"repo.yaml": `
+apiVersion: v1
+kind: Pod
+metadata: {name: web}
+spec:
+  containers:
+    - name: app
+      image: example.com/web` + pinned + `
+      envFrom:
+        - secretRef: {name: nowhere}
+---
+apiVersion: gitops.podcd.io/v1
+kind: Host
+metadata: {name: vm-1}
+spec: {applications: [web]}
+`,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(findings) == 0 {
+		t.Fatal("a Secret that nothing defines or provisions must still be reported")
+	}
+}

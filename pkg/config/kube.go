@@ -150,7 +150,7 @@ func (h hostDocuments) podToApplication(ctx context.Context, name string, pod co
 		}
 		doc, ok := h.secret(secName)
 		if !ok {
-			if !refs.secrets[secName] {
+			if !refs.secrets[secName] && !h.externalSecretDeclares(secName) {
 				p.add("refers to Secret %q, which is not defined (define it in Git or provision it with an ExternalSecret)", secName)
 			}
 			continue

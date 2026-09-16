@@ -25,7 +25,7 @@ type SecretStoreProvider struct {
 
 // VaultStoreProvider configures a HashiCorp Vault KV backend.
 // Vault credentials are secret references (env:NAME, file:path) resolved from
-// agent.env at reconcile time — never stored as plaintext in Git.
+// agent.env at reconcile time - never stored as plaintext in Git.
 type VaultStoreProvider struct {
 	// Server is the Vault address, e.g. https://vault.example.com
 	Server string `json:"server"`

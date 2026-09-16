@@ -327,6 +327,29 @@ func (h hostDocuments) secret(name string) (Doc[corev1.Secret], bool) {
 	return d, ok
 }
 
+// externalSecretDeclares reports whether some ExternalSecret promises to produce
+// a Secret of this name at reconcile time.
+//
+// It answers from Git alone, without fetching anything, which is what `podcd
+// lint` needs: linting runs with no provisioner so that validating a repository
+// never reaches out to Vault, and without this every ExternalSecret-backed
+// Secret would look undefined.
+func (h hostDocuments) externalSecretDeclares(name string) bool {
+	declares := func(docs map[string]Doc[ExternalSecretSpec]) bool {
+		for esName, es := range docs {
+			target := es.Spec.Target.Name
+			if target == "" {
+				target = esName
+			}
+			if target == name {
+				return true
+			}
+		}
+		return false
+	}
+	return declares(h.ExternalSecrets) || declares(h.rendered.ExternalSecrets)
+}
+
 // overlay applies every layer's override for name, in order, and returns the
 // provenance trail: the document's source, then each layer that touched it.
 func overlay(layers []layer, name, kind string, src Source, apply func(Override) error) ([]string, error) {
