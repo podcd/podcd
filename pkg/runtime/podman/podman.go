@@ -130,7 +130,7 @@ func (r *Runtime) Inspect(ctx context.Context) (model.ActualState, error) {
 			UnitFile:     path,
 			UnitFileHash: model.HashBytes(content),
 			UnitContent:  content,
-			SpecHash: m.SpecHash,
+			SpecHash:     m.SpecHash,
 			UnitName:     renderer.ServiceName(name),
 			UnitState:    model.UnitUnknown,
 		}

@@ -93,7 +93,6 @@ func TestCorruptStateStartsFreshAndSaysSo(t *testing.T) {
 	}
 }
 
-
 func TestHealthIsRecorded(t *testing.T) {
 	st := State{Applications: map[string]AppRecord{}}
 	st.RecordHealth(model.Health{App: "api", Status: model.HealthHealthy, Message: "GET /health: 200", CheckedAt: time.Now()})

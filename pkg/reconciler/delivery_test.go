@@ -13,7 +13,6 @@ import (
 
 // These tests pin the continuous-delivery contracts
 
-
 func reconcile(t *testing.T, e *Engine) Result {
 	t.Helper()
 	res, err := e.Reconcile(context.Background(), Options{})
@@ -109,7 +108,6 @@ func TestStoppedUnitIsRestartedNotRewritten(t *testing.T) {
 		t.Error("the unit should be running again")
 	}
 }
-
 
 func TestOfflineRemoteKeepsDeliveringTheLastCommit(t *testing.T) {
 	rt := newFakeRuntime()

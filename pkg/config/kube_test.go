@@ -229,7 +229,6 @@ data:
 	}
 }
 
-
 func TestPodMissingSecretFailsTheReconcile(t *testing.T) {
 	files := map[string]string{"pod.yaml": strings.Replace(podFiles, "      envFrom:\n", `      env:
         - name: PASSWORD

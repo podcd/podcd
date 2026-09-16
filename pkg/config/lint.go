@@ -8,7 +8,6 @@ import (
 	"path/filepath"
 	"slices"
 	"strings"
-
 )
 
 func LoadPaths(paths ...string) (*Index, error) {

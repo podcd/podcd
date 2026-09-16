@@ -323,7 +323,6 @@ spec:
 	}
 }
 
-
 func TestAgentConfigDefaultsAndValidation(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "agent.yaml")

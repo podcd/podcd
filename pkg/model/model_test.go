@@ -30,7 +30,6 @@ func TestSpecHashChangesWithTheSpec(t *testing.T) {
 	}
 }
 
-
 func TestPlanEmptyIgnoresNoOps(t *testing.T) {
 	p := Plan{Actions: []Action{{Type: ActionNoOp, App: "api"}}}
 	if !p.Empty() {

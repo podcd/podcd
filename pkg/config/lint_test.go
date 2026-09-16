@@ -72,7 +72,6 @@ spec: {applications: [web, api, missing]}
 	}
 }
 
-
 func TestLintLoaderErrorsAndNoHosts(t *testing.T) {
 	_, _, err := lintFiles(t, map[string]string{"a.yaml": "apiVersion: gitops.podcd.io/v1\nkind: Application\nmetadata: {name: x}\nspec: {imagee: y}\n"})
 	if err == nil || !strings.Contains(err.Error(), "imagee") {

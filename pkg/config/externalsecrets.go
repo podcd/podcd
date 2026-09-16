@@ -105,7 +105,7 @@ type ExternalSecretTarget struct {
 // ExternalSecretData maps one remote key to one Secret key.
 type ExternalSecretData struct {
 	// SecretKey is the key written into the target Secret.
-	SecretKey string `json:"secretKey"`
+	SecretKey string                      `json:"secretKey"`
 	RemoteRef ExternalSecretDataRemoteRef `json:"remoteRef"`
 }
 

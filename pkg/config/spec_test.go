@@ -55,7 +55,6 @@ func TestRenderUsesExampleBlocksForUnsetSections(t *testing.T) {
 	}
 }
 
-
 func TestRenderedFileRoundTrips(t *testing.T) {
 	cfg := minimal()
 	cfg.Host = "vm-1"

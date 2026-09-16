@@ -60,4 +60,3 @@ repositories:
 		t.Fatalf("want an error about both auth kinds, got: %v", err)
 	}
 }
-

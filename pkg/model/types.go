@@ -226,7 +226,6 @@ func (a *Application) SetManifest(manifest []byte) {
 	a.ManifestHash = HashBytes(manifest)
 }
 
-
 // DesiredState is everything that should exist on this host at a given Git revision.
 type DesiredState struct {
 	Host        string            `json:"host"`
@@ -300,7 +299,7 @@ type ActualApp struct {
 	// ManifestContent is the played manifest of a kube workload as read from disk.
 	// Same rules as UnitContent: used for explaining changes, never stored.
 	ManifestContent []byte `json:"-"`
-	SpecHash string `json:"specHash,omitempty"` // marker written by the renderer
+	SpecHash        string `json:"specHash,omitempty"` // marker written by the renderer
 
 	UnitName  string    `json:"unitName,omitempty"`
 	UnitState UnitState `json:"unitState,omitempty"`
