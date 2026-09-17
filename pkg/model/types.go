@@ -269,10 +269,17 @@ type ActualApp struct {
 	Containers []ContainerStatus `json:"containers,omitempty"`
 }
 
-// ContainerStatus is one container's name and the runtime's word for its state.
+// ContainerStatus is what the runtime reports about one container.
 type ContainerStatus struct {
 	Name  string `json:"name"`
-	State string `json:"state"`
+	State string `json:"state"` // running, exited, created, paused
+	// Health is the verdict of the container's own healthcheck, when the
+	// workload declares one: healthy, unhealthy or starting. Empty otherwise.
+	Health string `json:"health,omitempty"`
+	// Restarts counts how many times the runtime has restarted this container.
+	// A container that keeps showing "starting" with a climbing count is not
+	// starting, it is crash-looping.
+	Restarts int `json:"restarts,omitempty"`
 }
 
 // IsInitContainer reports whether a runtime container name is one of the

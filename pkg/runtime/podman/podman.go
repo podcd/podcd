@@ -172,7 +172,9 @@ func (r *Runtime) Inspect(ctx context.Context) (model.ActualState, error) {
 			cur.ContainerImage = c[0].image
 			cur.ContainerState = c[0].state
 			for _, w := range c {
-				cur.Containers = append(cur.Containers, model.ContainerStatus{Name: w.name, State: w.state})
+				cur.Containers = append(cur.Containers, model.ContainerStatus{
+					Name: w.name, State: w.state, Health: w.health, Restarts: w.restarts,
+				})
 			}
 		}
 		state.Apps[app] = cur
@@ -191,7 +193,22 @@ type containerInfo struct {
 	// state is podman's own word for it: running, exited, created, paused.
 	state    string
 	exitCode int
+	// health is the healthcheck verdict `podman ps` folds into its status
+	// column - "Up 2 minutes (healthy)" - or empty when there is no check.
+	health   string
+	restarts int
 	infra    bool
+}
+
+// healthFromStatus pulls the healthcheck verdict out of a `podman ps` status
+// line: "Up 2 minutes (healthy)" -> "healthy". No parenthetical, no check.
+func healthFromStatus(status string) string {
+	for _, v := range []string{"healthy", "unhealthy", "starting"} {
+		if strings.Contains(status, "("+v+")") {
+			return v
+		}
+	}
+	return ""
 }
 
 // listContainers asks Podman for everything labelled as ours, grouped by app.
@@ -213,7 +230,9 @@ func (r *Runtime) listContainers(ctx context.Context, app string) (map[string][]
 		Names    []string          `json:"Names"`
 		Image    string            `json:"Image"`
 		State    string            `json:"State"`
+		Status   string            `json:"Status"`
 		ExitCode int               `json:"ExitCode"`
+		Restarts int               `json:"Restarts"`
 		IsInfra  bool              `json:"IsInfra"`
 		Labels   map[string]string `json:"Labels"`
 	}
@@ -239,7 +258,8 @@ func (r *Runtime) listContainers(ctx context.Context, app string) (map[string][]
 			name = c.Names[0]
 		}
 		result[app] = append(result[app], containerInfo{
-			id: id, name: name, image: c.Image, state: c.State, exitCode: c.ExitCode, infra: c.IsInfra,
+			id: id, name: name, image: c.Image, state: c.State, exitCode: c.ExitCode,
+			health: healthFromStatus(c.Status), restarts: c.Restarts, infra: c.IsInfra,
 		})
 	}
 	for app := range result {
@@ -424,7 +444,130 @@ func (r *Runtime) Health(ctx context.Context, app model.Application) (model.Heal
 	if err != nil {
 		return model.Health{App: app.Name, CheckedAt: time.Now().UTC()}, err
 	}
-	return healthForContainers(app.Name, workload(containers[app.Name]), app.InitContainers, time.Now().UTC()), nil
+	running := workload(containers[app.Name])
+	h := healthForContainers(app.Name, running, app.InitContainers, time.Now().UTC())
+	if h.OK() {
+		return h, nil
+	}
+	// `podman ps` gives the verdict; the reason takes one more call, and only
+	// on this path. A container that still exists can be inspected - the
+	// probe's own output, the failing streak, an OOM kill. One that Quadlet
+	// already tore down has only what it wrote to the journal.
+	var why string
+	if len(running) == 0 {
+		why = r.lastContainerOutput(ctx, app.Name)
+	} else {
+		why = r.explain(ctx, troubled(running, app.InitContainers))
+	}
+	if why != "" {
+		h.Message += "; " + why
+	}
+	return h, nil
+}
+
+// lastContainerOutput returns the last thing the application's containers
+// wrote before they went away. The unit's journal carries podman's own
+// events too (died, cleanup, removed - dozens of lines per pod), so this
+// keeps only what came through conmon, which is container stdout and stderr.
+func (r *Runtime) lastContainerOutput(ctx context.Context, app string) string {
+	out, err := r.run(ctx, r.journalctl, "--user", "-u", renderer.ServiceName(app),
+		"_COMM=conmon", "-n", "3", "--no-pager", "--output=cat")
+	if err != nil {
+		return ""
+	}
+	var lines []string
+	for _, l := range strings.Split(strings.TrimSpace(out), "\n") {
+		l = strings.TrimSpace(l)
+		// conmon's own warnings ("conmon <id> <nwarn>: ...") travel the same
+		// way as the container's output; they are about podman, not the app.
+		if l == "" || strings.HasPrefix(l, "-- ") || strings.HasPrefix(l, "conmon ") {
+			continue
+		}
+		lines = append(lines, l)
+	}
+	if len(lines) == 0 {
+		return ""
+	}
+	return "last output: " + strings.Join(lines, " | ")
+}
+
+// troubled names the containers a bad verdict is about: not running, or
+// running with a healthcheck that is failing or has not passed.
+func troubled(containers []containerInfo, initNames []string) []string {
+	var out []string
+	for _, c := range containers {
+		if model.IsInitContainer(initNames, c.name) && c.state == "exited" && c.exitCode == 0 {
+			continue
+		}
+		if c.state != "running" || c.health == "unhealthy" || c.health == "starting" {
+			out = append(out, c.name)
+		}
+	}
+	return out
+}
+
+// explain asks podman why the named containers are in the state they are in,
+// in one call, and returns a short human line per container.
+func (r *Runtime) explain(ctx context.Context, names []string) string {
+	if len(names) == 0 {
+		return ""
+	}
+	out, err := r.podmanRun(ctx, append([]string{"inspect", "--format", "json"}, names...)...)
+	if err != nil {
+		return ""
+	}
+	var raw []struct {
+		Name  string `json:"Name"`
+		State struct {
+			Error     string `json:"Error"`
+			OOMKilled bool   `json:"OOMKilled"`
+			ExitCode  int    `json:"ExitCode"`
+			Health    *struct {
+				FailingStreak int `json:"FailingStreak"`
+				Log           []struct {
+					ExitCode int    `json:"ExitCode"`
+					Output   string `json:"Output"`
+				} `json:"Log"`
+			} `json:"Health"`
+		} `json:"State"`
+	}
+	if err := json.Unmarshal([]byte(out), &raw); err != nil {
+		return ""
+	}
+	var parts []string
+	for _, c := range raw {
+		var why []string
+		if c.State.OOMKilled {
+			why = append(why, "OOM killed")
+		}
+		if c.State.Error != "" {
+			why = append(why, c.State.Error)
+		}
+		if h := c.State.Health; h != nil {
+			if h.FailingStreak > 0 {
+				why = append(why, fmt.Sprintf("%d consecutive check failure%s", h.FailingStreak, plural(h.FailingStreak)))
+			}
+			if n := len(h.Log); n > 0 && h.Log[n-1].ExitCode != 0 {
+				why = append(why, "last check: "+lastLine(h.Log[n-1].Output))
+			}
+		}
+		if len(why) > 0 {
+			parts = append(parts, strings.TrimPrefix(c.Name, "/")+": "+strings.Join(why, ", "))
+		}
+	}
+	return strings.Join(parts, "; ")
+}
+
+// lastLine returns the final non-empty line of command output, trimmed, since
+// that is where a failing probe says what went wrong.
+func lastLine(s string) string {
+	lines := strings.Split(strings.TrimSpace(s), "\n")
+	for i := len(lines) - 1; i >= 0; i-- {
+		if l := strings.TrimSpace(lines[i]); l != "" {
+			return l
+		}
+	}
+	return strings.TrimSpace(s)
 }
 
 func healthForContainers(app string, containers []containerInfo, initNames []string, checkedAt time.Time) model.Health {
@@ -469,8 +612,41 @@ func healthForContainers(app string, containers []containerInfo, initNames []str
 		h.Status, h.Message = model.HealthUnhealthy, strings.Join(notRunning, ", ")
 		return h
 	}
-	h.Status, h.Message = model.HealthHealthy, "all workload containers running"
+
+	// Everything is up. Now podman's own verdict, for the containers that
+	// declare a healthcheck. A restart count travels with it: "starting" on a
+	// container that has restarted before is a crash loop, not a warm-up.
+	var unhealthy, starting, restarted []string
+	for _, c := range regular {
+		if c.restarts > 0 {
+			restarted = append(restarted, fmt.Sprintf("%s restarted %d time%s", c.name, c.restarts, plural(c.restarts)))
+		}
+		switch c.health {
+		case "unhealthy":
+			unhealthy = append(unhealthy, c.name)
+		case "starting":
+			starting = append(starting, c.name)
+		}
+	}
+	switch {
+	case len(unhealthy) > 0:
+		h.Status, h.Message = model.HealthUnhealthy, "healthcheck failing: "+strings.Join(unhealthy, ", ")
+	case len(starting) > 0:
+		h.Status, h.Message = model.HealthUnknown, "healthcheck not passed yet: "+strings.Join(starting, ", ")
+	default:
+		h.Status, h.Message = model.HealthHealthy, "all workload containers running"
+	}
+	if len(restarted) > 0 {
+		h.Message += " (" + strings.Join(restarted, ", ") + ")"
+	}
 	return h
+}
+
+func plural(n int) string {
+	if n == 1 {
+		return ""
+	}
+	return "s"
 }
 
 // splitInitContainers separates completed setup work from the regular workload.

@@ -1,19 +1,73 @@
 package podman
 
 import (
+	"strings"
 	"testing"
 	"time"
 
 	"github.com/podcd/podcd/pkg/model"
 )
 
-func TestHealthForContainersIgnoresHealthcheckState(t *testing.T) {
+// A running container with no healthcheck is simply healthy: there is no
+// verdict to defer to.
+func TestHealthForContainersRunningWithoutACheckIsHealthy(t *testing.T) {
 	got := healthForContainers("vault-dev", []containerInfo{
 		{name: "vault-dev-vault", state: "running"},
 	}, nil, time.Now())
 
 	if got.Status != model.HealthHealthy {
 		t.Fatalf("status = %q, want %q (%s)", got.Status, model.HealthHealthy, got.Message)
+	}
+}
+
+// When the workload declares a healthcheck, podman's verdict is the answer.
+func TestHealthForContainersHonoursPodmansVerdict(t *testing.T) {
+	for _, tc := range []struct {
+		health string
+		want   model.HealthStatus
+	}{
+		{"healthy", model.HealthHealthy},
+		{"starting", model.HealthUnknown},
+		{"unhealthy", model.HealthUnhealthy},
+	} {
+		got := healthForContainers("vault-dev", []containerInfo{
+			{name: "vault-dev-vault", state: "running", health: tc.health},
+		}, nil, time.Now())
+		if got.Status != tc.want {
+			t.Errorf("health %q: status = %q, want %q (%s)", tc.health, got.Status, tc.want, got.Message)
+		}
+	}
+}
+
+// "starting" on a container that has already restarted is a crash loop: a
+// liveness probe that never passes restarts the container before it can ever
+// become "unhealthy". The count is what tells the two apart.
+func TestHealthForContainersReportsRestartsSoACrashLoopIsVisible(t *testing.T) {
+	got := healthForContainers("vault-dev", []containerInfo{
+		{name: "vault-dev-vault", state: "running", health: "starting", restarts: 165},
+	}, nil, time.Now())
+
+	if got.Status != model.HealthUnknown {
+		t.Fatalf("status = %q, want %q", got.Status, model.HealthUnknown)
+	}
+	for _, want := range []string{"not passed yet", "vault-dev-vault restarted 165 times"} {
+		if !strings.Contains(got.Message, want) {
+			t.Errorf("message should mention %q: %q", want, got.Message)
+		}
+	}
+}
+
+func TestHealthFromStatusParsesTheVerdict(t *testing.T) {
+	for status, want := range map[string]string{
+		"Up 2 minutes (healthy)":   "healthy",
+		"Up 5 seconds (starting)":  "starting",
+		"Up 1 hour (unhealthy)":    "unhealthy",
+		"Up 2 minutes":             "",
+		"Exited (0) 3 minutes ago": "",
+	} {
+		if got := healthFromStatus(status); got != want {
+			t.Errorf("%q -> %q, want %q", status, got, want)
+		}
 	}
 }
 
