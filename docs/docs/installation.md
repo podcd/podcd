@@ -6,7 +6,7 @@ title: Installation
 ## Install the binary
 
 ```bash
-V=3.0.0; A=amd64   # or arm64
+V=3.0.0; A=$(uname -m | sed 's/x86_64/amd64/; s/aarch64/arm64/')
 curl -fsSLO "https://github.com/podcd/podcd/releases/download/v$V/podcd_${V}_linux_${A}.tar.gz"
 curl -fsSLO "https://github.com/podcd/podcd/releases/download/v$V/podcd_${V}_linux_${A}.tar.gz.sha256"
 sha256sum -c "podcd_${V}_linux_${A}.tar.gz.sha256" && tar -xzf "podcd_${V}_linux_${A}.tar.gz"
