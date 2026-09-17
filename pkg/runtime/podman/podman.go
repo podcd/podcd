@@ -27,7 +27,8 @@ import (
 
 // How long WaitHealthy keeps asking after a change is applied. A pod that has
 // just been played needs a moment before its containers report for duty.
-const (
+// Variables rather than constants so a test can wait milliseconds, not minutes.
+var (
 	waitRetries  = 15
 	waitInterval = 2 * time.Second
 )
@@ -57,6 +58,11 @@ type Runtime struct {
 	timeout    time.Duration
 
 	rend *renderer.Renderer
+
+	// exec runs one process. Every podman, systemctl and journalctl call goes
+	// through it, which is the seam a test replaces to feed the runtime
+	// recorded output instead of a real host.
+	exec func(context.Context, subprocess.Command) (string, error)
 }
 
 // New returns a Podman runtime writing units into opts.UnitDir.
@@ -67,6 +73,7 @@ func New(opts Options) *Runtime {
 		systemctl:  cmp.Or(opts.SystemctlBin, "systemctl"),
 		journalctl: "journalctl",
 		timeout:    cmp.Or(opts.Timeout, 2*time.Minute),
+		exec:       subprocess.Run,
 	}
 	r.rend = &renderer.Renderer{UnitDir: opts.UnitDir, KubeDir: opts.KubeDir}
 	return r
@@ -726,7 +733,7 @@ func (r *Runtime) podmanRun(ctx context.Context, args ...string) (string, error)
 }
 
 func (r *Runtime) run(ctx context.Context, bin string, args ...string) (string, error) {
-	return subprocess.Run(ctx, subprocess.Command{Bin: bin, Args: args, Env: sessionEnv(), Timeout: r.timeout})
+	return r.exec(ctx, subprocess.Command{Bin: bin, Args: args, Env: sessionEnv(), Timeout: r.timeout})
 }
 
 // sessionEnv makes sure systemctl --user can find the user's session bus, even when the agent was started from cron, a shell over a serial console, or a systemd service without a full session environment.

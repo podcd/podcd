@@ -17,6 +17,7 @@ SHELL := bash
 RACE      := $(if $(filter 1,$(shell $(GO) env CGO_ENABLED)),-race,)
 TESTCOVER ?= $(RACE) -covermode=atomic -coverprofile=coverage.out -coverpkg=./...
 GOJUNITREPORT_VERSION ?= v2.1.0
+VAULT_IMAGE ?= docker.io/hashicorp/vault:1.17
 
 .PHONY: all build image test test-report cover test-e2e vet fmt lint clean install docs docs-serve
 
@@ -52,6 +53,7 @@ cover: test
 ## It writes unit files into ~/.config/containers/systemd and cleans up after itself.
 test-e2e:
 	podman pull docker.io/library/nginx:alpine
+	podman pull $(VAULT_IMAGE)
 	PODCD_E2E=1 go test ./test/e2e/ -v -timeout 10m
 
 vet:
