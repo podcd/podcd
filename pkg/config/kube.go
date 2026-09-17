@@ -15,7 +15,6 @@ import (
 	sigyaml "sigs.k8s.io/yaml"
 
 	"github.com/podcd/podcd/pkg/model"
-	"github.com/podcd/podcd/pkg/secrets"
 )
 
 // Labels podcd stamps on every pod it plays, so it can recognise its own work.
@@ -23,6 +22,27 @@ const (
 	LabelManaged = "io.podcd.managed"
 	LabelApp     = "io.podcd.app"
 )
+
+// AnnotationNetworks names the podman networks to attach the pod to, comma
+// separated. It is an annotation rather than a spec field because Kubernetes
+// has no equivalent - podman takes networks on the command line, which for a
+// Quadlet unit is the Network= key podcd writes.
+const AnnotationNetworks = "io.podcd.networks"
+
+// podNetworks reads AnnotationNetworks, sorted and deduplicated.
+func podNetworks(pod corev1.Pod) []string {
+	raw := pod.Annotations[AnnotationNetworks]
+	if raw == "" {
+		return nil
+	}
+	seen := map[string]bool{}
+	for _, n := range strings.Split(raw, ",") {
+		if n = strings.TrimSpace(n); n != "" {
+			seen[n] = true
+		}
+	}
+	return slices.Sorted(maps.Keys(seen))
+}
 
 func patchPod(pod corev1.Pod, override Override) (corev1.Pod, error) {
 	if len(bytes.TrimSpace(override)) == 0 {
@@ -43,7 +63,7 @@ func patchPod(pod corev1.Pod, override Override) (corev1.Pod, error) {
 	return out, nil
 }
 
-func (h hostDocuments) podToApplication(ctx context.Context, name string, pod corev1.Pod, sec *secrets.Resolver) (model.Application, error) {
+func (h hostDocuments) podToApplication(ctx context.Context, name string, pod corev1.Pod, provisioner SecretProvisioner) (model.Application, error) {
 	p := problems{prefix: fmt.Sprintf("pod %q: ", name)}
 
 	if !validName(name) {
@@ -55,8 +75,14 @@ func (h hostDocuments) podToApplication(ctx context.Context, name string, pod co
 
 	app := model.Application{
 		Name:          name,
-		Kind:          model.KindKube,
 		RestartPolicy: kubeRestartPolicy(pod.Spec.RestartPolicy),
+		Labels:        maps.Clone(pod.Labels),
+		Networks:      podNetworks(pod),
+	}
+	for _, c := range pod.Spec.InitContainers {
+		if c.Name != "" {
+			app.InitContainers = append(app.InitContainers, c.Name)
+		}
 	}
 
 	seenNames := map[string]bool{}
@@ -88,6 +114,36 @@ func (h hostDocuments) podToApplication(ctx context.Context, name string, pod co
 	}
 	slices.SortFunc(app.Ports, comparePorts)
 
+	// Populate Env and Volumes from the first container so callers can inspect the
+	// effective config without parsing the manifest YAML.
+	if len(pod.Spec.Containers) > 0 {
+		c := pod.Spec.Containers[0]
+		for _, e := range c.Env {
+			if e.ValueFrom == nil {
+				if app.Env == nil {
+					app.Env = make(map[string]string)
+				}
+				app.Env[e.Name] = e.Value
+			}
+		}
+		// Map volume mounts back to model.Volume via pod.Spec.Volumes lookup.
+		volByName := make(map[string]corev1.Volume, len(pod.Spec.Volumes))
+		for _, v := range pod.Spec.Volumes {
+			volByName[v.Name] = v
+		}
+		for _, m := range c.VolumeMounts {
+			pv, ok := volByName[m.Name]
+			if !ok || pv.HostPath == nil {
+				continue
+			}
+			v := model.Volume{Source: pv.HostPath.Path, Destination: m.MountPath}
+			if m.ReadOnly {
+				v.Options = "ro"
+			}
+			app.Volumes = append(app.Volumes, v)
+		}
+	}
+
 	// ConfigMaps and Secrets the pod refers to must exist in Git, unless the
 	// reference is marked optional.
 	// Missing ones would only fail inside podman, later, with a worse message.
@@ -103,24 +159,31 @@ func (h hostDocuments) podToApplication(ctx context.Context, name string, pod co
 		}
 		configMaps = append(configMaps, doc.Spec)
 	}
+	// An ExternalSecret wins over a Git Secret of the same name, and is fetched
+	// here rather than up front: only the secrets this pod names are worth a
+	// round trip to a store.
 	var secretDocs []corev1.Secret
 	for _, secName := range slices.Sorted(maps.Keys(refs.secrets)) {
+		if provisioner != nil {
+			sec, ok, err := provisioner.ProvisionSecret(ctx, secName)
+			if err != nil {
+				p.errs = append(p.errs, &SecretProvisionError{Secret: secName, Err: err})
+				continue
+			}
+			if ok {
+				secretDocs = append(secretDocs, sec)
+				continue
+			}
+		}
 		doc, ok := h.secret(secName)
 		if !ok {
-			if !refs.secrets[secName] {
-				p.add("refers to Secret %q, which is not defined", secName)
+			if !refs.secrets[secName] && !h.externalSecretDeclares(secName) {
+				p.add("refers to Secret %q, which is not defined (define it in Git or provision it with an ExternalSecret)", secName)
 			}
 			continue
 		}
-		resolved, err := resolveSecret(ctx, doc.Spec, sec)
-		if err != nil {
-			p.add("%v", err)
-			continue
-		}
-		secretDocs = append(secretDocs, resolved)
+		secretDocs = append(secretDocs, doc.Spec)
 	}
-
-	app.Healthcheck = kubeHealthcheck(pod)
 
 	if err := p.err(); err != nil {
 		return model.Application{}, err
@@ -141,6 +204,16 @@ func (h hostDocuments) podToApplication(ctx context.Context, name string, pod co
 	app.SetManifest(manifest)
 	return app, nil
 }
+
+// SecretProvisionError identifies a failed ExternalSecret fetch, so Resolve
+// can keep compiling unrelated applications and let the reconciler retry it.
+type SecretProvisionError struct {
+	Secret string
+	Err    error
+}
+
+func (e *SecretProvisionError) Error() string { return fmt.Sprintf("Secret %q: %v", e.Secret, e.Err) }
+func (e *SecretProvisionError) Unwrap() error { return e.Err }
 
 // allContainers lists init containers then regular containers.
 func allContainers(pod corev1.Pod) []corev1.Container {
@@ -178,25 +251,6 @@ func renderManifest(pod corev1.Pod, configMaps []corev1.ConfigMap, secretDocs []
 		b.Write(out)
 	}
 	return b.Bytes(), nil
-}
-
-// resolveSecret turns a reference-only Secret into one podman can use: every
-// stringData reference is looked up on the host and the result goes into data.
-func resolveSecret(ctx context.Context, in corev1.Secret, sec *secrets.Resolver) (corev1.Secret, error) {
-	out := in
-	out.StringData = nil
-	out.Data = map[string][]byte{}
-	if sec == nil && len(in.StringData) > 0 {
-		return out, fmt.Errorf("Secret %q needs a secret provider, but none is configured", in.Name)
-	}
-	for _, k := range slices.Sorted(maps.Keys(in.StringData)) {
-		v, err := sec.Resolve(ctx, in.StringData[k])
-		if err != nil {
-			return out, fmt.Errorf("Secret %q key %s: %w", in.Name, k, err)
-		}
-		out.Data[k] = []byte(v)
-	}
-	return out, nil
 }
 
 // refSet collects referenced names; the bool is "optional". A name that is
@@ -259,61 +313,7 @@ func collectRefs(pod corev1.Pod) refSet {
 			}
 		}
 	}
-	for _, ips := range pod.Spec.ImagePullSecrets {
-		mark(r.secrets, ips.Name, nil)
-	}
 	return r
-}
-
-// kubeHealthcheck derives the health check from the first readiness, liveness
-// or startup probe that targets a published port; nil when there is none.
-func kubeHealthcheck(pod corev1.Pod) *model.Healthcheck {
-	for _, c := range pod.Spec.Containers {
-		probe := c.ReadinessProbe
-		if probe == nil {
-			probe = c.LivenessProbe
-		}
-		if probe == nil {
-			probe = c.StartupProbe
-		}
-		if probe == nil {
-			continue
-		}
-		switch {
-		case probe.HTTPGet != nil:
-			hostPort, hostIP, ok := hostPortFor(c, probe.HTTPGet.Port.IntValue(), probe.HTTPGet.Port.String())
-			if !ok {
-				continue
-			}
-			return &model.Healthcheck{HTTP: &model.HTTPProbe{
-				Port:   hostPort,
-				Host:   hostIP,
-				Path:   probe.HTTPGet.Path,
-				Scheme: strings.ToLower(string(probe.HTTPGet.Scheme)),
-			}}
-		case probe.TCPSocket != nil:
-			hostPort, hostIP, ok := hostPortFor(c, probe.TCPSocket.Port.IntValue(), probe.TCPSocket.Port.String())
-			if !ok {
-				continue
-			}
-			return &model.Healthcheck{TCP: &model.TCPProbe{Port: hostPort, Host: hostIP}}
-		}
-	}
-	return nil
-}
-
-// hostPortFor maps a probe's container port (number or name) to the host port
-// it is published on.
-func hostPortFor(c corev1.Container, number int, name string) (int, string, bool) {
-	for _, p := range c.Ports {
-		if p.HostPort == 0 {
-			continue
-		}
-		if (number != 0 && int(p.ContainerPort) == number) || (number == 0 && name != "" && p.Name == name) {
-			return int(p.HostPort), p.HostIP, true
-		}
-	}
-	return 0, "", false
 }
 
 func kubeRestartPolicy(p corev1.RestartPolicy) string {

@@ -11,7 +11,7 @@ Every command takes `-c`/`--config` to point at an `agent.yaml` other than the d
 podcd status      # what is running here and when it last reconciled
 podcd plan        # show changes without making them
 podcd reconcile   # apply the current Git desired state
-podcd health      # probe application health; non-zero exit if anything is unhealthy
+podcd health      # report application health; non-zero exit if anything is unhealthy
 podcd logs api    # recent output for one application (--tail N)
 ```
 
@@ -61,8 +61,9 @@ podcd config set repositories.0.values.0 values/common.yaml
 ## Taking things down
 
 ```bash
-podcd prune       # stop and remove applications directly, without consulting Git (--all, or by name)
-podcd teardown    # prune --all, then uninstall; --purge-state and --purge-config to also delete local state/config
+podcd prune       # remove what podcd manages here but Git no longer declares; nothing else
+podcd remove      # stop and remove applications directly, without consulting Git (--all, or by name); alias rm
+podcd teardown    # remove --all, then uninstall; --purge-state and --purge-config to also delete local state/config
 ```
 
 Both say what they are about to remove and ask first; `-y` skips the question.

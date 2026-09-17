@@ -26,21 +26,27 @@ func TestLintCompilesEveryHost(t *testing.T) {
 	// vm-1 is fine; vm-2 references an undefined application and clashes on a port.
 	_, findings, err := lintFiles(t, map[string]string{
 		"apps.yaml": `
-apiVersion: gitops.podcd.io/v1
-kind: Application
+apiVersion: v1
+kind: Pod
 metadata: {name: web}
 spec:
-  image: example.com/web` + pinned + `
-  ports: ["8080:80"]
-  secretEnv:
-    TOKEN: env:WEB_TOKEN
+  containers:
+    - name: web
+      image: example.com/web` + pinned + `
+      ports:
+        - containerPort: 80
+          hostPort: 8080
 ---
-apiVersion: gitops.podcd.io/v1
-kind: Application
+apiVersion: v1
+kind: Pod
 metadata: {name: api}
 spec:
-  image: example.com/api` + pinned + `
-  ports: ["8080:8080"]
+  containers:
+    - name: api
+      image: example.com/api` + pinned + `
+      ports:
+        - containerPort: 8080
+          hostPort: 8080
 `,
 		"hosts.yaml": `
 apiVersion: gitops.podcd.io/v1
@@ -74,39 +80,12 @@ spec: {applications: [web, api, missing]}
 	}
 }
 
-func TestLintChecksSecretReferencesForShapeOnly(t *testing.T) {
-	_, findings, err := lintFiles(t, map[string]string{
-		"all.yaml": `
-apiVersion: gitops.podcd.io/v1
-kind: Application
-metadata: {name: web}
-spec:
-  image: example.com/web` + pinned + `
-  secretEnv:
-    A: env:NOT_SET_ANYWHERE
-    B: vault:secret/prod/web/token
-    C: vault:nokey
----
-apiVersion: gitops.podcd.io/v1
-kind: Host
-metadata: {name: vm-1}
-spec: {applications: [web]}
-`,
-	})
-	if err != nil {
-		t.Fatal(err)
-	}
-	if len(findings) != 1 || !strings.Contains(findings[0].Err, "vault:nokey") {
-		t.Fatalf("only the malformed vault reference should be reported, got %v", findings)
-	}
-}
-
 func TestLintLoaderErrorsAndNoHosts(t *testing.T) {
-	_, _, err := lintFiles(t, map[string]string{"a.yaml": "apiVersion: gitops.podcd.io/v1\nkind: Application\nmetadata: {name: x}\nspec: {imagee: y}\n"})
+	_, _, err := lintFiles(t, map[string]string{"a.yaml": "apiVersion: v1\nkind: Pod\nmetadata: {name: x}\nspec: {containers: [{name: x, imagee: y}]}\n"})
 	if err == nil || !strings.Contains(err.Error(), "imagee") {
 		t.Fatalf("a loader error is returned as an error, not a finding: %v", err)
 	}
-	_, _, err = lintFiles(t, map[string]string{"a.yaml": "apiVersion: gitops.podcd.io/v1\nkind: Application\nmetadata: {name: x}\nspec: {image: y" + pinned + "}\n"})
+	_, _, err = lintFiles(t, map[string]string{"a.yaml": "apiVersion: v1\nkind: Pod\nmetadata: {name: x}\nspec: {containers: [{name: x, image: y" + pinned + "}]}\n"})
 	if !errors.Is(err, ErrNoHosts) {
 		t.Fatalf("documents without a Host should report ErrNoHosts, got %v", err)
 	}
@@ -116,7 +95,7 @@ func TestLintAcceptsFilesAndLimitsToNamedHosts(t *testing.T) {
 	dir := t.TempDir()
 	apps := filepath.Join(dir, "apps.yaml")
 	hosts := filepath.Join(dir, "hosts.yaml")
-	os.WriteFile(apps, []byte("apiVersion: gitops.podcd.io/v1\nkind: Application\nmetadata: {name: web}\nspec: {image: example.com/web"+pinned+"}\n"), 0o644)
+	os.WriteFile(apps, []byte("apiVersion: v1\nkind: Pod\nmetadata: {name: web}\nspec: {containers: [{name: web, image: example.com/web"+pinned+"}]}\n"), 0o644)
 	os.WriteFile(hosts, []byte("apiVersion: gitops.podcd.io/v1\nkind: Host\nmetadata: {name: ok}\nspec: {applications: [web]}\n---\napiVersion: gitops.podcd.io/v1\nkind: Host\nmetadata: {name: bad}\nspec: {applications: [nope]}\n"), 0o644)
 
 	_, findings, err := LintPaths(context.Background(), nil, nil, apps, hosts)
@@ -154,5 +133,82 @@ func TestSplitDocumentsReportsLinesAndSurvivesOddEndings(t *testing.T) {
 	os.WriteFile(bad, []byte("apiVersion: gitops.podcd.io/v1\nkind: Environment\nmetadata:\n  name: local\nspec:\n  applications:\n    - local\n123"), 0o644)
 	if _, err := LoadPaths(bad); err == nil || !strings.Contains(err.Error(), "env.yaml:1") {
 		t.Fatalf("want a located error, got %v", err)
+	}
+}
+
+// Linting must never reach a secret store, so it runs with no provisioner. A
+// Secret that only an ExternalSecret produces still has to pass: it does not
+// exist in Git and will not exist until the agent reconciles.
+func TestLintAcceptsSecretsOnlyAnExternalSecretProduces(t *testing.T) {
+	_, findings, err := lintFiles(t, map[string]string{
+		"repo.yaml": `
+apiVersion: external-secrets.io/v1beta1
+kind: SecretStore
+metadata: {name: vault}
+spec:
+  provider:
+    vault:
+      server: https://vault.example.com
+      auth:
+        tokenSecretRef: {name: env:VAULT_TOKEN}
+---
+apiVersion: external-secrets.io/v1beta1
+kind: ExternalSecret
+metadata: {name: db-creds}
+spec:
+  secretStoreRef: {name: vault}
+  target: {name: renamed-db}
+  data:
+    - secretKey: PASSWORD
+      remoteRef: {key: secret/prod/db, property: password}
+---
+apiVersion: v1
+kind: Pod
+metadata: {name: web}
+spec:
+  containers:
+    - name: app
+      image: example.com/web` + pinned + `
+      envFrom:
+        - secretRef: {name: renamed-db}
+---
+apiVersion: gitops.podcd.io/v1
+kind: Host
+metadata: {name: vm-1}
+spec: {applications: [web]}
+`,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(findings) != 0 {
+		t.Fatalf("an ExternalSecret target must satisfy the reference at lint time: %+v", findings)
+	}
+}
+
+func TestLintStillReportsASecretNobodyProduces(t *testing.T) {
+	_, findings, err := lintFiles(t, map[string]string{
+		"repo.yaml": `
+apiVersion: v1
+kind: Pod
+metadata: {name: web}
+spec:
+  containers:
+    - name: app
+      image: example.com/web` + pinned + `
+      envFrom:
+        - secretRef: {name: nowhere}
+---
+apiVersion: gitops.podcd.io/v1
+kind: Host
+metadata: {name: vm-1}
+spec: {applications: [web]}
+`,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(findings) == 0 {
+		t.Fatal("a Secret that nothing defines or provisions must still be reported")
 	}
 }

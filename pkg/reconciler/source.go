@@ -10,7 +10,6 @@ import (
 
 	"github.com/podcd/podcd/pkg/config"
 	"github.com/podcd/podcd/pkg/git"
-	"github.com/podcd/podcd/pkg/model"
 	"github.com/podcd/podcd/pkg/secrets"
 )
 
@@ -28,37 +27,6 @@ type Source struct {
 	// ValuesFiles holds each repository's values file paths (relative to its
 	// tree) by repo name, for {{ .Values }} templating.
 	ValuesFiles map[string][]string
-}
-
-// LoadResult is a compiled desired state plus what went wrong on the way.
-type LoadResult struct {
-	Desired model.DesiredState
-	// Offline lists repositories that could not be refreshed. Their last known
-	// commit was used instead. Reconciling from a slightly old commit beats
-	// taking applications down because a network hiccuped.
-	Offline []string
-}
-
-// LoadDesiredState fetches every repository, compiles the documents and
-// resolves them for this host.
-func (s *Source) LoadDesiredState(ctx context.Context) (LoadResult, error) {
-	var result LoadResult
-	index, values, revisions, offline, err := s.LoadIndex(ctx)
-	if err != nil {
-		return result, err
-	}
-	result.Offline = offline
-	desired, err := index.Resolve(ctx, config.ResolveOptions{
-		Host:      s.Host,
-		Secrets:   s.Secrets,
-		Revisions: revisions,
-		Values:    values,
-	})
-	if err != nil {
-		return result, err
-	}
-	result.Desired = desired
-	return result, nil
 }
 
 // LoadIndex fetches every repository and loads its documents, without

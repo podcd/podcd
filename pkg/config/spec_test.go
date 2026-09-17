@@ -47,7 +47,6 @@ func TestRenderShowsDefaultsCommentedAndValuesActive(t *testing.T) {
 func TestRenderUsesExampleBlocksForUnsetSections(t *testing.T) {
 	out := RenderAgentConfig(minimal())
 	for _, want := range []string{
-		"# vault:\n#   address: https://vault.example.com\n#   roleId: env:VAULT_ROLE_ID",
 		"    # auth:\n    #   username: gitlab+deploy-token-42\n    #   token: env:GITOPS_TOKEN",
 	} {
 		if !strings.Contains(out, want) {
@@ -56,27 +55,11 @@ func TestRenderUsesExampleBlocksForUnsetSections(t *testing.T) {
 	}
 }
 
-func TestRenderNestedDefaultsComeFromTags(t *testing.T) {
-	cfg := minimal()
-	cfg.Vault = &VaultConfig{Address: "https://v", RoleID: "env:R", SecretID: "env:S"}
-	out := RenderAgentConfig(cfg)
-	for _, want := range []string{"\n  address: https://v\n", "\n  # authMount: approle\n", "\n  # kvVersion: 2\n", "\n  # cacheTTL: 30s\n"} {
-		if !strings.Contains(out, want) {
-			t.Errorf("missing %q:\n%s", want, out)
-		}
-	}
-	cfg.Vault.KVVersion = 1
-	if !strings.Contains(RenderAgentConfig(cfg), "\n  kvVersion: 1\n") {
-		t.Error("a non-default nested value should be active")
-	}
-}
-
 func TestRenderedFileRoundTrips(t *testing.T) {
 	cfg := minimal()
 	cfg.Host = "vm-1"
 	cfg.Interval = 30 * time.Second
 	cfg.Repositories[0].Auth = &RepoAuth{Username: "deploy", Token: "env:T"}
-	cfg.Vault = &VaultConfig{Address: "https://v", Token: "env:VT", KVVersion: 1, CacheTTL: time.Minute}
 
 	path := filepath.Join(t.TempDir(), "agent.yaml")
 	if err := WriteAgentConfig(path, cfg); err != nil {
@@ -87,8 +70,7 @@ func TestRenderedFileRoundTrips(t *testing.T) {
 		t.Fatalf("the rendered file does not load: %v", err)
 	}
 	back.Path = ""
-	if back.Host != "vm-1" || back.Interval != 30*time.Second || back.Repositories[0].Auth.Token != "env:T" ||
-		back.Vault.KVVersion != 1 || back.Vault.CacheTTL != time.Minute || back.Vault.Token != "env:VT" {
+	if back.Host != "vm-1" || back.Interval != 30*time.Second || back.Repositories[0].Auth.Token != "env:T" {
 		t.Fatalf("round trip lost values: %+v", back)
 	}
 	// Writing what was read back produces the same file: set is stable.
@@ -143,9 +125,6 @@ func TestEditAppendsToTheSectionAndNeverTouchesComments(t *testing.T) {
 	out, err := EditAgentConfigBytes([]byte(src),
 		Setting{"jitter", "5s"},
 		Setting{"repositories.0.path", "clusters/prod"},
-		Setting{"vault.address", "https://v"},
-		Setting{"vault.roleId", "env:R"},
-		Setting{"vault.secretId", "env:S"},
 	)
 	if err != nil {
 		t.Fatal(err)
@@ -159,15 +138,11 @@ func TestEditAppendsToTheSectionAndNeverTouchesComments(t *testing.T) {
 			t.Errorf("original line was changed or lost: %q", line)
 		}
 	}
-	// The new keys were appended to their sections.
-	if !strings.HasSuffix(got, "vault:\n  address: https://v\n  roleId: env:R\n  secretId: env:S\n") {
-		t.Errorf("vault should be appended at the end, its keys in order:\n%s", got)
-	}
 	if !strings.Contains(got, "    revision: main\n    path: clusters/prod\n") {
 		t.Errorf("path should follow the repository's last key:\n%s", got)
 	}
 	cfg, err := ParseAgentConfig(out)
-	if err != nil || cfg.Jitter.String() != "5s" || cfg.Repositories[0].Path != "clusters/prod" || cfg.Vault == nil || cfg.Vault.SecretID != "env:S" {
+	if err != nil || cfg.Jitter.String() != "5s" || cfg.Repositories[0].Path != "clusters/prod" {
 		t.Fatalf("edited config does not parse as intended: %v %+v", err, cfg)
 	}
 }
@@ -235,11 +210,9 @@ func TestEditLeavesTheFileAloneOnAnyError(t *testing.T) {
 	src := RenderAgentConfig(minimal())
 	for _, tc := range []struct{ path, value, want string }{
 		{"nonsense", "x", `no field "nonsense"`},
-		{"vault.nope", "x", `no field "nope"`},
 		{"interval", "soon", "not a duration"},
 		{"prune", "maybe", "not true or false"},
 		{"repositories.1.url", "u", "does not exist"},
-		{"vault.address", "https://v", "needs roleId and secretId"}, // valid key, invalid result
 		{"repositories.0.auth.token", "literal", "must be a secret reference"},
 		{"repositories", "x", "cannot set a slice"},
 	} {

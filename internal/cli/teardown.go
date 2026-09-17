@@ -25,7 +25,7 @@ func newTeardownCommand(f *configFlags) *cobra.Command {
 			"repository URL and any secrets resolved through env: references live there.",
 		Args: cobra.NoArgs,
 		RunE: withEngineArgs(f, func(ctx context.Context, env *environment, cmd *cobra.Command, _ []string) error {
-			candidates, _, err := env.engine.Candidates(ctx, nil, true)
+			candidates, _, err := env.engine.RemoveCandidates(ctx, nil, true)
 			if err != nil {
 				return err
 			}
@@ -54,8 +54,8 @@ func newTeardownCommand(f *configFlags) *cobra.Command {
 				return nil
 			}
 
-			res, pruneErr := env.engine.Prune(ctx, nil, true)
-			printPruneResult(env.out, res)
+			res, removeErr := env.engine.Remove(ctx, nil, true)
+			printRemoveResult(env.out, res)
 
 			uninstallAgentService(serviceFile)
 			fmt.Fprintln(env.out, "removed "+serviceFile)
@@ -72,7 +72,10 @@ func newTeardownCommand(f *configFlags) *cobra.Command {
 				}
 				fmt.Fprintln(env.out, "removed "+configDir)
 			}
-			return pruneErr
+			if removeErr != nil {
+				return removeErr
+			}
+			return res.Err()
 		}),
 	}
 	cmd.Flags().BoolVar(&purgeState, "purge-state", false, "also delete stateDir (checkouts, played manifests, state.json)")

@@ -1,29 +1,52 @@
 package config
 
 import (
-	"bytes"
 	"cmp"
 	"context"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"maps"
 	"slices"
 	"strings"
-	"time"
 
 	corev1 "k8s.io/api/core/v1"
 
 	"github.com/podcd/podcd/pkg/model"
-	"github.com/podcd/podcd/pkg/secrets"
 )
+
+// SecretProvisioner fetches a Secret that an ExternalSecret declares but Git
+// does not contain.
+//
+// It is asked only for the names a workload on this host actually references,
+// so a host never reaches out to a secret store on behalf of somebody else's
+// machine. ok is false when no ExternalSecret targets that name.
+type SecretProvisioner interface {
+	ProvisionSecret(ctx context.Context, name string) (sec corev1.Secret, ok bool, err error)
+}
+
+// ProvisioningError means one application's ExternalSecret could not be
+// materialized. Unlike an invalid document, this is transient: callers can
+// safely reconcile the other applications and retry this one later.
+type ProvisioningError struct {
+	Applications map[string]error
+}
+
+func (e *ProvisioningError) Error() string {
+	var errs []error
+	for _, app := range slices.Sorted(maps.Keys(e.Applications)) {
+		errs = append(errs, fmt.Errorf("application %q: %w", app, e.Applications[app]))
+	}
+	return errors.Join(errs...).Error()
+}
 
 // ResolveOptions controls one compilation of the index for one host.
 type ResolveOptions struct {
 	// Host is the identity of this host. It must match a Host document.
 	Host string
-	// Secrets resolves secretEnv references. May be nil if no app uses secrets.
-	Secrets *secrets.Resolver
+	// Secrets resolves ExternalSecret targets on demand. May be nil, in which
+	// case only Secrets defined in Git are available - that is what `podcd lint`
+	// does, since linting must not talk to Vault.
+	Secrets SecretProvisioner
 	// Revisions is repo name -> commit, carried into the desired state for reporting.
 	Revisions map[string]string
 	// Values is the lowest-precedence input to {{ .Values }} templating
@@ -116,6 +139,7 @@ func (ix *Index) Resolve(ctx context.Context, opts ResolveOptions) (model.Desire
 
 	var p problems
 	var apps []model.Application
+	provisioningFailures := map[string]error{}
 	for _, name := range slices.Sorted(maps.Keys(selected)) {
 		// A pod manifest and a podcd Application are compiled by different
 		// code, but they land in the same canonical type and the same plan.
@@ -125,32 +149,25 @@ func (ix *Index) Resolve(ctx context.Context, opts ResolveOptions) (model.Desire
 			origins []string
 			err     error
 		)
-		if doc, ok := docs.pod(name); ok {
-			pod := doc.Spec
-			src = doc.Source
-			origins, err = overlay(layers, name, "pod", src, func(o Override) (e error) {
-				pod, e = patchPod(pod, o)
-				return e
-			})
-			if err == nil {
-				app, err = docs.podToApplication(ctx, name, pod, opts.Secrets)
-			}
-		} else if doc, ok := docs.application(name); ok {
-			spec := doc.Spec
-			src = doc.Source
-			origins, err = overlay(layers, name, "application", src, func(o Override) error {
-				over, e := decodeAppOverride(o)
-				spec = mergeAppSpec(spec, over)
-				return e
-			})
-			if err == nil {
-				app, err = specToApplication(ctx, name, spec, opts.Secrets)
-			}
-		} else {
-			p.add("application %q is referenced by host %q but never defined (as an Application or a Pod)", name, opts.Host)
+		doc, ok := docs.pod(name)
+		if !ok {
+			p.add("application %q is referenced by host %q but no Pod defines it", name, opts.Host)
 			continue
 		}
+		pod := doc.Spec
+		src = doc.Source
+		origins, err = overlay(layers, name, "pod", src, func(o Override) (e error) {
+			pod, e = patchPod(pod, o)
+			return e
+		})
+		if err == nil {
+			app, err = docs.podToApplication(ctx, name, pod, opts.Secrets)
+		}
 		if err != nil {
+			if isProvisioningFailure(err) {
+				provisioningFailures[name] = err
+				continue
+			}
 			p.errs = append(p.errs, err)
 			continue
 		}
@@ -173,13 +190,34 @@ func (ix *Index) Resolve(ctx context.Context, opts ResolveOptions) (model.Desire
 		return zero, err
 	}
 
-	return model.DesiredState{
+	desired := model.DesiredState{
 		Host:         opts.Host,
 		Environment:  host.Spec.Environment,
 		Groups:       slices.Clone(host.Spec.Groups),
 		Revisions:    opts.Revisions,
 		Applications: apps,
-	}, nil
+	}
+	if len(provisioningFailures) > 0 {
+		return desired, &ProvisioningError{Applications: provisioningFailures}
+	}
+	return desired, nil
+}
+
+func isProvisioningFailure(err error) bool {
+	if joined, ok := err.(interface{ Unwrap() []error }); ok {
+		children := joined.Unwrap()
+		if len(children) == 0 {
+			return false
+		}
+		for _, child := range children {
+			if !isProvisioningFailure(child) {
+				return false
+			}
+		}
+		return true
+	}
+	var provisioningErr *SecretProvisionError
+	return errors.As(err, &provisioningErr)
 }
 
 // layer is one source of overrides and values, lowest precedence first: the
@@ -229,23 +267,11 @@ func (ix *Index) renderTemplates(values Values) (*documents, error) {
 	return &rendered, nil
 }
 
-// checkNoOverlap is put's "defined twice" rule across the two sets, plus
-// the Application/Pod shared-namespace rule.
+// checkNoOverlap is put's "defined twice" rule across the two sets.
 func (ix *Index) checkNoOverlap(rendered *documents) error {
-	for name, doc := range rendered.Applications {
-		if prev, ok := ix.Applications[name]; ok {
-			return fmt.Errorf("Application %q is defined twice: %s and %s (rendered)", name, prev.Source, doc.Source)
-		}
-		if prev, ok := ix.Pods[name]; ok {
-			return fmt.Errorf("%q is both a Pod (%s) and an Application (%s, rendered); a host lists both under applications, so the name must be unique", name, prev.Source, doc.Source)
-		}
-	}
 	for name, doc := range rendered.Pods {
 		if prev, ok := ix.Pods[name]; ok {
 			return fmt.Errorf("Pod %q is defined twice: %s and %s (rendered)", name, prev.Source, doc.Source)
-		}
-		if prev, ok := ix.Applications[name]; ok {
-			return fmt.Errorf("%q is both an Application (%s) and a Pod (%s, rendered); a host lists both under applications, so the name must be unique", name, prev.Source, doc.Source)
 		}
 	}
 	for name, doc := range rendered.ConfigMaps {
@@ -269,14 +295,6 @@ func (ix *Index) checkNoOverlap(rendered *documents) error {
 type hostDocuments struct {
 	*Index
 	rendered *documents
-}
-
-func (h hostDocuments) application(name string) (Doc[AppSpec], bool) {
-	if d, ok := h.Applications[name]; ok {
-		return d, true
-	}
-	d, ok := h.rendered.Applications[name]
-	return d, ok
 }
 
 func (h hostDocuments) pod(name string) (Doc[corev1.Pod], bool) {
@@ -303,6 +321,29 @@ func (h hostDocuments) secret(name string) (Doc[corev1.Secret], bool) {
 	return d, ok
 }
 
+// externalSecretDeclares reports whether some ExternalSecret promises to produce
+// a Secret of this name at reconcile time.
+//
+// It answers from Git alone, without fetching anything, which is what `podcd
+// lint` needs: linting runs with no provisioner so that validating a repository
+// never reaches out to Vault, and without this every ExternalSecret-backed
+// Secret would look undefined.
+func (h hostDocuments) externalSecretDeclares(name string) bool {
+	declares := func(docs map[string]Doc[ExternalSecretSpec]) bool {
+		for esName, es := range docs {
+			target := es.Spec.Target.Name
+			if target == "" {
+				target = esName
+			}
+			if target == name {
+				return true
+			}
+		}
+		return false
+	}
+	return declares(h.ExternalSecrets) || declares(h.rendered.ExternalSecrets)
+}
+
 // overlay applies every layer's override for name, in order, and returns the
 // provenance trail: the document's source, then each layer that touched it.
 func overlay(layers []layer, name, kind string, src Source, apply func(Override) error) ([]string, error) {
@@ -318,226 +359,6 @@ func overlay(layers []layer, name, kind string, src Source, apply func(Override)
 		origins = append(origins, l.label)
 	}
 	return origins, nil
-}
-
-// decodeAppOverride reads an override aimed at an Application, strictly.
-func decodeAppOverride(o Override) (AppSpec, error) {
-	var spec AppSpec
-	if len(o) == 0 {
-		return spec, nil
-	}
-	dec := json.NewDecoder(bytes.NewReader(o))
-	dec.DisallowUnknownFields()
-	if err := dec.Decode(&spec); err != nil {
-		return spec, err
-	}
-	return spec, nil
-}
-
-// mergeAppSpec layers over on top of base. See AppSpec for the rules.
-func mergeAppSpec(base, over AppSpec) AppSpec {
-	out := base
-	if over.Image != "" {
-		out.Image = over.Image
-	}
-	if over.Command != nil {
-		out.Command = over.Command
-	}
-	if over.Entrypoint != nil {
-		out.Entrypoint = over.Entrypoint
-	}
-	if over.Env != nil {
-		out.Env = mergeMap(base.Env, over.Env)
-	}
-	if over.SecretEnv != nil {
-		out.SecretEnv = mergeMap(base.SecretEnv, over.SecretEnv)
-	}
-	if over.Labels != nil {
-		out.Labels = mergeMap(base.Labels, over.Labels)
-	}
-	if over.Ports != nil {
-		out.Ports = over.Ports
-	}
-	if over.Volumes != nil {
-		out.Volumes = over.Volumes
-	}
-	if over.Networks != nil {
-		out.Networks = over.Networks
-	}
-	if over.RestartPolicy != "" {
-		out.RestartPolicy = over.RestartPolicy
-	}
-	if over.User != "" {
-		out.User = over.User
-	}
-	if over.WorkingDir != "" {
-		out.WorkingDir = over.WorkingDir
-	}
-	if over.StopTimeout != nil {
-		out.StopTimeout = over.StopTimeout
-	}
-	if over.Healthcheck != nil {
-		out.Healthcheck = over.Healthcheck
-	}
-	if over.Resources != nil {
-		out.Resources = over.Resources
-	}
-	return out
-}
-
-func mergeMap(base, over map[string]string) map[string]string {
-	out := make(map[string]string, len(base)+len(over))
-	maps.Copy(out, base)
-	maps.Copy(out, over)
-	return out
-}
-
-// specToApplication validates a merged spec and converts it to the canonical form.
-func specToApplication(ctx context.Context, name string, spec AppSpec, sec *secrets.Resolver) (model.Application, error) {
-	p := problems{prefix: fmt.Sprintf("application %q: ", name)}
-
-	if !validName(name) {
-		p.add("name must be lowercase letters, digits and dashes")
-	}
-
-	app := model.Application{
-		Name:          name,
-		Image:         spec.Image,
-		Command:       slices.Clone(spec.Command),
-		Entrypoint:    slices.Clone(spec.Entrypoint),
-		Env:           mergeMap(nil, spec.Env),
-		Labels:        mergeMap(nil, spec.Labels),
-		Networks:      slices.Sorted(slices.Values(spec.Networks)),
-		RestartPolicy: cmp.Or(spec.RestartPolicy, "always"),
-		User:          spec.User,
-		WorkingDir:    spec.WorkingDir,
-		Healthcheck:   spec.Healthcheck,
-	}
-	if spec.StopTimeout != nil {
-		app.StopTimeout = *spec.StopTimeout
-	}
-	if spec.Resources != nil {
-		app.Resources = *spec.Resources
-	}
-	switch app.RestartPolicy {
-	case "always", "on-failure", "no":
-	default:
-		p.add("restartPolicy %q must be always, on-failure or no", app.RestartPolicy)
-	}
-
-	if spec.Image == "" {
-		p.add("no image")
-	}
-
-	for k := range app.Env {
-		if !validEnvName(k) {
-			p.add("environment variable name %q is not valid", k)
-		}
-	}
-
-	for _, port := range spec.Ports {
-		port.Protocol = cmp.Or(strings.ToLower(port.Protocol), "tcp")
-		if port.Protocol != "tcp" && port.Protocol != "udp" {
-			p.add("port protocol %q must be tcp or udp", port.Protocol)
-		}
-		if !validPort(port.Host) {
-			p.add("host port %d is out of range", port.Host)
-		}
-		if !validPort(port.Container) {
-			p.add("container port %d is out of range", port.Container)
-		}
-		app.Ports = append(app.Ports, port)
-	}
-	slices.SortFunc(app.Ports, comparePorts)
-
-	for _, v := range spec.Volumes {
-		if v.Source == "" || v.Destination == "" {
-			p.add("volume needs both source and destination")
-			continue
-		}
-		if !strings.HasPrefix(v.Destination, "/") {
-			p.add("volume destination %q must be an absolute path", v.Destination)
-		}
-		app.Volumes = append(app.Volumes, v)
-	}
-	slices.SortFunc(app.Volumes, func(a, b model.Volume) int {
-		return cmp.Or(cmp.Compare(a.Destination, b.Destination), cmp.Compare(a.Source, b.Source))
-	})
-
-	if hc := app.Healthcheck; hc != nil {
-		set := 0
-		if hc.HTTP != nil {
-			set++
-			if !validPort(hc.HTTP.Port) {
-				p.add("healthcheck http port %d is out of range", hc.HTTP.Port)
-			}
-		}
-		if hc.TCP != nil {
-			set++
-			if !validPort(hc.TCP.Port) {
-				p.add("healthcheck tcp port %d is out of range", hc.TCP.Port)
-			}
-		}
-		if hc.Exec != nil {
-			set++
-			if len(hc.Exec.Command) == 0 {
-				p.add("healthcheck exec needs a command")
-			}
-		}
-		if set > 1 {
-			p.add("healthcheck must set at most one of http, tcp, exec")
-		}
-		for _, d := range []string{hc.Interval, probeTimeout(hc)} {
-			if d == "" {
-				continue
-			}
-			if err := checkDuration(d); err != nil {
-				p.add("healthcheck: %v", err)
-			}
-		}
-		if hc.Retries < 0 {
-			p.add("healthcheck retries must not be negative")
-		}
-	}
-
-	if len(spec.SecretEnv) > 0 {
-		if sec == nil {
-			p.add("uses secretEnv but no secret provider is configured")
-		} else {
-			app.SecretEnv = make(map[string]string, len(spec.SecretEnv))
-			for _, k := range slices.Sorted(maps.Keys(spec.SecretEnv)) {
-				if !validEnvName(k) {
-					p.add("secret environment variable name %q is not valid", k)
-					continue
-				}
-				v, err := sec.Resolve(ctx, spec.SecretEnv[k])
-				if err != nil {
-					p.add("%v", err)
-					continue
-				}
-				app.SecretEnv[k] = v
-			}
-		}
-	}
-
-	if err := p.err(); err != nil {
-		return model.Application{}, err
-	}
-	return app, nil
-}
-
-func validPort(n int) bool { return n >= 1 && n <= 65535 }
-
-func probeTimeout(h *model.Healthcheck) string {
-	switch {
-	case h.HTTP != nil:
-		return h.HTTP.Timeout
-	case h.TCP != nil:
-		return h.TCP.Timeout
-	case h.Exec != nil:
-		return h.Exec.Timeout
-	}
-	return ""
 }
 
 // checkHostPortConflicts catches two applications publishing the same host port,
@@ -572,13 +393,6 @@ func comparePorts(a, b model.Port) int {
 	)
 }
 
-func checkDuration(s string) error {
-	if _, err := time.ParseDuration(s); err != nil {
-		return fmt.Errorf("%q is not a duration (try 5s, 500ms, 1m)", s)
-	}
-	return nil
-}
-
 func validName(s string) bool {
 	if s == "" || len(s) > 60 {
 		return false
@@ -587,21 +401,6 @@ func validName(s string) bool {
 		switch {
 		case r >= 'a' && r <= 'z', r >= '0' && r <= '9':
 		case r == '-' && i > 0 && i < len(s)-1:
-		default:
-			return false
-		}
-	}
-	return true
-}
-
-func validEnvName(s string) bool {
-	if s == "" {
-		return false
-	}
-	for i, r := range s {
-		switch {
-		case r >= 'a' && r <= 'z', r >= 'A' && r <= 'Z', r == '_':
-		case r >= '0' && r <= '9' && i > 0:
 		default:
 			return false
 		}

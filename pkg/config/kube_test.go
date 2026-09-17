@@ -4,8 +4,6 @@ import (
 	"context"
 	"strings"
 	"testing"
-
-	"github.com/podcd/podcd/pkg/secrets"
 )
 
 const podFiles = `
@@ -52,18 +50,14 @@ func resolvePod(t *testing.T, files map[string]string, host string) (string, err
 	if err := ix.LoadTree("test", writeTree(t, files)); err != nil {
 		return "", err
 	}
-	got, err := ix.Resolve(context.Background(), ResolveOptions{Host: host, Secrets: secrets.Default("", "")})
+	got, err := ix.Resolve(context.Background(), ResolveOptions{Host: host})
 	if err != nil {
 		return "", err
 	}
 	if len(got.Applications) != 1 {
 		t.Fatalf("want one workload, got %v", got.Names())
 	}
-	app := got.Applications[0]
-	if !app.IsKube() {
-		t.Fatalf("want a kube workload, got kind %q", app.Kind)
-	}
-	return string(app.Manifest), nil
+	return string(got.Applications[0].Manifest), nil
 }
 
 func TestPodCompilesToAManifestWithItsConfigMap(t *testing.T) {
@@ -99,22 +93,42 @@ func TestPodManifestIsDeterministic(t *testing.T) {
 	}
 }
 
-func TestPodHealthcheckComesFromTheReadinessProbe(t *testing.T) {
+// A Pod's readinessProbe belongs to podman, which runs it. podcd passes it
+// through untouched and collects the host ports it needs for conflict checks.
+func TestPodProbePassesThroughAndPortsAreCollected(t *testing.T) {
 	ix := loadIndex(t, map[string]string{"pod.yaml": podFiles})
 	got, err := ix.Resolve(context.Background(), ResolveOptions{Host: "vm-1"})
 	if err != nil {
 		t.Fatal(err)
 	}
-	hc := got.Applications[0].Healthcheck
-	if hc == nil || hc.HTTP == nil {
-		t.Fatalf("want an http probe derived from the readinessProbe, got %+v", hc)
-	}
-	if hc.HTTP.Port != 18080 || hc.HTTP.Path != "/health" {
-		t.Errorf("probe should target the host port: %+v", hc.HTTP)
+	manifest := string(got.Applications[0].Manifest)
+	for _, want := range []string{"readinessProbe:", "path: /health"} {
+		if !strings.Contains(manifest, want) {
+			t.Errorf("manifest is missing %q:\n%s", want, manifest)
+		}
 	}
 	ports := got.Applications[0].Ports
 	if len(ports) != 1 || ports[0].Host != 18080 || ports[0].Container != 8080 {
 		t.Errorf("host ports should be collected for conflict checks: %+v", ports)
+	}
+}
+
+func TestPodRetainsInitContainerNamesForRuntimeHealth(t *testing.T) {
+	files := strings.Replace(podFiles, "spec:\n  containers:", `spec:
+  initContainers:
+    - name: prepare
+      image: example.com/prepare`+digest+`
+  containers:`, 1)
+	ix := loadIndex(t, map[string]string{"pod.yaml": files})
+	got, err := ix.Resolve(context.Background(), ResolveOptions{Host: "vm-1"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if names := got.Applications[0].InitContainers; len(names) != 1 || names[0] != "prepare" {
+		t.Fatalf("init containers = %v, want [prepare]", names)
+	}
+	if !strings.Contains(string(got.Applications[0].Manifest), "initContainers:") {
+		t.Fatal("the played manifest lost initContainers")
 	}
 }
 
@@ -150,19 +164,21 @@ func TestPodOptionalConfigMapMayBeMissing(t *testing.T) {
 	}
 }
 
-func TestPodAndApplicationCannotShareAName(t *testing.T) {
+func TestTwoPodsCannotShareAName(t *testing.T) {
 	files := map[string]string{"pod.yaml": podFiles, "app.yaml": `
-apiVersion: gitops.podcd.io/v1
-kind: Application
+apiVersion: v1
+kind: Pod
 metadata:
   name: web
 spec:
-  image: example.com/web` + digest + `
+  containers:
+    - name: web
+      image: example.com/web` + digest + `
 `}
 	ix := NewIndex()
 	err := ix.LoadTree("test", writeTree(t, files))
-	if err == nil || !strings.Contains(err.Error(), "both") {
-		t.Fatalf("a Pod and an Application with one name is ambiguous, got: %v", err)
+	if err == nil || !strings.Contains(err.Error(), "defined twice") {
+		t.Fatalf("two Pods with one name is ambiguous, got: %v", err)
 	}
 }
 
@@ -203,62 +219,24 @@ func TestPodOverrideWithUnknownFieldIsRejected(t *testing.T) {
 	}
 }
 
-func TestSecretInGitMustBeReferenceOnly(t *testing.T) {
+// A plain v1/Secret is an ordinary document:
+// anything that must stay out of Git is fetched with an ExternalSecret instead.
+func TestPlainSecretInGitLoads(t *testing.T) {
 	ix := NewIndex()
-	err := ix.LoadTree("test", writeTree(t, map[string]string{"s.yaml": `
-apiVersion: v1
-kind: Secret
-metadata:
-  name: db
-stringData:
-  PASSWORD: hunter2
-`}))
-	if err == nil || !strings.Contains(err.Error(), "must be references") {
-		t.Fatalf("a literal secret value must be refused, got: %v", err)
-	}
-
-	ix = NewIndex()
-	err = ix.LoadTree("test", writeTree(t, map[string]string{"s.yaml": `
+	if err := ix.LoadTree("test", writeTree(t, map[string]string{"s.yaml": `
 apiVersion: v1
 kind: Secret
 metadata:
   name: db
 data:
   PASSWORD: aHVudGVyMg==
-`}))
-	if err == nil || !strings.Contains(err.Error(), "plaintext values in data") {
-		t.Fatalf("base64 is not encryption; data must be refused, got: %v", err)
-	}
-}
-
-func TestPodSecretIsResolvedOnTheHost(t *testing.T) {
-	t.Setenv("TEST_DB_PASSWORD", "resolved-on-host")
-	files := map[string]string{"pod.yaml": strings.Replace(podFiles, "      envFrom:\n", `      env:
-        - name: PASSWORD
-          valueFrom:
-            secretKeyRef:
-              name: db
-              key: PASSWORD
-      envFrom:
-`, 1) + `
----
-apiVersion: v1
-kind: Secret
-metadata:
-  name: db
 stringData:
-  PASSWORD: env:TEST_DB_PASSWORD
-`}
-	manifest, err := resolvePod(t, files, "vm-1")
-	if err != nil {
-		t.Fatal(err)
+  ca.crt: PEM-CHAIN
+`})); err != nil {
+		t.Fatalf("a plain Secret must load: %v", err)
 	}
-	// podman reads data (base64); "resolved-on-host" base64-encodes to this.
-	if !strings.Contains(manifest, "PASSWORD: cmVzb2x2ZWQtb24taG9zdA==") {
-		t.Errorf("the secret was not resolved into the manifest:\n%s", manifest)
-	}
-	if strings.Contains(manifest, "env:TEST_DB_PASSWORD") {
-		t.Error("the reference should have been replaced by the value")
+	if _, ok := ix.Secrets["db"]; !ok {
+		t.Fatal("the Secret was not indexed")
 	}
 }
 

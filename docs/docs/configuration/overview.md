@@ -55,7 +55,7 @@ repositories:
     # than an environment variable nobody sees.
     # insecure: false
     # A private repository needs a read credential. The token is a secret
-    # reference (env:, file:, vault:), never a literal in this file; it is
+    # reference (env: or file:), never a literal in this file; it is
     # resolved on every fetch. GitLab deploy tokens have their own username.
     # auth:
     #   username: gitlab+deploy-token-42
@@ -82,14 +82,6 @@ repositories:
 
 # text or json.
 # logFormat: text
-
-# HashiCorp Vault, for vault:<mount>/<path>/<key> (or <path>/<key>@<mount>)
-# references. Vault's own credentials are references as well, so they come
-# from the env file rather than from this file.
-# vault:
-#   address: https://vault.example.com
-#   roleId: env:VAULT_ROLE_ID
-#   secretId: env:VAULT_SECRET_ID
 ```
 
 ## Editing it
@@ -108,15 +100,16 @@ podcd config view
 
 ## Multiple repositories
 
-Repositories are composed into one desired state. (i.e. multiple teams sharing one repository)
+Repositories are composed into one desired state. (i.e. multiple teams sharing one host)
 
 ```yaml
 repositories:
-  - name: infrastructure
-    url: https://github.com/podcd/podcd.git
+  - name: team-1
+    url: https://github.com/team-1/podcd-gitops.git
     revision: main
-    path: examples
-  - name: applications
-    url: https://github.com/your-user/applications.git
-    revision: v1.4.0
+    path: prd
+  - name: team-2
+    url: https://github.com/team-2/podcd-gitops.git
+    revision: main
+    path: prd
 ```

@@ -47,10 +47,10 @@ This stops and removes every application podcd manages, then stops, disables and
 ### 1. Set up the GitOps repository
 
 :::tip
-`podcd validate` requires Secrets as references (`env:NAME`, `file:path`). See [Secrets](configuration/secrets.md).
+`podcd lint` checks the files without fetching anything, so it runs anywhere. `podcd validate` compiles for this host, which means pulling Git and reading any secret the host's workloads reference. See [Secrets](configuration/secrets.md).
 :::
 
-Set up a repository with at least a `Host` and an `Application` or `Pod`. See [`examples/`](https://github.com/podcd/podcd/tree/main/examples) or [podcd/podcd-gitops](https://github.com/podcd/podcd-gitops). No prescribed directory structure. See the [configuration model](configuration/model.md).
+Set up a repository with at least a `Host` and a `Pod`. See [`examples/`](https://github.com/podcd/podcd/tree/main/examples) or [podcd/podcd-gitops](https://github.com/podcd/podcd-gitops). No prescribed directory structure. See the [configuration model](configuration/model.md).
 
 - `podcd init` scaffolds a minimal repository.
 - `podcd create` generates documents.
@@ -138,7 +138,7 @@ Files the agent owns:
 
 ### 3. Secrets
 
-Anything that must not be in Git is a *reference* in Git and a value on the host. See [Secrets](configuration/secrets.md) for `env:`, `file:` and `vault:` references.
+Anything that must not be in Git is a *reference* in Git and a value on the host. See [Secrets](configuration/secrets.md) for `env:` and `file:` references.
 
 ### 4. Status
 

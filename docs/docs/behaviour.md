@@ -3,7 +3,6 @@ id: behaviour
 title: Behaviour
 ---
 
-What one reconcile does, in order, and what the agent keeps on the host. `podcd plan` and `podcd reconcile` run exactly this; the agent loop (`podcd run`, what the systemd service runs) repeats it every `interval`.
 
 ```mermaid
 flowchart TD
@@ -32,16 +31,22 @@ The runtime (currently podman only) is inspected: which units podcd wrote, their
 
 Desired and actual are compared per application:
 
-- not present on the host → **create**
-- the rendered unit differs from the one on disk, or a secret value changed → **update**
-- present and unchanged, but the unit is not active → **restart**
-- present in the runtime but no longer declared in Git → **delete** (only when `prune` is on, the default; otherwise reported as a no-op)
+- not present on the host -> **create**
+- the rendered unit, or the manifest it plays, differs from what is on disk -> **update**
+- present and unchanged, but the unit is not active -> **restart**
+- present in the runtime but no longer declared in Git -> **delete** (only when `prune` is on, the default; otherwise reported as a no-op)
 
 Deletes are ordered before creates, so a renamed application frees its host port before its successor binds it.
 
 ## Apply
 
 Actions run one at a time under a file lock, so a human running `podcd reconcile` and the agent's own loop cannot fight over the same unit files. A destructive action is logged before it happens. The first failure stops the run and is recorded.
+
+## Health
+
+Health is whether every workload container is running. podcd does not run or
+interpret container healthchecks. After applying a change it waits for the
+application to come back before calling the reconcile a success.
 
 ## Retry
 

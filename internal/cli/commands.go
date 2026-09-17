@@ -116,7 +116,7 @@ func newHealthCommand(f *configFlags) *cobra.Command {
 	var out outputFormat
 	cmd := &cobra.Command{
 		Use:   "health",
-		Short: "probe the applications this host should be running",
+		Short: "report what podman says about the applications this host runs",
 		Args:  cobra.NoArgs,
 		RunE: withEngine(f, func(ctx context.Context, env *environment) error {
 			results, err := env.engine.Health(ctx)
@@ -139,13 +139,15 @@ func newHealthCommand(f *configFlags) *cobra.Command {
 
 func newLogsCommand(f *configFlags) *cobra.Command {
 	var tail int
-	var app string
+	app := "agent" // the agent's own unit is podcd-agent.service, the same shape as an application's
 	cmd := &cobra.Command{
-		Use:   "logs <application>",
-		Short: "recent log output for one application",
-		Args:  cobra.ExactArgs(1),
+		Use:   "logs [application]",
+		Short: "recent log output for the agent, or for one application",
+		Args:  cobra.MaximumNArgs(1),
 		PreRun: func(_ *cobra.Command, args []string) {
-			app = args[0]
+			if len(args) == 1 {
+				app = args[0]
+			}
 		},
 		RunE: withEngine(f, func(ctx context.Context, env *environment) error {
 			text, err := env.engine.Logs(ctx, app, tail)
@@ -178,15 +180,10 @@ func newValidateCommand(f *configFlags) *cobra.Command {
 			fmt.Fprintf(env.out, "host %s (environment %s, groups %s) at %s\n",
 				d.Host, dash(d.Environment), dash(strings.Join(d.Groups, ",")), d.RevisionString())
 			w := table(env.out)
-			fmt.Fprintln(w, "  APP\tKIND\tIMAGE\tPORTS\tFROM")
+			fmt.Fprintln(w, "  APP\tIMAGE\tPORTS\tFROM")
 			for _, a := range d.Applications {
-				kind := "container"
-				image := shortImage(a.Image)
-				if a.IsKube() {
-					kind = "pod"
-					image = fmt.Sprintf("%d image(s): %s", len(a.ImageList()), shortImage(a.Image))
-				}
-				fmt.Fprintf(w, "  %s\t%s\t%s\t%s\t%s\n", a.Name, kind, image, portList(a.Ports), strings.Join(a.Origins, " → "))
+				image := fmt.Sprintf("%d image(s): %s", len(a.ImageList()), shortImage(a.Image))
+				fmt.Fprintf(w, "  %s\t%s\t%s\t%s\n", a.Name, image, portList(a.Ports), strings.Join(a.Origins, " → "))
 			}
 			w.Flush()
 			fmt.Fprintf(env.out, "%d application(s); configuration is valid\n", len(d.Applications))

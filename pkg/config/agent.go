@@ -29,7 +29,7 @@ type RepositorySpec struct {
 	Path     string    `yaml:"path,omitempty" doc:"Read only this subdirectory of the repository."`
 	Values   []string  `yaml:"values,omitempty" doc:"Values file(s), relative to this repository's tree (path, if set), for {{ .Values }} templating of *.tpl files - a host-local fallback beneath what Host, Group and Environment documents declare. Repeated files merge, later ones winning per key."`
 	Insecure bool      `yaml:"insecure,omitempty" doc:"Disable host key / TLS verification. Visible here on purpose, rather than an environment variable nobody sees."`
-	Auth     *RepoAuth `yaml:"auth,omitempty" doc:"A private repository needs a read credential. The token is a secret reference (env:, file:, vault:), never a literal in this file; it is resolved on every fetch. GitLab deploy tokens have their own username."`
+	Auth     *RepoAuth `yaml:"auth,omitempty" doc:"A private repository needs a read credential. The token is a secret reference (env: or file:), never a literal in this file; it is resolved on every fetch. GitLab deploy tokens have their own username."`
 }
 
 // RepoAuth is a repository's read credential.
@@ -41,22 +41,6 @@ type RepoAuth struct {
 	Token             string `yaml:"token,omitempty" example:"env:GITOPS_TOKEN" doc:"A secret reference to the token, resolved at fetch time."`
 	SSHKeyPath        string `yaml:"sshKeyPath,omitempty" example:"~/.ssh/deploy_key" doc:"Instead of a token: a private key on this host, used with IdentitiesOnly."`
 	SSHKnownHostsPath string `yaml:"sshKnownHostsPath,omitempty" example:"~/.ssh/known_hosts" doc:"Overrides ~/.ssh/known_hosts for host key checks."`
-}
-
-// VaultConfig connects the vault: secret scheme to a HashiCorp Vault.
-//
-// Authentication is AppRole (roleId + secretId) or a token.
-// Each of those is itself a secret reference, typically env: values from agent.env, so no Vault credential is ever in a 0644 file.
-type VaultConfig struct {
-	Address   string        `yaml:"address" example:"https://vault.example.com" doc:"The Vault server."`
-	Namespace string        `yaml:"namespace,omitempty" doc:"Vault Enterprise namespace."`
-	CACert    string        `yaml:"caCert,omitempty" doc:"PEM bundle for a private CA."`
-	RoleID    string        `yaml:"roleId,omitempty" example:"env:VAULT_ROLE_ID" doc:"AppRole login: a secret reference to the role id."`
-	SecretID  string        `yaml:"secretId,omitempty" example:"env:VAULT_SECRET_ID" doc:"AppRole login: a secret reference to the secret id."`
-	AuthMount string        `yaml:"authMount,omitempty" default:"approle" doc:"Where the AppRole auth method is mounted."`
-	Token     string        `yaml:"token,omitempty" doc:"Instead of AppRole: a secret reference to a Vault token."`
-	KVVersion int           `yaml:"kvVersion,omitempty" default:"2" doc:"KV secrets engine version, 1 or 2."`
-	CacheTTL  time.Duration `yaml:"cacheTTL,omitempty" default:"30s" doc:"How long a read is reused, so many keys from one path are one round trip."`
 }
 
 // AgentConfig is the agent's own configuration: where Git is, who this host is, how often to reconcile.
@@ -81,8 +65,6 @@ type AgentConfig struct {
 	Prune *bool `yaml:"prune,omitempty" doc:"Remove applications that Git no longer declares. On by default; leaving orphans running is its own kind of drift."`
 
 	LogFormat string `yaml:"logFormat,omitempty" doc:"text or json."`
-
-	Vault *VaultConfig `yaml:"vault,omitempty" doc:"HashiCorp Vault, for vault:<mount>/<path>/<key> (or <path>/<key>@<mount>) references. Vault's own credentials are references as well, so they come from the env file rather than from this file."`
 
 	// Path this config was read from, for diagnostics.
 	Path string `yaml:"-"`
@@ -117,9 +99,6 @@ func (c AgentConfig) LockPath() string { return filepath.Join(c.StateDir, "recon
 
 // StatePath is the local metadata file.
 func (c AgentConfig) StatePath() string { return filepath.Join(c.StateDir, "state.json") }
-
-// SecretEnvDir holds the per-application env files referenced by the units.
-func (c AgentConfig) SecretEnvDir() string { return filepath.Join(c.StateDir, "env") }
 
 // KubeDir holds the played manifests referenced by .kube units.
 func (c AgentConfig) KubeDir() string { return filepath.Join(c.StateDir, "kube") }
@@ -259,26 +238,6 @@ func (c AgentConfig) Validate() error {
 	}
 	if c.LogFormat != "text" && c.LogFormat != "json" {
 		p.add("logFormat %q must be text or json", c.LogFormat)
-	}
-	if v := c.Vault; v != nil {
-		if v.Address == "" {
-			p.add("vault: address is required")
-		}
-		hasAppRole := v.RoleID != "" || v.SecretID != ""
-		switch {
-		case v.Token != "" && hasAppRole:
-			p.add("vault: use either token or roleId+secretId, not both")
-		case v.Token == "" && (v.RoleID == "" || v.SecretID == ""):
-			p.add("vault: needs roleId and secretId (AppRole) or a token")
-		}
-		for name, ref := range map[string]string{"roleId": v.RoleID, "secretId": v.SecretID, "token": v.Token} {
-			if ref != "" && !secrets.IsReference(ref) {
-				p.add("vault: %s must be a secret reference such as env:VAULT_%s, not a literal", name, strings.ToUpper(name))
-			}
-		}
-		if v.KVVersion != 0 && v.KVVersion != 1 && v.KVVersion != 2 {
-			p.add("vault: kvVersion must be 1 or 2, not %d", v.KVVersion)
-		}
 	}
 	return p.err()
 }

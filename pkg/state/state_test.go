@@ -1,10 +1,8 @@
 package state
 
 import (
-	"encoding/json"
 	"os"
 	"path/filepath"
-	"strings"
 	"testing"
 	"time"
 
@@ -92,20 +90,6 @@ func TestCorruptStateStartsFreshAndSaysSo(t *testing.T) {
 	}
 	if st.Applications == nil {
 		t.Fatal("the agent must still be able to carry on with an empty state")
-	}
-}
-
-func TestSecretsAreNotWrittenToState(t *testing.T) {
-	st := State{Applications: map[string]AppRecord{}}
-	app := model.Application{Name: "api", Image: "img@sha256:a", SecretEnv: map[string]string{"TOKEN": "s3cret"}}
-	st.RecordApplied(app, "infra=aaa", time.Now())
-
-	data, err := json.Marshal(st)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if strings.Contains(string(data), "s3cret") {
-		t.Fatalf("a secret leaked into the state file: %s", data)
 	}
 }
 

@@ -13,23 +13,30 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"slices"
 	"strconv"
 	"strings"
 	"time"
 
 	"github.com/podcd/podcd/internal/atomicfile"
 	"github.com/podcd/podcd/internal/subprocess"
-	"github.com/podcd/podcd/pkg/health"
+	"github.com/podcd/podcd/pkg/config"
 	"github.com/podcd/podcd/pkg/model"
 	"github.com/podcd/podcd/pkg/renderer"
+)
+
+// How long WaitHealthy keeps asking after a change is applied. A pod that has
+// just been played needs a moment before its containers report for duty.
+const (
+	waitRetries  = 15
+	waitInterval = 2 * time.Second
 )
 
 // Options configures a Runtime.
 type Options struct {
 	UnitDir string
-	EnvDir  string
 	// KubeDir holds the manifests played by .kube units.
-	// Like EnvDir it can contain resolved secrets and is never the unit directory.
+	// It can contain resolved secrets and is never the unit directory.
 	KubeDir string
 
 	// PodmanBin and SystemctlBin default to the names on PATH.
@@ -49,8 +56,7 @@ type Runtime struct {
 	journalctl string
 	timeout    time.Duration
 
-	rend    *renderer.Renderer
-	checker *health.Checker
+	rend *renderer.Renderer
 }
 
 // New returns a Podman runtime writing units into opts.UnitDir.
@@ -62,8 +68,7 @@ func New(opts Options) *Runtime {
 		journalctl: "journalctl",
 		timeout:    cmp.Or(opts.Timeout, 2*time.Minute),
 	}
-	r.rend = &renderer.Renderer{UnitDir: opts.UnitDir, EnvDir: opts.EnvDir, KubeDir: opts.KubeDir}
-	r.checker = &health.Checker{Exec: r.execProbe}
+	r.rend = &renderer.Renderer{UnitDir: opts.UnitDir, KubeDir: opts.KubeDir}
 	return r
 }
 
@@ -121,7 +126,8 @@ func (r *Runtime) Inspect(ctx context.Context) (model.ActualState, error) {
 			name = m.App
 		}
 		if prev, ok := state.Apps[name]; ok {
-			// A .container and a .kube for the same name would both claim podcd-<name>.service.
+			// Two files claiming one podcd-<name>.service: the header inside one
+			// of them names an app that another file is already named after.
 			// Refuse to guess which one systemd picked.
 			return state, fmt.Errorf("application %q has two unit files: %s and %s; remove one", name, prev.UnitFile, path)
 		}
@@ -132,13 +138,12 @@ func (r *Runtime) Inspect(ctx context.Context) (model.ActualState, error) {
 			UnitFileHash: model.HashBytes(content),
 			UnitContent:  content,
 			SpecHash:     m.SpecHash,
-			SecretsHash:  m.SecretsHash,
 			UnitName:     renderer.ServiceName(name),
 			UnitState:    model.UnitUnknown,
 		}
-		// A kube unit is only as current as the manifest it points at.
+		// A unit is only as current as the manifest it points at.
 		// If that file was edited or deleted, the unit must be re-applied even though its own bytes still match.
-		if m.Kind == model.KindKube && m.Managed {
+		if m.Managed {
 			if manifestPath := yamlPathOf(content); manifestPath != "" {
 				data, err := os.ReadFile(manifestPath)
 				if err != nil || model.HashBytes(data) != m.ManifestHash {
@@ -152,18 +157,26 @@ func (r *Runtime) Inspect(ctx context.Context) (model.ActualState, error) {
 
 	// Containers we own but have no unit for: a half-removed application, or a unit file someone deleted by hand.
 	// They are still ours to clean up.
-	containers, err := r.listContainers(ctx)
+	containers, err := r.listContainers(ctx, "")
 	if err != nil {
 		return state, err
 	}
-	for app, c := range containers {
+	for app, all := range containers {
 		cur, ok := state.Apps[app]
 		if !ok {
 			cur = model.ActualApp{Name: app, Managed: true, UnitName: renderer.ServiceName(app), UnitState: model.UnitMissing}
 		}
-		cur.ContainerID = c.id
-		cur.ContainerImage = c.image
-		cur.ContainerState = c.state
+		// One container stands for the workload in the reporting fields.
+		if c := workload(all); len(c) > 0 {
+			cur.ContainerID = c[0].id
+			cur.ContainerImage = c[0].image
+			cur.ContainerState = c[0].state
+			for _, w := range c {
+				cur.Containers = append(cur.Containers, model.ContainerStatus{
+					Name: w.name, State: w.state, Health: w.health, Restarts: w.restarts,
+				})
+			}
+		}
 		state.Apps[app] = cur
 	}
 
@@ -175,32 +188,64 @@ func (r *Runtime) Inspect(ctx context.Context) (model.ActualState, error) {
 
 type containerInfo struct {
 	id    string
+	name  string
 	image string
-	state string
+	// state is podman's own word for it: running, exited, created, paused.
+	state    string
+	exitCode int
+	// health is the healthcheck verdict `podman ps` folds into its status
+	// column - "Up 2 minutes (healthy)" - or empty when there is no check.
+	health   string
+	restarts int
+	infra    bool
 }
 
-// listContainers asks Podman for everything labelled as ours, keyed by app.
-func (r *Runtime) listContainers(ctx context.Context) (map[string]containerInfo, error) {
-	out, err := r.podmanRun(ctx, "ps", "--all", "--filter", "label=io.podcd.managed=true", "--format", "json")
+// healthFromStatus pulls the healthcheck verdict out of a `podman ps` status
+// line: "Up 2 minutes (healthy)" -> "healthy". No parenthetical, no check.
+func healthFromStatus(status string) string {
+	for _, v := range []string{"healthy", "unhealthy", "starting"} {
+		if strings.Contains(status, "("+v+")") {
+			return v
+		}
+	}
+	return ""
+}
+
+// listContainers asks Podman for everything labelled as ours, grouped by app.
+//
+// A pod contributes several containers under one app name, infra included, so
+// the caller gets all of them rather than an arbitrary winner. Passing an app
+// name narrows the query to that one workload.
+func (r *Runtime) listContainers(ctx context.Context, app string) (map[string][]containerInfo, error) {
+	args := []string{"ps", "--all", "--filter", "label=" + config.LabelManaged + "=true"}
+	if app != "" {
+		args = append(args, "--filter", "label="+config.LabelApp+"="+app)
+	}
+	out, err := r.podmanRun(ctx, append(args, "--format", "json")...)
 	if err != nil {
 		return nil, fmt.Errorf("listing containers: %w", err)
 	}
 	var raw []struct {
-		ID     string            `json:"Id"`
-		Image  string            `json:"Image"`
-		State  string            `json:"State"`
-		Labels map[string]string `json:"Labels"`
+		ID       string            `json:"Id"`
+		Names    []string          `json:"Names"`
+		Image    string            `json:"Image"`
+		State    string            `json:"State"`
+		Status   string            `json:"Status"`
+		ExitCode int               `json:"ExitCode"`
+		Restarts int               `json:"Restarts"`
+		IsInfra  bool              `json:"IsInfra"`
+		Labels   map[string]string `json:"Labels"`
 	}
 	trimmed := strings.TrimSpace(out)
 	if trimmed == "" || trimmed == "null" {
-		return map[string]containerInfo{}, nil
+		return map[string][]containerInfo{}, nil
 	}
 	if err := json.Unmarshal([]byte(trimmed), &raw); err != nil {
 		return nil, fmt.Errorf("parsing podman ps output: %w", err)
 	}
-	result := make(map[string]containerInfo, len(raw))
+	result := make(map[string][]containerInfo, len(raw))
 	for _, c := range raw {
-		app := c.Labels["io.podcd.app"]
+		app := c.Labels[config.LabelApp]
 		if app == "" {
 			continue
 		}
@@ -208,9 +253,31 @@ func (r *Runtime) listContainers(ctx context.Context) (map[string]containerInfo,
 		if len(id) > 12 {
 			id = id[:12]
 		}
-		result[app] = containerInfo{id: id, image: c.Image, state: c.State}
+		var name string
+		if len(c.Names) > 0 {
+			name = c.Names[0]
+		}
+		result[app] = append(result[app], containerInfo{
+			id: id, name: name, image: c.Image, state: c.State, exitCode: c.ExitCode,
+			health: healthFromStatus(c.Status), restarts: c.Restarts, infra: c.IsInfra,
+		})
+	}
+	for app := range result {
+		slices.SortFunc(result[app], func(a, b containerInfo) int { return strings.Compare(a.name, b.name) })
 	}
 	return result, nil
+}
+
+// workload drops the infra container, which is podman's own plumbing and says
+// nothing about whether the application is running.
+func workload(containers []containerInfo) []containerInfo {
+	var out []containerInfo
+	for _, c := range containers {
+		if !c.infra {
+			out = append(out, c)
+		}
+	}
+	return out
 }
 
 // fillUnitStates asks systemd about every unit in one call.
@@ -242,6 +309,8 @@ func (r *Runtime) fillUnitStates(ctx context.Context, state model.ActualState) e
 			app.UnitState = model.UnitMissing
 		case props["ActiveState"] == "active":
 			app.UnitState = model.UnitActive
+		case props["ActiveState"] == "activating":
+			app.UnitState = model.UnitActivating
 		case props["ActiveState"] == "failed":
 			app.UnitState = model.UnitFailed
 		case props["ActiveState"] == "inactive":
@@ -249,7 +318,7 @@ func (r *Runtime) fillUnitStates(ctx context.Context, state model.ActualState) e
 		case props["ActiveState"] == "":
 			app.UnitState = model.UnitUnknown
 		default:
-			// activating, deactivating, reloading: not yet running.
+			// deactivating, reloading, or a systemd state podcd does not know.
 			app.UnitState = model.UnitState(props["ActiveState"])
 		}
 		state.Apps[n] = app
@@ -293,32 +362,9 @@ func (r *Runtime) Apply(ctx context.Context, app model.Application) error {
 		return err
 	}
 
-	if unit.EnvFile != nil {
-		if err := atomicfile.Write(unit.EnvFilePath, unit.EnvFile, 0o600); err != nil {
-			return fmt.Errorf("writing secret env file for %s: %w", app.Name, err)
-		}
-	} else {
-		// The application stopped using secrets: do not leave the old values behind.
-		_ = removeIfExists(r.rend.EnvFilePath(app.Name))
-	}
-
-	if unit.IsKube() {
-		// Resolved secrets may be in here: readable by the agent user only.
-		if err := atomicfile.Write(unit.ManifestPath, unit.Manifest, 0o600); err != nil {
-			return fmt.Errorf("writing manifest for %s: %w", app.Name, err)
-		}
-	} else {
-		_ = removeIfExists(r.rend.ManifestPath(app.Name))
-	}
-
-	// An application can change kind between commits.
-	// Both kinds claim the same service name, so the other kind's unit file must go first.
-	other := renderer.FileName(app.Name)
-	if !unit.IsKube() {
-		other = renderer.KubeFileName(app.Name)
-	}
-	if err := removeIfExists(filepath.Join(r.unitDir, other)); err != nil {
-		return fmt.Errorf("removing stale unit for %s: %w", app.Name, err)
+	// Manifest may contain resolved secrets: readable by the agent user only.
+	if err := atomicfile.Write(unit.ManifestPath, unit.Manifest, 0o600); err != nil {
+		return fmt.Errorf("writing manifest for %s: %w", app.Name, err)
 	}
 
 	if err := atomicfile.Write(unit.Path, unit.Content, 0o644); err != nil {
@@ -346,12 +392,9 @@ func (r *Runtime) Remove(ctx context.Context, app string) error {
 			return fmt.Errorf("stopping %s: %w", service, err)
 		}
 	}
-	for _, f := range []string{renderer.FileName(app), renderer.KubeFileName(app)} {
-		if err := removeIfExists(filepath.Join(r.unitDir, f)); err != nil {
-			return fmt.Errorf("removing unit for %s: %w", app, err)
-		}
+	if err := removeIfExists(filepath.Join(r.unitDir, renderer.KubeFileName(app))); err != nil {
+		return fmt.Errorf("removing unit for %s: %w", app, err)
 	}
-	_ = removeIfExists(r.rend.EnvFilePath(app))
 	_ = removeIfExists(r.rend.ManifestPath(app))
 	if err := r.daemonReload(ctx); err != nil {
 		return err
@@ -359,7 +402,6 @@ func (r *Runtime) Remove(ctx context.Context, app string) error {
 	// Quadlet normally removes the container (or plays the pod down) on stop.
 	// If something interrupted that, the names must still be free for the next reconcile.
 	// Volumes are untouched either way.
-	_, _ = r.podmanRun(ctx, "rm", "--force", "--time", "10", renderer.ContainerName(app))
 	_, _ = r.podmanRun(ctx, "pod", "rm", "--force", "--time", "10", app)
 	return nil
 }
@@ -394,14 +436,259 @@ func (r *Runtime) Restart(ctx context.Context, app string) error {
 	return nil
 }
 
-// Health probes one application.
+// Health reports whether the init containers completed successfully and every
+// regular workload container is running. Podman healthchecks are intentionally
+// not part of podcd's readiness decision.
 func (r *Runtime) Health(ctx context.Context, app model.Application) (model.Health, error) {
-	return r.checker.Check(ctx, app, r.unitActive(ctx, app.Name)), nil
+	containers, err := r.listContainers(ctx, app.Name)
+	if err != nil {
+		return model.Health{App: app.Name, CheckedAt: time.Now().UTC()}, err
+	}
+	running := workload(containers[app.Name])
+	h := healthForContainers(app.Name, running, app.InitContainers, time.Now().UTC())
+	if h.OK() {
+		return h, nil
+	}
+	// `podman ps` gives the verdict; the reason takes one more call, and only
+	// on this path. A container that still exists can be inspected - the
+	// probe's own output, the failing streak, an OOM kill. One that Quadlet
+	// already tore down has only what it wrote to the journal.
+	var why string
+	if len(running) == 0 {
+		why = r.lastContainerOutput(ctx, app.Name)
+	} else {
+		why = r.explain(ctx, troubled(running, app.InitContainers))
+	}
+	if why != "" {
+		h.Message += "; " + why
+	}
+	return h, nil
 }
 
-// WaitHealthy probes until the application is healthy or the retries run out.
+// lastContainerOutput returns the last thing the application's containers
+// wrote before they went away. The unit's journal carries podman's own
+// events too (died, cleanup, removed - dozens of lines per pod), so this
+// keeps only what came through conmon, which is container stdout and stderr.
+func (r *Runtime) lastContainerOutput(ctx context.Context, app string) string {
+	out, err := r.run(ctx, r.journalctl, "--user", "-u", renderer.ServiceName(app),
+		"_COMM=conmon", "-n", "3", "--no-pager", "--output=cat")
+	if err != nil {
+		return ""
+	}
+	var lines []string
+	for _, l := range strings.Split(strings.TrimSpace(out), "\n") {
+		l = strings.TrimSpace(l)
+		// conmon's own warnings ("conmon <id> <nwarn>: ...") travel the same
+		// way as the container's output; they are about podman, not the app.
+		if l == "" || strings.HasPrefix(l, "-- ") || strings.HasPrefix(l, "conmon ") {
+			continue
+		}
+		lines = append(lines, l)
+	}
+	if len(lines) == 0 {
+		return ""
+	}
+	return "last output: " + strings.Join(lines, " | ")
+}
+
+// troubled names the containers a bad verdict is about: not running, or
+// running with a healthcheck that is failing or has not passed.
+func troubled(containers []containerInfo, initNames []string) []string {
+	var out []string
+	for _, c := range containers {
+		if model.IsInitContainer(initNames, c.name) && c.state == "exited" && c.exitCode == 0 {
+			continue
+		}
+		if c.state != "running" || c.health == "unhealthy" || c.health == "starting" {
+			out = append(out, c.name)
+		}
+	}
+	return out
+}
+
+// explain asks podman why the named containers are in the state they are in,
+// in one call, and returns a short human line per container.
+func (r *Runtime) explain(ctx context.Context, names []string) string {
+	if len(names) == 0 {
+		return ""
+	}
+	out, err := r.podmanRun(ctx, append([]string{"inspect", "--format", "json"}, names...)...)
+	if err != nil {
+		return ""
+	}
+	var raw []struct {
+		Name  string `json:"Name"`
+		State struct {
+			Error     string `json:"Error"`
+			OOMKilled bool   `json:"OOMKilled"`
+			ExitCode  int    `json:"ExitCode"`
+			Health    *struct {
+				FailingStreak int `json:"FailingStreak"`
+				Log           []struct {
+					ExitCode int    `json:"ExitCode"`
+					Output   string `json:"Output"`
+				} `json:"Log"`
+			} `json:"Health"`
+		} `json:"State"`
+	}
+	if err := json.Unmarshal([]byte(out), &raw); err != nil {
+		return ""
+	}
+	var parts []string
+	for _, c := range raw {
+		var why []string
+		if c.State.OOMKilled {
+			why = append(why, "OOM killed")
+		}
+		if c.State.Error != "" {
+			why = append(why, c.State.Error)
+		}
+		if h := c.State.Health; h != nil {
+			if h.FailingStreak > 0 {
+				why = append(why, fmt.Sprintf("%d consecutive check failure%s", h.FailingStreak, plural(h.FailingStreak)))
+			}
+			if n := len(h.Log); n > 0 && h.Log[n-1].ExitCode != 0 {
+				why = append(why, "last check: "+lastLine(h.Log[n-1].Output))
+			}
+		}
+		if len(why) > 0 {
+			parts = append(parts, strings.TrimPrefix(c.Name, "/")+": "+strings.Join(why, ", "))
+		}
+	}
+	return strings.Join(parts, "; ")
+}
+
+// lastLine returns the final non-empty line of command output, trimmed, since
+// that is where a failing probe says what went wrong.
+func lastLine(s string) string {
+	lines := strings.Split(strings.TrimSpace(s), "\n")
+	for i := len(lines) - 1; i >= 0; i-- {
+		if l := strings.TrimSpace(lines[i]); l != "" {
+			return l
+		}
+	}
+	return strings.TrimSpace(s)
+}
+
+func healthForContainers(app string, containers []containerInfo, initNames []string, checkedAt time.Time) model.Health {
+	h := model.Health{App: app, CheckedAt: checkedAt}
+	regular, init := splitInitContainers(containers, initNames)
+	if len(regular) == 0 {
+		h.Status, h.Message = model.HealthUnhealthy, "no containers"
+		return h
+	}
+	// Only an init container podman still shows can say anything. kube play
+	// creates them as type "once" and removes them when they finish, so one
+	// that is absent has completed - and one that never ran leaves the regular
+	// containers un-started, which the check below catches.
+	var incomplete, failed []string
+	for _, c := range init {
+		switch c.state {
+		case "exited":
+			if c.exitCode != 0 {
+				failed = append(failed, fmt.Sprintf("%s exited with code %d", c.name, c.exitCode))
+			}
+		case "running", "created", "configured":
+			incomplete = append(incomplete, c.name)
+		default:
+			failed = append(failed, fmt.Sprintf("%s is %s", c.name, cmp.Or(c.state, "in an unknown state")))
+		}
+	}
+	if len(failed) > 0 {
+		h.Status, h.Message = model.HealthUnhealthy, "init container failed: "+strings.Join(failed, ", ")
+		return h
+	}
+	if len(incomplete) > 0 {
+		h.Status, h.Message = model.HealthUnknown, "init container still running: "+strings.Join(incomplete, ", ")
+		return h
+	}
+	var notRunning []string
+	for _, c := range regular {
+		if c.state != "running" {
+			notRunning = append(notRunning, fmt.Sprintf("%s is %s", c.name, cmp.Or(c.state, "in an unknown state")))
+		}
+	}
+	if len(notRunning) > 0 {
+		h.Status, h.Message = model.HealthUnhealthy, strings.Join(notRunning, ", ")
+		return h
+	}
+
+	// Everything is up. Now podman's own verdict, for the containers that
+	// declare a healthcheck. A restart count travels with it: "starting" on a
+	// container that has restarted before is a crash loop, not a warm-up.
+	var unhealthy, starting, restarted []string
+	for _, c := range regular {
+		if c.restarts > 0 {
+			restarted = append(restarted, fmt.Sprintf("%s restarted %d time%s", c.name, c.restarts, plural(c.restarts)))
+		}
+		switch c.health {
+		case "unhealthy":
+			unhealthy = append(unhealthy, c.name)
+		case "starting":
+			starting = append(starting, c.name)
+		}
+	}
+	switch {
+	case len(unhealthy) > 0:
+		h.Status, h.Message = model.HealthUnhealthy, "healthcheck failing: "+strings.Join(unhealthy, ", ")
+	case len(starting) > 0:
+		h.Status, h.Message = model.HealthUnknown, "healthcheck not passed yet: "+strings.Join(starting, ", ")
+	default:
+		h.Status, h.Message = model.HealthHealthy, "all workload containers running"
+	}
+	if len(restarted) > 0 {
+		h.Message += " (" + strings.Join(restarted, ", ") + ")"
+	}
+	return h
+}
+
+func plural(n int) string {
+	if n == 1 {
+		return ""
+	}
+	return "s"
+}
+
+// splitInitContainers separates completed setup work from the regular workload.
+// podman kube play prefixes a Kubernetes container name with the pod name, so
+// matching the final "-<container>" portion works for both Podman-generated
+// names and plain names returned by other Podman versions.
+func splitInitContainers(containers []containerInfo, initNames []string) (regular, init []containerInfo) {
+	for _, c := range containers {
+		if model.IsInitContainer(initNames, c.name) {
+			init = append(init, c)
+		} else {
+			regular = append(regular, c)
+		}
+	}
+	return regular, init
+}
+
+// WaitHealthy asks again until the application is healthy or the retries run
+// out. It is what the reconciler uses right after applying a change: an app
+// that never comes up should fail the reconcile, not quietly stay broken.
 func (r *Runtime) WaitHealthy(ctx context.Context, app model.Application) model.Health {
-	return r.checker.Wait(ctx, app, func(ctx context.Context) bool { return r.unitActive(ctx, app.Name) })
+	var last model.Health
+	for attempt := 0; attempt <= waitRetries; attempt++ {
+		if attempt > 0 {
+			select {
+			case <-ctx.Done():
+				last.Message = "gave up waiting: " + ctx.Err().Error()
+				last.Status = model.HealthUnknown
+				return last
+			case <-time.After(waitInterval):
+			}
+		}
+		h, err := r.Health(ctx, app)
+		if err != nil {
+			h = model.Health{App: app.Name, Status: model.HealthUnknown, Message: err.Error(), CheckedAt: time.Now().UTC()}
+		}
+		last = h
+		if last.OK() {
+			return last
+		}
+	}
+	return last
 }
 
 // Logs returns the most recent journal lines for an application.
@@ -411,19 +698,6 @@ func (r *Runtime) Logs(ctx context.Context, app string, lines int) (string, erro
 	}
 	return r.run(ctx, r.journalctl, "--user", "-u", renderer.ServiceName(app),
 		"-n", strconv.Itoa(lines), "--no-pager", "--output=short-iso")
-}
-
-func (r *Runtime) unitActive(ctx context.Context, app string) bool {
-	out, _ := r.systemctlRun(ctx, "is-active", renderer.ServiceName(app))
-	return strings.TrimSpace(out) == "active"
-}
-
-func (r *Runtime) execProbe(ctx context.Context, app string, cmd []string) error {
-	args := append([]string{"exec", renderer.ContainerName(app)}, cmd...)
-	if _, err := r.podmanRun(ctx, args...); err != nil {
-		return err
-	}
-	return nil
 }
 
 func (r *Runtime) daemonReload(ctx context.Context) error {

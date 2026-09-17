@@ -294,6 +294,16 @@ func (v *VaultProvider) ensureToken(ctx context.Context) error {
 	return nil
 }
 
+// ReadPath returns all key/value pairs at path (first segment is the KV mount,
+// the remainder is the secret path). Used by the provision phase for dataFrom.
+func (v *VaultProvider) ReadPath(ctx context.Context, path string) (map[string]string, error) {
+	mount, rest, ok := strings.Cut(path, "/")
+	if !ok || mount == "" || rest == "" {
+		return nil, fmt.Errorf("vault path %q must be at least mount/path", path)
+	}
+	return v.read(ctx, VaultRef{Mount: mount, Path: rest})
+}
+
 func (v *VaultProvider) do(ctx context.Context, method, url string, payload []byte) ([]byte, int, error) {
 	var body io.Reader
 	if payload != nil {

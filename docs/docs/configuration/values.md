@@ -3,38 +3,41 @@ id: values
 title: Values templating
 ---
 
-Overrides parametrize one application at a time, by name, and only work when every host in the layer runs that application. Values templating parametrizes the documents themselves — several hosts can share one `Application`/`Pod` and each fill in the parts that differ: an image tag, a resource limit, a domain.
+Overrides parametrize one application at a time, by name, and only work when every host in the layer runs that application. Values templating parametrizes the documents themselves - several hosts can share one `Pod` and each fill in the parts that differ.
 
 ## Templates
 
-A template is a file named `*.tpl` (`edge-api.yaml.tpl`, say). A template is rendered for each host against that host's values, and only then read as a document.
+A template is a file named `*.tpl` (e.g. `edge-api.yaml.tpl`). A template is rendered for each host against that host's values.
 
 ```yaml
 # apps/edge-api.yaml.tpl
-apiVersion: gitops.podcd.io/v1
-kind: Application
+apiVersion: v1
+kind: Pod
 metadata:
   name: edge-api
 spec:
-  image: "{{ .Values.image.repository }}:{{ .Values.image.tag }}"
-  env:
-    LOG_LEVEL: '{{ default "info" .Values.logLevel }}'
+  containers:
+    - name: edge-api
+      image: "{{ .Values.image.repository }}:{{ .Values.image.tag }}"
+      env:
+        - name: LOG_LEVEL
+          value: '{{ default "info" .Values.logLevel }}'
 {{- if .Values.publicHostname }}
-    PUBLIC_HOSTNAME: '{{ .Values.publicHostname }}'
+        - name: PUBLIC_HOSTNAME
+          value: '{{ .Values.publicHostname }}'
 {{- end }}
-  resources:
-    memory: '{{ default "256M" .Values.resources.memory }}'
+      resources:
+        limits:
+          memory: '{{ default "256Mi" .Values.resources.memory }}'
 ```
 
-Because rendering happens before anything reads the result, a template gets the whole of Go's [`text/template`](https://pkg.go.dev/text/template): conditionals around entire keys or containers, `range`, even a `metadata.name` computed from a value.
-
-A template may render any deployable kind - `Application`, `Pod`, `ConfigMap`, `Secret` - but not a `Host`, `Group` or `Environment`, since those are what decide a host's values in the first place.
+A template may render any deployable kind - `Pod`, `ConfigMap`, `Secret` - but not a `Host`, `Group` or `Environment`, since those are what decide a host's values in the first place.
 
 One consequence of the whole file being a template: inside a `.tpl`, a YAML `#` comment is still template text, so a comment that quotes template syntax literally (a bare `{{ if }}`) fails to parse. Write it as a Go template comment, `{{/* like this */}}`, which renders to nothing.
 
 ## Where values come from
 
-A `Host`, `Group` or `Environment` document names its own values files, merged into that host with exactly the precedence overrides already use - environment, then each group in the host's listed order, then the host itself, host winning:
+A `Host`, `Group` or `Environment` document can provide a list of values files. The precedence is in bottom to top order.
 
 ```yaml
 # environments/prod.yaml
@@ -59,7 +62,8 @@ resources:
   memory: 512M
 ```
 
-You can also pass value paths from the hosts `agent.yaml` is meant to stay a fire-and-forget pointer (which host, which repositories).
+You can also pass value paths from the hosts `agent.yaml`.
+The agent config however is meant to stay a fire-and-forget pointer, values directly on the agent is not a recommended pattern.
 
 ```yaml
 repositories:
@@ -83,17 +87,25 @@ Go's own `text/template`, plus a small helper set:
 | `replace OLD NEW S` | `strings.ReplaceAll`. |
 | `quote V` | Go-quote a value, for embedding it as a JSON/YAML string literal. |
 
-A missing value that is only printed - `{{ .Values.nope }}` - renders as the literal text `<no value>`, which is valid YAML and will not fail by itself. Use `required` for anything the resource cannot do without, and `default` for anything optional.
+Use `required` for anything the resource cannot do without, and `default` for anything optional.
 
 ## Secrets and values
 
-For secrets, you can utilize *references* instead, and consume it through `secretEnv:` - which resolves `env:`/`file:`/`vault:` references on the host.
-You can also set values to refer to *references* in Vault.
+Secret names are safe to use in values - a template can emit an `ExternalSecret` or reference one by name in a Pod spec:
 
 ```yaml
+# apps/api.yaml.tpl
+apiVersion: v1
+kind: Pod
+metadata:
+  name: api
 spec:
-  secretEnv:
-    DB_PASSWORD: '{{ .Values.dbPasswordRef }}'   # values: dbPasswordRef: vault:prod/api/DB_PASSWORD@secret
+  containers:
+    - name: api
+      image: "{{ .Values.image }}"
+      envFrom:
+        - secretRef:
+            name: "{{ .Values.secretName }}"   # values: secretName: db-creds
 ```
 
-See [Secrets](secrets.md).
+The actual secret values never enter the template - only the name does. See [Secrets](secrets.md).

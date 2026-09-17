@@ -8,8 +8,6 @@ import (
 	"path/filepath"
 	"slices"
 	"strings"
-
-	"github.com/podcd/podcd/pkg/secrets"
 )
 
 func LoadPaths(paths ...string) (*Index, error) {
@@ -70,7 +68,7 @@ func Lint(ctx context.Context, ix *Index, values Values, hosts ...string) []Find
 	slices.Sort(hosts)
 	var findings []Finding
 	for _, h := range hosts {
-		_, err := ix.Resolve(ctx, ResolveOptions{Host: h, Secrets: secrets.LintResolver(), Values: values})
+		_, err := ix.Resolve(ctx, ResolveOptions{Host: h, Values: values})
 		if err == nil {
 			continue
 		}

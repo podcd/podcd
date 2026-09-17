@@ -176,11 +176,8 @@ func newConfigSetCommand(f *configFlags) *cobra.Command {
 		Long: "Edits the file where it is: an existing key has its value replaced on its line, a new\n" +
 			"key is appended to its section, and nothing else - comments included - is touched.\n" +
 			"Fields are yaml paths: host, interval, jitter, prune, logFormat, stateDir, unitDir,\n" +
-			"secretsDir, envFile, repositories.N.url, repositories.N.auth.token, vault.address, ...\n" +
-			"Shorthands for the first repository: repo-url, repo-name, repo-path, revision.\n" +
-			"Several field=value pairs are applied together and validated once, for sections\n" +
-			"whose fields only make sense together:\n" +
-			"  podcd config set vault.address=https://vault.example.com vault.roleId=env:VAULT_ROLE_ID vault.secretId=env:VAULT_SECRET_ID",
+			"secretsDir, envFile, repositories.N.url, repositories.N.auth.token, ...\n" +
+			"Shorthands for the first repository: repo-url, repo-name, repo-path, revision.",
 		Args: cobra.MinimumNArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			settings, err := parseSettings(args)

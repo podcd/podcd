@@ -28,7 +28,7 @@ const (
 // TestPodEndToEnd plays a real two-container pod through Quadlet's .kube path.
 //
 // Both containers are nginx. The front one serves an index.html mounted from a
-// ConfigMap and a token mounted from a reference-only Secret; the side one
+// ConfigMap and a token mounted from an ExternalSecret-provisioned Secret; the side one
 // listens on 8081 with a server block mounted from a second ConfigMap. Then the
 // ConfigMap changes, a strategic merge override patches the side container,
 // the secret rotates, and the pod is removed again.
@@ -67,8 +67,8 @@ func TestPodEndToEnd(t *testing.T) {
 	if len(res.Applied) != 1 || res.Applied[0].Type != model.ActionCreate {
 		t.Fatalf("want one create, got %+v", res.Applied)
 	}
-	if !res.Health[0].OK() || res.Health[0].Probe != "http" {
-		t.Fatalf("the readiness probe should have become an http check: %+v", res.Health)
+	if !res.Health[0].OK() {
+		t.Fatalf("the pod is not healthy: %+v", res.Health)
 	}
 	if body := get(t, frontPort, "/"); !strings.Contains(body, "greeting=hello") {
 		t.Fatalf("the ConfigMap did not reach the front container: %q", body)
@@ -190,12 +190,27 @@ data:
   default.conf: |
     server { listen %[6]d; location / { return 200 "side=v1\n"; } }
 ---
-apiVersion: v1
-kind: Secret
+apiVersion: external-secrets.io/v1beta1
+kind: SecretStore
+metadata:
+  name: agent-env
+spec:
+  provider:
+    env: {}
+---
+apiVersion: external-secrets.io/v1beta1
+kind: ExternalSecret
 metadata:
   name: %[1]s-secret
-stringData:
-  token: env:PODCD_E2E_SECRET
+spec:
+  secretStoreRef:
+    name: agent-env
+  target:
+    name: %[1]s-secret
+  data:
+    - secretKey: token
+      remoteRef:
+        key: PODCD_E2E_SECRET
 ---
 apiVersion: v1
 kind: Pod

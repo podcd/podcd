@@ -61,12 +61,12 @@ func newCreateCommand() *cobra.Command {
 		Short: "print a validated document for the repository",
 		Long: "Builds one document from flags, per kind. It is checked with the same loader the agent\n" +
 			"uses and printed; put it where you want it (`>> apps.yaml`) and run `podcd lint`.",
-		Example: "  podcd create application api --image ghcr.io/you/api:1.2.3 --port 8081:8080 >> apps.yaml",
+		Example: "  podcd create pod api --image ghcr.io/you/api:1.2.3 --port 8081:8080 >> apps.yaml",
 		RunE: func(cmd *cobra.Command, _ []string) error {
 			return cmd.Help()
 		},
 	}
-	cmd.AddCommand(newCreateApplication(), newCreatePod(), newCreateHost(), newCreateGroup(), newCreateEnvironment())
+	cmd.AddCommand(newCreatePod(), newCreateHost(), newCreateGroup(), newCreateEnvironment())
 	return cmd
 }
 
@@ -82,34 +82,10 @@ func emit(cmd *cobra.Command, docs ...[]byte) error {
 	return nil
 }
 
-func newCreateApplication() *cobra.Command {
-	var o scaffold.ApplicationOptions
-	cmd := &cobra.Command{
-		Use:     "application NAME --image IMAGE [--port HOST:CONTAINER]... [--env KEY=VALUE]...",
-		Aliases: []string{"app"},
-		Short:   "an Application: one container, published on 127.0.0.1",
-		Args:    cobra.ExactArgs(1),
-		RunE: func(cmd *cobra.Command, args []string) error {
-			o.Name = args[0]
-			doc, err := scaffold.Application(o)
-			if err != nil {
-				return err
-			}
-			return emit(cmd, doc)
-		},
-	}
-	cmd.Flags().StringVar(&o.Image, "image", "", "container image (required)")
-	cmd.Flags().StringArrayVar(&o.Ports, "port", nil, "host:container port to publish on 127.0.0.1 (repeatable)")
-	cmd.Flags().StringArrayVar(&o.Env, "env", nil, "KEY=value environment variable (repeatable)")
-	cmd.Flags().StringVar(&o.HealthPath, "health-path", "", "HTTP path to probe on the first port")
-	_ = cmd.MarkFlagRequired("image")
-	return cmd
-}
-
 func newCreatePod() *cobra.Command {
 	var o scaffold.PodOptions
 	cmd := &cobra.Command{
-		Use:   "pod NAME --image IMAGE [--port HOST:CONTAINER]...",
+		Use:   "pod NAME --image IMAGE [--port HOST:CONTAINER]... [--env KEY=VALUE]...",
 		Short: "a core/v1 Pod with one container, played by podman",
 		Args:  cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
@@ -123,6 +99,7 @@ func newCreatePod() *cobra.Command {
 	}
 	cmd.Flags().StringVar(&o.Image, "image", "", "container image (required)")
 	cmd.Flags().StringArrayVar(&o.Ports, "port", nil, "host:container port to publish on 127.0.0.1 (repeatable)")
+	cmd.Flags().StringArrayVar(&o.Env, "env", nil, "KEY=value environment variable (repeatable)")
 	_ = cmd.MarkFlagRequired("image")
 	return cmd
 }

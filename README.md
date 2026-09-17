@@ -61,9 +61,9 @@ Building from source: `make build`, then the same bootstrap with `--binaries ./d
 #### 1. Set up the GitOps repository
 
 > [!TIP]
-> `podcd validate` requires Secrets as references (`env:NAME`, `file:path`).
+> `podcd lint` checks the files without fetching anything. `podcd validate` compiles for this host, which pulls Git and reads any secret the host's workloads reference.
 
-Set up a repository with at least a `Host` and an `Application` or `Pod`. See [./examples](./examples/) or [podcd/podcd-gitops.git](https://github.com/podcd/podcd-gitops.git). No prescribed directory structure.
+Set up a repository with at least a `Host` and a `Pod`. See [./examples](./examples/) or [podcd/podcd-gitops.git](https://github.com/podcd/podcd-gitops.git). No prescribed directory structure.
 
 - `podcd init` scaffolds a minimal repository.
 - `podcd create` generates documents.
@@ -95,7 +95,9 @@ On SELinux-enforcing hosts (RHEL default) bind mounts need the `Z` option: `volu
 
 #### 3. Secrets
 
-See [Secrets](https://podcd.github.io/podcd/docs/configuration/secrets) for `env:`, `file:` and `vault:` references.
+Anything that must stay out of Git is declared as an `ExternalSecret` naming a key in a `SecretStore`, and fetched on the host while the workload is compiled. Three backends are supported: the agent's environment (`env`), files on the host (`file`), and HashiCorp Vault (`vault`).
+
+See [Secrets](https://podcd.github.io/podcd/docs/configuration/secrets).
 
 #### 4. Status
 
@@ -154,7 +156,7 @@ repositories:
     # than an environment variable nobody sees.
     # insecure: false
     # A private repository needs a read credential. The token is a secret
-    # reference (env:, file:, vault:), never a literal in this file; it is
+    # reference (env: or file:), never a literal in this file; it is
     # resolved on every fetch. GitLab deploy tokens have their own username.
     # auth:
     #   username: gitlab+deploy-token-42
@@ -182,13 +184,6 @@ repositories:
 # text or json.
 # logFormat: text
 
-# HashiCorp Vault, for vault:<mount>/<path>/<key> (or <path>/<key>@<mount>)
-# references. Vault's own credentials are references as well, so they come
-# from the env file rather than from this file.
-# vault:
-#   address: https://vault.example.com
-#   roleId: env:VAULT_ROLE_ID
-#   secretId: env:VAULT_SECRET_ID
 ```
 
 Fields are addressed by their yaml path:
@@ -197,8 +192,6 @@ Fields are addressed by their yaml path:
 podcd config set revision v1.4.0                 # alias for repositories.0.revision
 podcd config set interval 30s
 podcd config set repositories.0.auth.token env:GITOPS_TOKEN
-# fields that only make sense together are set together and validated once:
-podcd config set vault.address=https://vault.example.com vault.roleId=env:VAULT_ROLE_ID vault.secretId=env:VAULT_SECRET_ID
 podcd config view
 ```
 
@@ -208,7 +201,7 @@ podcd config view
 podcd status      # what is running here and when it last reconciled
 podcd plan        # show changes without making them
 podcd reconcile   # apply the current Git desired state
-podcd health      # probe application health; non-zero exit if anything is unhealthy
+podcd health      # report application health; non-zero exit if anything is unhealthy
 podcd logs api    # recent output for one application (--tail N)
 podcd validate    # compile config and check for errors
 podcd lint        # check repository files, for every host, without fetching
@@ -217,8 +210,9 @@ podcd init        # scaffold a minimal repository: one host, one nginx
 podcd create      # print a document for a kind
 podcd install     # write the systemd user service file for the agent
 podcd uninstall   # stop the agent's systemd user service and remove its unit file
-podcd prune       # stop and remove applications directly, without consulting Git (--all, or by name)
-podcd teardown    # prune --all, then uninstall; --purge-state and --purge-config to also delete local state/config
+podcd prune       # remove what podcd manages here but Git no longer declares; nothing else
+podcd remove      # stop and remove applications directly, without consulting Git (--all, or by name); alias rm
+podcd teardown    # remove --all, then uninstall; --purge-state and --purge-config to also delete local state/config
 podcd config      # view, create or edit the agent config file
 ```
 
@@ -265,7 +259,7 @@ The core document types are:
 - `Environment`: values that apply broadly to a whole environment
 - `Group`: a role or machine-purpose definition
 - `Host`: a specific VM, including its environment, groups, and overrides
-- `Application`: a reusable application definition referenced by name
+- `Pod`: a workload definition referenced by name
 
 ### Host example
 
@@ -280,34 +274,9 @@ spec:
     - local
 ```
 
-### Application example
+### Pod example
 
-```yaml
-apiVersion: gitops.podcd.io/v1
-kind: Application
-metadata:
-  name: local
-spec:
-  image: docker.io/library/nginx@sha256:72ba65eb42c10344912a84ff42408db7d34f2feb642204570ab8fc5ffd29f1d3
-  ports:
-    - host: 8080
-      container: 80
-      hostIP: 127.0.0.1
-  restartPolicy: always
-  healthcheck:
-    http:
-      port: 8080
-      path: /
-```
-
-### Pod manifests
-
-A host's application list can also name a plain Kubernetes `Pod`.
-Pods are validated by the same rules as applications:
-
-- referenced ConfigMaps and Secrets that must exist or be optional
-- host port conflicts
-- the first readiness or liveness probe on a published port becoming the health check
+A workload is a plain Kubernetes `Pod`, played by podman through a Quadlet `.kube` unit. Pods are validated before anything is written: referenced ConfigMaps and Secrets must exist or be marked optional, and host ports must not clash.
 
 ```yaml
 apiVersion: v1
@@ -323,23 +292,23 @@ spec:
       ports:
         - containerPort: 9200
           hostPort: 9200
-      readinessProbe:
+      livenessProbe:
         httpGet: { path: /ready, port: 9200 }
 ```
 
-Secrets in Git hold references, not plaintext values. The `data:` field is rejected, and every `stringData` entry must resolve to either `env:NAME` or `file:path`. Values are resolved on the host, written to a 0600 file outside the unit directory, and displayed as a hash in `podcd plan`.
+podman runs the `livenessProbe` and reports the verdict; podcd reads it back and never probes anything itself. `readinessProbe` and `startupProbe` are ignored by podman. Networks have no Kubernetes field, so podcd takes them as an annotation - `io.podcd.networks: "edge,monitoring"` - and turns them into the unit's `Network=` lines.
 
-```
+Secrets are declared in Git as `ExternalSecret` + `SecretStore` documents and fetched while the workload is compiled. The pod references them by name via `secretKeyRef` or `envFrom: secretRef` as normal Kubernetes API. See [Secrets](https://podcd.github.io/podcd/docs/configuration/secrets).
 
 ### Inheritance and merge rules
 
 Precedence runs from lowest to highest:
 
 ```text
-Application -> Environment override -> Group overrides -> Host override
+Pod -> Environment override -> Group overrides -> Host override
 ```
 
-Groups are applied in the order listed by the host, so later entries win. Scalar values and map entries are overridden key-by-key; lists such as ports, volumes, and command arguments are replaced wholesale because appending to a port list has no sane meaning.
+Groups are applied in the order listed by the host, so later entries win. An override is a strategic merge patch against the Pod, so it follows Kubernetes' own rules: containers merge by `name`, ports by `containerPort`, environment variables by `name`, and a plain list is replaced wholesale.
 
 The final application set is the union of what the environment, groups, and host request, minus any exclusions from the host, sorted by name.
 
@@ -373,22 +342,25 @@ repositories:
 
 Overrides parametrize one application by its name as key, an override can only name an application every host in that layer actually runs.
 
-Values templating parametrizes the documents as well, so several hosts can share one `Application`/`Pod` definition and each fill in the parts that differ.
+Values templating parametrizes the documents as well, so several hosts can share one `Pod` definition and each fill in the parts that differ.
 
 A template is a file named `*.tpl` (e.g. `edge-api.yaml.tpl`). A template is rendered for each host against that host's values and only then decoded.
 
-Templates may render any deployable kind - `Application`, `Pod`, `ConfigMap`, `Secret` - but not `Host`, `Group` or `Environment`, since those are what decide a host's values in the first place.
+Templates may render any deployable kind - `Pod`, `ConfigMap`, `Secret` - but not `Host`, `Group` or `Environment`, since those are what decide a host's values in the first place.
 
 ```yaml
 # apps/edge-api.yaml.tpl
-apiVersion: gitops.podcd.io/v1
-kind: Application
+apiVersion: v1
+kind: Pod
 metadata:
   name: edge-api
 spec:
-  image: "{{ .Values.image.repository }}:{{ .Values.image.tag }}"
-  resources:
-    memory: "{{ default \"256M\" .Values.resources.memory }}"
+  containers:
+    - name: edge-api
+      image: "{{ .Values.image.repository }}:{{ .Values.image.tag }}"
+      resources:
+        limits:
+          memory: "{{ default \"256Mi\" .Values.resources.memory }}"
 ```
 
 #### Where values come from

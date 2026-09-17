@@ -53,7 +53,7 @@ func TestInitProducesARepositoryThatResolves(t *testing.T) {
 		t.Fatalf("vm-1 should run nginx, got %v", desired.Names())
 	}
 	app := desired.Applications[0]
-	if !strings.Contains(app.Image, "@sha256:") || app.Healthcheck == nil || app.Healthcheck.HTTP == nil || app.Ports[0].Host != 8080 {
+	if !strings.Contains(app.Image, "@sha256:") || app.Ports[0].Host != 8080 {
 		t.Fatalf("the scaffolded nginx is not what the README promises: %+v", app)
 	}
 
@@ -67,8 +67,8 @@ func TestInitProducesARepositoryThatResolves(t *testing.T) {
 }
 
 func TestCreatedDocumentsComposeIntoARepository(t *testing.T) {
-	app, err := Application(ApplicationOptions{Name: "api", Image: "ghcr.io/you/api" + digest,
-		Ports: []string{"8081:8080"}, Env: []string{"LOG_LEVEL=info"}, HealthPath: "/health"})
+	app, err := Pod(PodOptions{Name: "api", Image: "ghcr.io/you/api" + digest,
+		Ports: []string{"8081:8080"}, Env: []string{"LOG_LEVEL=info"}})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -96,37 +96,32 @@ func TestCreatedDocumentsComposeIntoARepository(t *testing.T) {
 		t.Fatalf("vm-1 should run api and side, got %v", names)
 	}
 
-	// Output is block-style YAML in declaration order, without the k8s noise.
-	if !strings.Contains(string(app), "spec:\n  image: ") || strings.Contains(string(app), `"`) {
-		t.Errorf("application should be block YAML with image first:\n%s", app)
-	}
+	// Output is block-style YAML without the k8s noise.
 	for _, noise := range []string{"creationTimestamp", "status:", "resources: {}"} {
-		if strings.Contains(string(pod), noise) {
-			t.Errorf("pod output should not contain %q:\n%s", noise, pod)
+		for _, doc := range [][]byte{app, pod} {
+			if strings.Contains(string(doc), noise) {
+				t.Errorf("output should not contain %q:\n%s", noise, doc)
+			}
 		}
 	}
 }
 
 func TestCreateAcceptsATag(t *testing.T) {
-	if _, err := Application(ApplicationOptions{Name: "x", Image: "nginx:alpine"}); err != nil {
-		t.Fatalf("a tag must be accepted: %v", err)
-	}
 	if _, err := Pod(PodOptions{Name: "x", Image: "nginx:alpine"}); err != nil {
 		t.Fatalf("a tag must be accepted: %v", err)
 	}
-	if _, err := Application(ApplicationOptions{Name: "x"}); err == nil {
+	if _, err := Pod(PodOptions{Name: "x"}); err == nil {
 		t.Fatal("--image is required")
 	}
 }
 
 func TestCreateRejectsBadInputBeforeWriting(t *testing.T) {
-	for _, o := range []ApplicationOptions{
+	for _, o := range []PodOptions{
 		{Name: "x", Image: "i" + digest, Ports: []string{"eighty"}},
 		{Name: "x", Image: "i" + digest, Env: []string{"NOEQUALS"}},
-		{Name: "x", Image: "i" + digest, HealthPath: "/"}, // no port to probe
 		{Name: "", Image: "i" + digest},
 	} {
-		if _, err := Application(o); err == nil {
+		if _, err := Pod(o); err == nil {
 			t.Errorf("%+v should be rejected", o)
 		}
 	}

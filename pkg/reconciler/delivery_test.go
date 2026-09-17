@@ -13,23 +13,6 @@ import (
 
 // These tests pin the continuous-delivery contracts
 
-const secretApp = `apiVersion: gitops.podcd.io/v1
-kind: Application
-metadata:
-  name: api
-spec:
-  image: example.com/api@sha256:aaaa
-  secretEnv:
-    API_TOKEN: env:TEST_DELIVERY_TOKEN
----
-apiVersion: gitops.podcd.io/v1
-kind: Host
-metadata:
-  name: vm-1
-spec:
-  applications: [api]
-`
-
 func reconcile(t *testing.T, e *Engine) Result {
 	t.Helper()
 	res, err := e.Reconcile(context.Background(), Options{})
@@ -123,36 +106,6 @@ func TestStoppedUnitIsRestartedNotRewritten(t *testing.T) {
 	}
 	if rt.apps["web"].UnitState != model.UnitActive {
 		t.Error("the unit should be running again")
-	}
-}
-
-func TestRotatedSecretRestartsTheApplication(t *testing.T) {
-	t.Setenv("TEST_DELIVERY_TOKEN", "v1")
-	rt := newFakeRuntime()
-	e, _ := newTestEngine(t, rt, secretApp)
-	reconcile(t, e)
-	if len(reconcile(t, e).Applied) != 0 {
-		t.Fatal("an unchanged secret must not cause work")
-	}
-	rt.applied = nil
-
-	t.Setenv("TEST_DELIVERY_TOKEN", "v2")
-	res := reconcile(t, e)
-	if strings.Join(rt.applied, ",") != "api" {
-		t.Fatalf("a rotated secret should re-apply the application, got %v", rt.applied)
-	}
-	if res.Applied[0].Type != model.ActionUpdate {
-		t.Fatalf("want an update, got %+v", res.Applied)
-	}
-	// The value itself never shows up in what is reported or stored.
-	for _, a := range res.Applied {
-		if strings.Contains(a.Reason+strings.Join(a.Details, ""), "v2") {
-			t.Errorf("the secret value leaked into the plan: %+v", a)
-		}
-	}
-	data, _ := os.ReadFile(e.store.Path())
-	if strings.Contains(string(data), "v2") || strings.Contains(string(data), "v1") {
-		t.Error("the secret value leaked into the state file")
 	}
 }
 
@@ -314,7 +267,7 @@ func TestIndexCanBeLimitedToNamedRepositories(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(ix.Applications) != 2 || len(revs) != 1 || len(offline) != 0 {
-		t.Fatalf("only infra should have been loaded: apps=%d revs=%v offline=%v", len(ix.Applications), revs, offline)
+	if len(ix.Pods) != 2 || len(revs) != 1 || len(offline) != 0 {
+		t.Fatalf("only infra should have been loaded: pods=%d revs=%v offline=%v", len(ix.Pods), revs, offline)
 	}
 }

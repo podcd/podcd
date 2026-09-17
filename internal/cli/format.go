@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"io"
 	"slices"
+	"strconv"
 	"strings"
 	"text/tabwriter"
 	"time"
@@ -56,7 +57,7 @@ func printStatus(env *environment, st reconciler.Status) {
 		return
 	}
 	w = table(env.out)
-	fmt.Fprintln(w, "  APP\tUNIT\tCONTAINER\tIMAGE\tHEALTH\tAPPLIED")
+	fmt.Fprintln(w, "  APP\tUNIT\tCONTAINERS\tRESTARTS\tIMAGE\tLAST HEALTH\tAPPLIED")
 	for _, name := range st.Actual.Names() {
 		a := st.Actual.Apps[name]
 		rec := st.State.Applications[name]
@@ -64,8 +65,9 @@ func printStatus(env *environment, st reconciler.Status) {
 		if !a.Managed {
 			owner = " (not managed by podcd)"
 		}
-		fmt.Fprintf(w, "  %s\t%s%s\t%s\t%s\t%s\t%s\n",
-			name, string(a.UnitState), owner, dash(a.ContainerState),
+		fmt.Fprintf(w, "  %s\t%s%s\t%s\t%s\t%s\t%s\t%s\n",
+			name, string(a.UnitState), owner, containerSummary(a),
+			restartSummary(a),
 			dash(shortImage(cmp.Or(rec.Image, a.ContainerImage))),
 			dash(rec.Health), dash(rec.AppliedAt))
 	}
@@ -104,7 +106,7 @@ func printHealth(w io.Writer, results []model.Health) {
 	fmt.Fprintln(w, "health")
 	tw := table(w)
 	for _, h := range sorted {
-		fmt.Fprintf(tw, "  %s\t%s\t%s\t%s\n", h.App, h.Status, h.Probe, h.Message)
+		fmt.Fprintf(tw, "  %s\t%s\t%s\n", h.App, h.Status, h.Message)
 	}
 	tw.Flush()
 }
@@ -234,4 +236,39 @@ func errString(err error) string {
 		return ""
 	}
 	return err.Error()
+}
+
+// containerSummary is "running/total", with any healthcheck verdict that is
+// not plain healthy called out: "2/2", "1/2", "2/2 (starting)".
+func containerSummary(a model.ActualApp) string {
+	if len(a.Containers) == 0 {
+		return dash(a.ContainerState)
+	}
+	running := 0
+	var flagged []string
+	for _, c := range a.Containers {
+		if c.State == "running" {
+			running++
+		}
+		if c.Health == "unhealthy" || c.Health == "starting" {
+			flagged = append(flagged, c.Health)
+		}
+	}
+	out := fmt.Sprintf("%d/%d", running, len(a.Containers))
+	if len(flagged) > 0 {
+		out += " (" + strings.Join(slices.Compact(slices.Sorted(slices.Values(flagged))), ", ") + ")"
+	}
+	return out
+}
+
+// restartSummary is the total restart count across the workload's containers.
+func restartSummary(a model.ActualApp) string {
+	if len(a.Containers) == 0 {
+		return "-"
+	}
+	n := 0
+	for _, c := range a.Containers {
+		n += c.Restarts
+	}
+	return strconv.Itoa(n)
 }

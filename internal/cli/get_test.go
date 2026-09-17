@@ -68,7 +68,7 @@ func TestGetListsEverythingInAKindOrder(t *testing.T) {
 	if code != 0 {
 		t.Fatal(out)
 	}
-	want := []string{"Environment  prod", "Group        web", "Host         vm-1", "Host         vm-2", "Application  nginx", "Pod          side"}
+	want := []string{"Environment  prod", "Group        web", "Host         vm-1", "Host         vm-2", "Pod          nginx", "Pod          side"}
 	last := -1
 	for _, w := range want {
 		i := strings.Index(out, w)
@@ -89,7 +89,7 @@ func TestGetKindTablesAndNames(t *testing.T) {
 		t.Errorf("hosts table:\n%s", out)
 	}
 	out, _ = run(t, "get", "apps", "--repo", dir)
-	if !strings.Contains(out, "IMAGE") || !strings.Contains(out, "8080→80") {
+	if !strings.Contains(out, "CONTAINERS") || !strings.Contains(out, "8080→80") {
 		t.Errorf("applications table:\n%s", out)
 	}
 	out, _ = run(t, "get", "pod", "side", "-o", "yaml", "--repo", dir)

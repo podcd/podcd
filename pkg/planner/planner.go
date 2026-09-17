@@ -17,6 +17,10 @@ type Options struct {
 	// Prune removes managed applications Git no longer declares.
 	// When false, orphans are still reported as no-ops with a reason, never hidden.
 	Prune bool
+	// Protected applications could not be compiled because a transient
+	// dependency failed (such as ExternalSecret provisioning). They must not
+	// be removed merely because they are absent from this partial desired state.
+	Protected map[string]bool
 }
 
 // Build computes the plan that would make actual match desired.
@@ -49,17 +53,22 @@ func Build(desired model.DesiredState, actual model.ActualState, rend *renderer.
 				"remove it by hand or restore its podcd header before reconciling", app.Name, cur.UnitFile)
 		case cur.UnitFileHash != model.HashBytes(unit.Content):
 			act(model.ActionUpdate, updateReason(cur, unit), changeDetails(cur, unit)...)
-		case cur.SecretsHash != unit.SecretsHash:
-			act(model.ActionUpdate, "secret values changed")
+		case cur.UnitState == model.UnitActivating:
+			act(model.ActionNoOp, "unit is starting")
 		case cur.UnitState != model.UnitActive:
 			act(model.ActionRestart, fmt.Sprintf("unit is %s, should be running", cmp.Or(cur.UnitState, model.UnitUnknown)))
+		case len(deadContainers(cur, *app)) > 0:
+			// systemd only watches the pod's service container, so a workload
+			// container that died - or was killed - leaves the unit active and
+			// the application broken. Restarting the unit replays the pod.
+			act(model.ActionRestart, "container "+strings.Join(deadContainers(cur, *app), ", ")+", should be running")
 		default:
 			act(model.ActionNoOp, "up to date")
 		}
 	}
 
 	for _, name := range actual.Names() {
-		if seen[name] || !actual.Apps[name].Managed {
+		if seen[name] || opts.Protected[name] || !actual.Apps[name].Managed {
 			continue // ours and still wanted, or not ours at all
 		}
 		if !opts.Prune {
@@ -104,8 +113,19 @@ func imageDetails(app model.Application) []string {
 	for _, img := range images {
 		out = append(out, "image "+img)
 	}
-	if app.IsKube() {
-		out = append([]string{"pod with " + strconv.Itoa(len(images)) + " container(s), played by podman"}, out...)
+	return append([]string{"pod with " + strconv.Itoa(len(images)) + " container(s), played by podman"}, out...)
+}
+
+// deadContainers lists the workload containers the runtime shows in a state
+// other than running. Init containers are excluded: they exit by design, and
+// kube play removes them once they have.
+func deadContainers(cur model.ActualApp, app model.Application) []string {
+	var out []string
+	for _, c := range cur.Containers {
+		if c.State == "running" || model.IsInitContainer(app.InitContainers, c.Name) {
+			continue
+		}
+		out = append(out, fmt.Sprintf("%s is %s", c.Name, cmp.Or(c.State, "in an unknown state")))
 	}
 	return out
 }
@@ -117,13 +137,11 @@ func updateReason(cur model.ActualApp, unit renderer.Unit) string {
 	return "unit file differs from the rendered unit (edited by hand, or written by an older podcd)"
 }
 
-// changeDetails explains an update: the unit lines that change and, for a kube workload, the manifest lines that change.
+// changeDetails explains an update: the unit lines that change, and the
+// manifest lines that change with them.
 func changeDetails(cur model.ActualApp, unit renderer.Unit) []string {
 	details := unitDiff(contentLines(string(cur.UnitContent)), contentLines(string(unit.Content)))
-	if unit.IsKube() {
-		details = append(details, unitDiff(manifestLines(cur.ManifestContent), manifestLines(unit.Manifest))...)
-	}
-	return details
+	return append(details, unitDiff(manifestLines(cur.ManifestContent), manifestLines(unit.Manifest))...)
 }
 
 // manifestLines prepares a played manifest for diffing.

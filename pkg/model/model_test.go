@@ -1,8 +1,6 @@
 package model
 
 import (
-	"encoding/json"
-	"strings"
 	"testing"
 )
 
@@ -29,28 +27,6 @@ func TestSpecHashChangesWithTheSpec(t *testing.T) {
 	b := Application{Name: "api", Image: "img@sha256:b"}
 	if a.SpecHash() == b.SpecHash() {
 		t.Fatal("a different image must produce a different hash")
-	}
-}
-
-func TestSpecHashCoversSecretValues(t *testing.T) {
-	a := Application{Name: "api", Image: "img@sha256:a", SecretEnv: map[string]string{"T": "old"}}
-	b := Application{Name: "api", Image: "img@sha256:a", SecretEnv: map[string]string{"T": "new"}}
-	if a.SpecHash() == b.SpecHash() {
-		t.Fatal("rotating a secret must change the hash, otherwise nothing ever restarts")
-	}
-}
-
-func TestSecretsAreRedactedInJSON(t *testing.T) {
-	a := Application{Name: "api", Image: "img@sha256:a", SecretEnv: map[string]string{"TOKEN": "s3cret"}}
-	data, err := json.Marshal(a)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if strings.Contains(string(data), "s3cret") {
-		t.Fatalf("secret leaked: %s", data)
-	}
-	if !strings.Contains(string(data), "TOKEN") {
-		t.Error("the name of a secret is not itself a secret and should still be visible")
 	}
 }
 

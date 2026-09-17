@@ -113,54 +113,11 @@ func shorthand(data []byte) (string, bool, error) {
 	return s, true, err
 }
 
-// HTTPProbe checks an HTTP endpoint published by the container.
-type HTTPProbe struct {
-	Port    int    `json:"port"`
-	Path    string `json:"path,omitempty"`
-	Host    string `json:"host,omitempty"`   // default 127.0.0.1
-	Scheme  string `json:"scheme,omitempty"` // http (default) or https
-	Expect  int    `json:"expect,omitempty"` // expected status, default 200
-	Timeout string `json:"timeout,omitempty"`
-}
-
-// TCPProbe checks that a TCP port accepts a connection.
-type TCPProbe struct {
-	Port    int    `json:"port"`
-	Host    string `json:"host,omitempty"`
-	Timeout string `json:"timeout,omitempty"`
-}
-
-// ExecProbe runs a command inside the container.
-type ExecProbe struct {
-	Command []string `json:"command"`
-	Timeout string   `json:"timeout,omitempty"`
-}
-
-// Healthcheck describes how to tell whether an application is working.
-// Exactly one probe may be set; none means "systemd says the unit is active".
-type Healthcheck struct {
-	HTTP *HTTPProbe `json:"http,omitempty"`
-	TCP  *TCPProbe  `json:"tcp,omitempty"`
-	Exec *ExecProbe `json:"exec,omitempty"`
-
-	// Retries and interval to use while waiting for an app to become healthy after it is applied.
-	Retries  int    `json:"retries,omitempty"`
-	Interval string `json:"interval,omitempty"`
-}
-
 // Resources are the optional systemd resource limits for the unit.
 type Resources struct {
 	Memory string `json:"memory,omitempty"` // e.g. 512M -> MemoryMax
 	CPU    string `json:"cpu,omitempty"`    // e.g. 150% -> CPUQuota
 }
-
-// Workload kinds.
-// A container is one Quadlet .container unit.
-// A kube workload is a pod manifest played by podman through a Quadlet .kube unit.
-const (
-	KindContainer = "container"
-	KindKube      = "kube"
-)
 
 // Application is a fully resolved application.
 // It is the result of compiling environment + group + host + application definitions for one host.
@@ -168,10 +125,7 @@ const (
 type Application struct {
 	Name string `json:"name"`
 
-	// Kind is KindContainer (the default when empty) or KindKube.
-	Kind string `json:"kind,omitempty"`
-
-	// Manifest is the multi-document YAML played by podman for a kube workload.
+	// Manifest is the multi-document YAML played by podman.
 	// It holds the Pod, its ConfigMaps, and its Secrets with values resolved.
 	// It may contain secrets, so it never appears in JSON output.
 	// ManifestHash stands in for it everywhere, including in the spec hash.
@@ -180,16 +134,16 @@ type Application struct {
 	// Images lists every image a kube workload runs, for reporting.
 	// Image holds the first one, so the common code paths have something to show.
 	Images []string `json:"images,omitempty"`
+	// InitContainers identifies containers that are expected to exit successfully
+	// before the regular workload starts. It is runtime-only metadata derived from
+	// the Pod manifest, never rendered or persisted.
+	InitContainers []string `json:"-"`
 
 	Image      string   `json:"image"`
 	Command    []string `json:"command,omitempty"`
 	Entrypoint []string `json:"entrypoint,omitempty"`
 
 	Env map[string]string `json:"env,omitempty"`
-
-	// SecretEnv holds resolved secret values.
-	// It is redacted by MarshalJSON and never written to a unit file, the renderer puts it in a 0600 env file.
-	SecretEnv map[string]string `json:"secretEnv,omitempty"`
 
 	Ports    []Port            `json:"ports,omitempty"`
 	Volumes  []Volume          `json:"volumes,omitempty"`
@@ -201,16 +155,14 @@ type Application struct {
 	WorkingDir    string `json:"workingDir,omitempty"`
 	StopTimeout   int    `json:"stopTimeout,omitempty"`
 
-	Healthcheck *Healthcheck `json:"healthcheck,omitempty"`
-	Resources   Resources    `json:"resources,omitempty"`
+	Resources Resources `json:"resources,omitempty"`
 
 	// Provenance, for humans debugging on the host.
 	SourceRepo string   `json:"sourceRepo,omitempty"`
 	Origins    []string `json:"origins,omitempty"`
 }
 
-// ImageList returns every image the workload runs.
-// One for a container, one per container for a pod.
+// ImageList returns every image the workload runs, one per container.
 func (a Application) ImageList() []string {
 	if len(a.Images) > 0 {
 		return a.Images
@@ -221,27 +173,10 @@ func (a Application) ImageList() []string {
 	return []string{a.Image}
 }
 
-// IsKube reports whether the workload is a pod manifest rather than a container.
-func (a Application) IsKube() bool { return a.Kind == KindKube }
-
 // SetManifest stores a kube manifest and its hash together, so the two can never disagree.
 func (a *Application) SetManifest(manifest []byte) {
 	a.Manifest = manifest
 	a.ManifestHash = HashBytes(manifest)
-}
-
-// MarshalJSON redacts secret values, so logs, `podcd plan` output, and the local state file never carry them.
-func (a Application) MarshalJSON() ([]byte, error) {
-	type alias Application // avoid recursion
-	clone := alias(a)
-	if len(a.SecretEnv) > 0 {
-		redacted := make(map[string]string, len(a.SecretEnv))
-		for k := range a.SecretEnv {
-			redacted[k] = "[redacted]"
-		}
-		clone.SecretEnv = redacted
-	}
-	return json.Marshal(clone)
 }
 
 // DesiredState is everything that should exist on this host at a given Git revision.
@@ -295,11 +230,12 @@ func ShortRev(s string) string {
 type UnitState string
 
 const (
-	UnitActive   UnitState = "active"
-	UnitInactive UnitState = "inactive"
-	UnitFailed   UnitState = "failed"
-	UnitMissing  UnitState = "missing"
-	UnitUnknown  UnitState = "unknown"
+	UnitActive     UnitState = "active"
+	UnitActivating UnitState = "activating"
+	UnitInactive   UnitState = "inactive"
+	UnitFailed     UnitState = "failed"
+	UnitMissing    UnitState = "missing"
+	UnitUnknown    UnitState = "unknown"
 )
 
 // ActualApp is what really exists on the host for one application.
@@ -318,7 +254,6 @@ type ActualApp struct {
 	// Same rules as UnitContent: used for explaining changes, never stored.
 	ManifestContent []byte `json:"-"`
 	SpecHash        string `json:"specHash,omitempty"` // marker written by the renderer
-	SecretsHash     string `json:"secretsHash,omitempty"`
 
 	UnitName  string    `json:"unitName,omitempty"`
 	UnitState UnitState `json:"unitState,omitempty"`
@@ -327,6 +262,36 @@ type ActualApp struct {
 	ContainerID    string `json:"containerId,omitempty"`
 	ContainerImage string `json:"containerImage,omitempty"`
 	ContainerState string `json:"containerState,omitempty"`
+
+	// Containers is every workload container the runtime has for this
+	// application (infra excluded), so the planner can see one that died
+	// inside a unit systemd still considers active.
+	Containers []ContainerStatus `json:"containers,omitempty"`
+}
+
+// ContainerStatus is what the runtime reports about one container.
+type ContainerStatus struct {
+	Name  string `json:"name"`
+	State string `json:"state"` // running, exited, created, paused
+	// Health is the verdict of the container's own healthcheck, when the
+	// workload declares one: healthy, unhealthy or starting. Empty otherwise.
+	Health string `json:"health,omitempty"`
+	// Restarts counts how many times the runtime has restarted this container.
+	// A container that keeps showing "starting" with a climbing count is not
+	// starting, it is crash-looping.
+	Restarts int `json:"restarts,omitempty"`
+}
+
+// IsInitContainer reports whether a runtime container name is one of the
+// pod's init containers. podman kube play prefixes container names with the
+// pod name, so the final "-<name>" segment is matched as well as the bare name.
+func IsInitContainer(initNames []string, containerName string) bool {
+	for _, n := range initNames {
+		if containerName == n || strings.HasSuffix(containerName, "-"+n) {
+			return true
+		}
+	}
+	return false
 }
 
 // ActualState is the observed state of the whole host.
@@ -412,7 +377,6 @@ const (
 type Health struct {
 	App       string       `json:"app"`
 	Status    HealthStatus `json:"status"`
-	Probe     string       `json:"probe"`
 	Message   string       `json:"message,omitempty"`
 	CheckedAt time.Time    `json:"checkedAt"`
 }

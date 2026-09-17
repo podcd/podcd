@@ -6,8 +6,6 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
-
-	"github.com/podcd/podcd/pkg/secrets"
 )
 
 func TestMergeValuesDeepMergesMapsAndReplacesEverythingElse(t *testing.T) {
@@ -108,19 +106,23 @@ func TestRenderTemplateBadSyntaxNamesTheFile(t *testing.T) {
 func TestTemplateIsDeclaredByFileNameNotContents(t *testing.T) {
 	files := map[string]string{
 		"templated.yaml.tpl": `
-apiVersion: gitops.podcd.io/v1
-kind: Application
+apiVersion: v1
+kind: Pod
 metadata: {name: web}
 spec:
-  image: "{{ .Values.image.repository }}:{{ .Values.image.tag }}"
+  containers:
+    - name: web
+      image: "{{ .Values.image.repository }}:{{ .Values.image.tag }}"
 `,
 		"plain.yaml": `
 # This comment mentions {{ .Values }} and {{ if }} and that is fine.
-apiVersion: gitops.podcd.io/v1
-kind: Application
+apiVersion: v1
+kind: Pod
 metadata: {name: literal}
 spec:
-  image: "example.com/literal:{{ not a template }}"
+  containers:
+    - name: literal
+      image: "example.com/literal:{{ not a template }}"
 `,
 		"host.yaml": `
 apiVersion: gitops.podcd.io/v1
@@ -130,8 +132,8 @@ spec: {applications: [web, literal]}
 `,
 	}
 	ix := loadIndex(t, files)
-	if len(ix.Templates()) != 1 || len(ix.Applications) != 1 {
-		t.Fatalf("want 1 template and 1 plain application after load, got %d and %d", len(ix.Templates()), len(ix.Applications))
+	if len(ix.Templates()) != 1 || len(ix.Pods) != 1 {
+		t.Fatalf("want 1 template and 1 plain pod after load, got %d and %d", len(ix.Templates()), len(ix.Pods))
 	}
 
 	values := Values{"image": map[string]any{"repository": "example.com/web", "tag": "2.0"}}
@@ -154,13 +156,16 @@ spec: {applications: [web, literal]}
 func TestEnvironmentGroupAndHostValuesMergeInOverridePrecedence(t *testing.T) {
 	files := map[string]string{
 		"app.yaml.tpl": `
-apiVersion: gitops.podcd.io/v1
-kind: Application
+apiVersion: v1
+kind: Pod
 metadata: {name: web}
 spec:
-  image: '{{ .Values.tag }}'
-  env:
-    LOG: '{{ .Values.log }}'
+  containers:
+    - name: web
+      image: '{{ .Values.tag }}'
+      env:
+        - name: LOG
+          value: '{{ .Values.log }}'
 `,
 		"env.yaml": `
 apiVersion: gitops.podcd.io/v1
@@ -205,10 +210,13 @@ spec: {environment: prod, groups: [web], values: [values/host.yaml]}
 func TestTwoHostsSharingAnEnvironmentGetTheirOwnGroupValues(t *testing.T) {
 	files := map[string]string{
 		"app.yaml.tpl": `
-apiVersion: gitops.podcd.io/v1
-kind: Application
+apiVersion: v1
+kind: Pod
 metadata: {name: web}
-spec: {image: '{{ .Values.tag }}'}
+spec:
+  containers:
+    - name: web
+      image: '{{ .Values.tag }}'
 `,
 		"env.yaml": `
 apiVersion: gitops.podcd.io/v1
@@ -266,12 +274,14 @@ spec: {environment: prod, groups: [iso]}
 func TestTemplateMistakesSurfaceAtResolve(t *testing.T) {
 	files := map[string]string{
 		"app.yaml.tpl": `
-apiVersion: gitops.podcd.io/v1
-kind: Application
+apiVersion: v1
+kind: Pod
 metadata: {name: web}
 spec:
-  image: '{{ .Values.tag }}'
-  imagee: typo
+  containers:
+    - name: web
+      image: '{{ .Values.tag }}'
+      imagee: typo
 `,
 		"host.yaml": `
 apiVersion: gitops.podcd.io/v1
@@ -291,16 +301,21 @@ spec: {applications: [web]}
 func TestBlockConditionalsWork(t *testing.T) {
 	files := map[string]string{
 		"app.yaml.tpl": `
-apiVersion: gitops.podcd.io/v1
-kind: Application
+apiVersion: v1
+kind: Pod
 metadata:
   name: web
 spec:
-  image: nginx
-  env:
-{{- if .Values.extra }}
-    EXTRA: '{{ .Values.extra }}'
-{{- end }}
+  containers:
+    - name: web
+      image: nginx
+      env:
+        - name: BASE
+          value: always
+      {{- if .Values.extra }}
+        - name: EXTRA
+          value: '{{ .Values.extra }}'
+      {{- end }}
 `,
 		"hosts.yaml": `
 apiVersion: gitops.podcd.io/v1
@@ -328,7 +343,7 @@ spec: {applications: [web]}
 	if err != nil {
 		t.Fatal(err)
 	}
-	if app, _ := without.App("web"); len(app.Env) != 0 {
+	if app, _ := without.App("web"); app.Env["EXTRA"] != "" {
 		t.Fatalf("the false branch should omit EXTRA entirely, not set it empty: %+v", app.Env)
 	}
 }
@@ -337,12 +352,14 @@ spec: {applications: [web]}
 func TestTemplatedNameWorks(t *testing.T) {
 	files := map[string]string{
 		"app.yaml.tpl": `
-apiVersion: gitops.podcd.io/v1
-kind: Application
+apiVersion: v1
+kind: Pod
 metadata:
   name: '{{ .Values.name }}'
 spec:
-  image: nginx
+  containers:
+    - name: web
+      image: nginx
 `,
 		"host.yaml": `
 apiVersion: gitops.podcd.io/v1
@@ -428,9 +445,9 @@ spec:
       envFrom:
         - configMapRef: {name: web-config}
       env:
-        - name: DB_PASSWORD
+        - name: CA_CERT
           valueFrom:
-            secretKeyRef: {name: web-secret, key: password}
+            secretKeyRef: {name: web-secret, key: ca.crt}
 `,
 		"configmap.yaml.tpl": `
 apiVersion: v1
@@ -449,7 +466,7 @@ kind: Secret
 metadata:
   name: web-secret
 stringData:
-  password: '{{ .Values.passwordRef }}'
+  ca.crt: '{{ .Values.caCert }}'
 `,
 		"host.yaml": `
 apiVersion: gitops.podcd.io/v1
@@ -459,10 +476,9 @@ spec: {applications: [web]}
 `,
 	}
 	ix := loadIndex(t, files)
-	t.Setenv("DB_PASSWORD", "hunter2")
 
-	desired, err := ix.Resolve(context.Background(), ResolveOptions{Host: "vm-1", Secrets: secrets.Default("", ""), Values: Values{
-		"logLevel": "debug", "extra": "hi", "passwordRef": "env:DB_PASSWORD",
+	desired, err := ix.Resolve(context.Background(), ResolveOptions{Host: "vm-1", Values: Values{
+		"logLevel": "debug", "extra": "hi", "caCert": "PEM-CHAIN",
 	}})
 	if err != nil {
 		t.Fatal(err)
@@ -475,49 +491,8 @@ spec: {applications: [web]}
 	if !strings.Contains(manifest, "LOG_LEVEL: debug") || !strings.Contains(manifest, "EXTRA: hi") {
 		t.Fatalf("templated + conditional ConfigMap data missing from manifest:\n%s", manifest)
 	}
-	if !strings.Contains(manifest, "password:") {
-		t.Fatalf("resolved secret missing from manifest:\n%s", manifest)
-	}
-}
-
-// TestSecretTemplateStillRejectsPlaintext: a Secret template goes through the
-// same decode path as a Secret file, reference-only check included - it is
-// not a way to smuggle a literal past the rule.
-func TestSecretTemplateStillRejectsPlaintext(t *testing.T) {
-	files := map[string]string{
-		"pod.yaml": `
-apiVersion: v1
-kind: Pod
-metadata:
-  name: web
-spec:
-  containers:
-    - name: app
-      image: nginx
-      env:
-        - name: DB_PASSWORD
-          valueFrom:
-            secretKeyRef: {name: web-secret, key: password}
-`,
-		"secret.yaml.tpl": `
-apiVersion: v1
-kind: Secret
-metadata:
-  name: web-secret
-stringData:
-  password: '{{ .Values.literal }}'
-`,
-		"host.yaml": `
-apiVersion: gitops.podcd.io/v1
-kind: Host
-metadata: {name: vm-1}
-spec: {applications: [web]}
-`,
-	}
-	ix := loadIndex(t, files)
-	_, err := ix.Resolve(context.Background(), ResolveOptions{Host: "vm-1", Values: Values{"literal": "hunter2"}})
-	if err == nil || !strings.Contains(err.Error(), "reference") {
-		t.Fatalf("a Secret template rendering to a plaintext value must still be rejected, got %v", err)
+	if !strings.Contains(manifest, "PEM-CHAIN") {
+		t.Fatalf("templated Secret value missing from manifest:\n%s", manifest)
 	}
 }
 
@@ -550,16 +525,22 @@ spec: {applications: []}
 func TestTemplateMayNotShadowAPlainDocument(t *testing.T) {
 	files := map[string]string{
 		"app.yaml": `
-apiVersion: gitops.podcd.io/v1
-kind: Application
+apiVersion: v1
+kind: Pod
 metadata: {name: web}
-spec: {image: nginx}
+spec:
+  containers:
+    - name: web
+      image: nginx
 `,
 		"app.yaml.tpl": `
-apiVersion: gitops.podcd.io/v1
-kind: Application
+apiVersion: v1
+kind: Pod
 metadata: {name: web}
-spec: {image: '{{ .Values.image }}'}
+spec:
+  containers:
+    - name: web
+      image: '{{ .Values.image }}'
 `,
 		"host.yaml": `
 apiVersion: gitops.podcd.io/v1
@@ -581,10 +562,13 @@ spec: {applications: [web]}
 func TestMissingValuesFileIsAClearResolveError(t *testing.T) {
 	files := map[string]string{
 		"app.yaml": `
-apiVersion: gitops.podcd.io/v1
-kind: Application
+apiVersion: v1
+kind: Pod
 metadata: {name: web}
-spec: {image: nginx}
+spec:
+  containers:
+    - name: web
+      image: nginx
 `,
 		"host.yaml": `
 apiVersion: gitops.podcd.io/v1

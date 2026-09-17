@@ -6,8 +6,6 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
-
-	"github.com/podcd/podcd/pkg/secrets"
 )
 
 // writeTree writes files into a temporary directory and returns its path.
@@ -40,32 +38,35 @@ const digest = "@sha256:11111111111111111111111111111111111111111111111111111111
 func baseFiles() map[string]string {
 	return map[string]string{
 		"apps/api.yaml": `
-apiVersion: gitops.podcd.io/v1
-kind: Application
+apiVersion: v1
+kind: Pod
 metadata:
   name: api
 spec:
-  image: example.com/api` + digest + `
-  ports:
-    - host: 8080
-      container: 8080
-  env:
-    APP_ENV: default
-    LOG_LEVEL: info
-  healthcheck:
-    http:
-      port: 8080
-      path: /health
+  containers:
+    - name: api
+      image: example.com/api` + digest + `
+      ports:
+        - containerPort: 8080
+          hostPort: 8080
+      env:
+        - name: APP_ENV
+          value: default
+        - name: LOG_LEVEL
+          value: info
 `,
 		"apps/frontend.yaml": `
-apiVersion: gitops.podcd.io/v1
-kind: Application
+apiVersion: v1
+kind: Pod
 metadata:
   name: frontend
 spec:
-  image: example.com/frontend` + digest + `
-  ports:
-    - "8081:80"
+  containers:
+    - name: frontend
+      image: example.com/frontend` + digest + `
+      ports:
+        - containerPort: 80
+          hostPort: 8081
 `,
 		"envs/production.yaml": `
 apiVersion: gitops.podcd.io/v1
@@ -75,8 +76,12 @@ metadata:
 spec:
   overrides:
     api:
-      env:
-        APP_ENV: production
+      spec:
+        containers:
+          - name: api
+            env:
+              - name: APP_ENV
+                value: production
 `,
 		"groups/web.yaml": `
 apiVersion: gitops.podcd.io/v1
@@ -87,8 +92,12 @@ spec:
   applications: [api, frontend]
   overrides:
     api:
-      env:
-        LOG_LEVEL: warn
+      spec:
+        containers:
+          - name: api
+            env:
+              - name: LOG_LEVEL
+                value: warn
 `,
 		"hosts/prod-web-01.yaml": `
 apiVersion: gitops.podcd.io/v1
@@ -145,8 +154,12 @@ spec:
   groups: [web]
   overrides:
     api:
-      env:
-        LOG_LEVEL: debug
+      spec:
+        containers:
+          - name: api
+            env:
+              - name: LOG_LEVEL
+                value: debug
   excludeApplications: [frontend]
 `
 	ix := loadIndex(t, files)
@@ -172,8 +185,12 @@ metadata:
 spec:
   overrides:
     api:
-      env:
-        LOG_LEVEL: trace
+      spec:
+        containers:
+          - name: api
+            env:
+              - name: LOG_LEVEL
+                value: trace
 `
 	files["hosts/prod-web-01.yaml"] = `
 apiVersion: gitops.podcd.io/v1
@@ -200,12 +217,14 @@ spec:
 func TestImageMayBeATag(t *testing.T) {
 	files := baseFiles()
 	files["apps/api.yaml"] = `
-apiVersion: gitops.podcd.io/v1
-kind: Application
+apiVersion: v1
+kind: Pod
 metadata:
   name: api
 spec:
-  image: example.com/api:latest
+  containers:
+    - name: api
+      image: example.com/api:latest
 `
 	ix := loadIndex(t, files)
 	got, err := ix.Resolve(context.Background(), ResolveOptions{Host: "prod-web-01"})
@@ -222,12 +241,14 @@ func TestAllowMutableImageIsNotAField(t *testing.T) {
 	// is rejected like any other unknown field.
 	files := baseFiles()
 	files["apps/api.yaml"] = `
-apiVersion: gitops.podcd.io/v1
-kind: Application
+apiVersion: v1
+kind: Pod
 metadata:
   name: api
 spec:
-  image: example.com/api:latest
+  containers:
+    - name: api
+      image: example.com/api:latest
   allowMutableImage: true
 `
 	dir := writeTree(t, files)
@@ -264,22 +285,25 @@ func TestMissingApplicationDefinitionIsAnError(t *testing.T) {
 	delete(files, "apps/frontend.yaml")
 	ix := loadIndex(t, files)
 	_, err := ix.Resolve(context.Background(), ResolveOptions{Host: "prod-web-01"})
-	if err == nil || !strings.Contains(err.Error(), "never defined") {
-		t.Fatalf("want an error about the undefined application, got: %v", err)
+	if err == nil || !strings.Contains(err.Error(), "no Pod defines it") {
+		t.Fatalf("want an error about the undefined workload, got: %v", err)
 	}
 }
 
 func TestHostPortConflictIsAnError(t *testing.T) {
 	files := baseFiles()
 	files["apps/frontend.yaml"] = `
-apiVersion: gitops.podcd.io/v1
-kind: Application
+apiVersion: v1
+kind: Pod
 metadata:
   name: frontend
 spec:
-  image: example.com/frontend` + digest + `
-  ports:
-    - "8080:80"
+  containers:
+    - name: frontend
+      image: example.com/frontend` + digest + `
+      ports:
+        - containerPort: 80
+          hostPort: 8080
 `
 	ix := loadIndex(t, files)
 	_, err := ix.Resolve(context.Background(), ResolveOptions{Host: "prod-web-01"})
@@ -292,12 +316,14 @@ func TestUnknownFieldIsRejected(t *testing.T) {
 	ix := NewIndex()
 	err := ix.LoadTree("test", writeTree(t, map[string]string{
 		"a.yaml": `
-apiVersion: gitops.podcd.io/v1
-kind: Application
+apiVersion: v1
+kind: Pod
 metadata:
   name: api
 spec:
-  imagee: example.com/api` + digest + `
+  containers:
+    - name: api
+      imagee: example.com/api` + digest + `
 `}))
 	if err == nil || !strings.Contains(err.Error(), "imagee") {
 		t.Fatalf("a misspelled field must fail loudly, got: %v", err)
@@ -315,77 +341,17 @@ spec:
   applications: [api]
   overrides:
     frontend:
-      env:
-        X: "1"
+      spec:
+        containers:
+          - name: frontend
+            env:
+              - name: X
+                value: "1"
 `
 	ix := loadIndex(t, files)
 	_, err := ix.Resolve(context.Background(), ResolveOptions{Host: "prod-web-01"})
 	if err == nil || !strings.Contains(err.Error(), "does not run") {
 		t.Fatalf("a stale override should be reported, got: %v", err)
-	}
-}
-
-func TestSecretsAreResolvedAndNeverInGit(t *testing.T) {
-	files := baseFiles()
-	files["apps/api.yaml"] = `
-apiVersion: gitops.podcd.io/v1
-kind: Application
-metadata:
-  name: api
-spec:
-  image: example.com/api` + digest + `
-  secretEnv:
-    API_TOKEN: env:TEST_API_TOKEN
-`
-	t.Setenv("TEST_API_TOKEN", "s3cret")
-	ix := loadIndex(t, files)
-	got, err := ix.Resolve(context.Background(), ResolveOptions{
-		Host:    "prod-web-01",
-		Secrets: secrets.Default("", ""),
-	})
-	if err != nil {
-		t.Fatalf("resolve: %v", err)
-	}
-	if got.Applications[0].SecretEnv["API_TOKEN"] != "s3cret" {
-		t.Errorf("secret was not resolved: %v", got.Applications[0].SecretEnv)
-	}
-}
-
-func TestMissingSecretFailsTheReconcile(t *testing.T) {
-	files := baseFiles()
-	files["apps/api.yaml"] = `
-apiVersion: gitops.podcd.io/v1
-kind: Application
-metadata:
-  name: api
-spec:
-  image: example.com/api` + digest + `
-  secretEnv:
-    API_TOKEN: env:DEFINITELY_NOT_SET_12345
-`
-	ix := loadIndex(t, files)
-	_, err := ix.Resolve(context.Background(), ResolveOptions{Host: "prod-web-01", Secrets: secrets.Default("", "")})
-	if err == nil || !strings.Contains(err.Error(), "secret not found") {
-		t.Fatalf("a missing secret must fail loudly, got: %v", err)
-	}
-}
-
-func TestPlaintextSecretReferenceIsRejected(t *testing.T) {
-	files := baseFiles()
-	files["apps/api.yaml"] = `
-apiVersion: gitops.podcd.io/v1
-kind: Application
-metadata:
-  name: api
-spec:
-  image: example.com/api` + digest + `
-  secretEnv:
-    API_TOKEN: hunter2
-`
-	ix := loadIndex(t, files)
-	_, err := ix.Resolve(context.Background(), ResolveOptions{Host: "prod-web-01", Secrets: secrets.Default("", "")})
-	if err == nil || !strings.Contains(err.Error(), "scheme:locator") {
-		t.Fatalf("a literal secret value must not work, got: %v", err)
 	}
 }
 

@@ -60,7 +60,7 @@ func (f *fakeRuntime) Apply(_ context.Context, app model.Application) error {
 		return f.applyErr
 	}
 	f.applied = append(f.applied, app.Name)
-	r := &renderer.Renderer{UnitDir: "/units", EnvDir: "/env"}
+	r := &renderer.Renderer{UnitDir: "/units", KubeDir: "/kube"}
 	u, err := r.Render(app)
 	if err != nil {
 		return err
@@ -68,7 +68,7 @@ func (f *fakeRuntime) Apply(_ context.Context, app model.Application) error {
 	f.apps[app.Name] = model.ActualApp{
 		Name: app.Name, Managed: true, UnitFile: u.Path,
 		UnitFileHash: model.HashBytes(u.Content), UnitContent: u.Content,
-		SpecHash: u.SpecHash, SecretsHash: u.SecretsHash, UnitState: model.UnitActive,
+		SpecHash: u.SpecHash, UnitState: model.UnitActive,
 	}
 	return nil
 }
@@ -96,9 +96,9 @@ func (f *fakeRuntime) Restart(_ context.Context, app string) error {
 
 func (f *fakeRuntime) Health(_ context.Context, app model.Application) (model.Health, error) {
 	if f.unhealthy[app.Name] {
-		return model.Health{App: app.Name, Status: model.HealthUnhealthy, Probe: "fake", Message: "it is broken"}, nil
+		return model.Health{App: app.Name, Status: model.HealthUnhealthy, Message: "it is broken"}, nil
 	}
-	return model.Health{App: app.Name, Status: model.HealthHealthy, Probe: "fake"}, nil
+	return model.Health{App: app.Name, Status: model.HealthHealthy}, nil
 }
 
 func (f *fakeRuntime) Logs(context.Context, string, int) (string, error) { return "", nil }
@@ -130,7 +130,7 @@ func newTestEngine(t *testing.T, rt *fakeRuntime, docs string) (*Engine, string)
 	e := &Engine{
 		cfg:   cfg,
 		rt:    rt,
-		rend:  &renderer.Renderer{UnitDir: "/units", EnvDir: "/env"},
+		rend:  &renderer.Renderer{UnitDir: "/units", KubeDir: "/kube"},
 		store: state.NewFileStore(cfg.StatePath()),
 		log:   log,
 	}
@@ -163,19 +163,23 @@ func runGit(t *testing.T, dir string, args ...string) {
 	}
 }
 
-const twoApps = `apiVersion: gitops.podcd.io/v1
-kind: Application
+const twoApps = `apiVersion: v1
+kind: Pod
 metadata:
   name: api
 spec:
-  image: example.com/api@sha256:aaaa
+  containers:
+    - name: api
+      image: example.com/api@sha256:aaaa
 ---
-apiVersion: gitops.podcd.io/v1
-kind: Application
+apiVersion: v1
+kind: Pod
 metadata:
   name: web
 spec:
-  image: example.com/web@sha256:bbbb
+  containers:
+    - name: web
+      image: example.com/web@sha256:bbbb
 ---
 apiVersion: gitops.podcd.io/v1
 kind: Host
@@ -185,12 +189,14 @@ spec:
   applications: [api, web]
 `
 
-const oneApp = `apiVersion: gitops.podcd.io/v1
-kind: Application
+const oneApp = `apiVersion: v1
+kind: Pod
 metadata:
   name: api
 spec:
-  image: example.com/api@sha256:aaaa
+  containers:
+    - name: api
+      image: example.com/api@sha256:aaaa
 ---
 apiVersion: gitops.podcd.io/v1
 kind: Host
@@ -198,6 +204,48 @@ metadata:
   name: vm-1
 spec:
   applications: [api]
+`
+
+const appWithUnavailableExternalSecret = `apiVersion: external-secrets.io/v1beta1
+kind: SecretStore
+metadata: {name: host-env}
+spec:
+  provider:
+    env: {}
+---
+apiVersion: external-secrets.io/v1beta1
+kind: ExternalSecret
+metadata: {name: unavailable}
+spec:
+  secretStoreRef: {name: host-env}
+  target: {name: unavailable}
+  data:
+    - secretKey: token
+      remoteRef: {key: PODCD_MISSING_EXTERNAL_SECRET}
+---
+apiVersion: v1
+kind: Pod
+metadata: {name: needs-secret}
+spec:
+  containers:
+    - name: app
+      image: example.com/needs-secret@sha256:aaaa
+      envFrom:
+        - secretRef: {name: unavailable}
+---
+apiVersion: v1
+kind: Pod
+metadata: {name: independent}
+spec:
+  containers:
+    - name: app
+      image: example.com/independent@sha256:bbbb
+---
+apiVersion: gitops.podcd.io/v1
+kind: Host
+metadata: {name: vm-1}
+spec:
+  applications: [needs-secret, independent]
 `
 
 func TestReconcileAppliesAndRecords(t *testing.T) {
@@ -239,6 +287,29 @@ func TestReconcileAppliesAndRecords(t *testing.T) {
 	}
 	if len(again.Applied) != 0 {
 		t.Fatalf("the second reconcile was not a no-op: %+v", again.Applied)
+	}
+}
+
+func TestReconcileAppliesIndependentAppsWhenSecretProvisioningFails(t *testing.T) {
+	rt := newFakeRuntime()
+	// A failed provision must not turn this existing app into a prune target.
+	rt.apps["needs-secret"] = model.ActualApp{Name: "needs-secret", Managed: true}
+	e, _ := newTestEngine(t, rt, appWithUnavailableExternalSecret)
+
+	res, err := e.Reconcile(context.Background(), Options{SkipHealth: true})
+	if err == nil || !strings.Contains(err.Error(), "needs-secret") {
+		t.Fatalf("want the provisioning error for needs-secret, got %v", err)
+	}
+	if len(rt.applied) != 1 || rt.applied[0] != "independent" {
+		t.Fatalf("applied = %v, want only independent", rt.applied)
+	}
+	if len(rt.removed) != 0 {
+		t.Fatalf("a blocked app must not be pruned, removed = %v", rt.removed)
+	}
+	for _, action := range res.Plan.Actions {
+		if action.App == "needs-secret" && action.Type == model.ActionDelete {
+			t.Fatalf("blocked app was scheduled for deletion: %+v", action)
+		}
 	}
 }
 
