@@ -1,6 +1,6 @@
 ---
 id: behaviour
-title: Behaviour
+title: Overview
 ---
 
 
@@ -8,19 +8,17 @@ title: Behaviour
 ![podcd-diagram](../static/img/overview.svg)
 
 
-## Pull
+## Overview
 
-Every repository in `agent.yaml` is fetched at its `revision` (a branch, a tag or a commit). If a remote is unreachable and a checkout already exists on disk, the agent reconciles from the commit it has and reports the repository as offline.
+#### Fetch
 
-## Load and resolve
+- Every repository in `agent.yaml` is fetched at its `revision` (a branch, a tag or a commit). If a remote is unreachable and a checkout already exists on disk, the agent reconciles from the commit it has and reports the repository as offline.
 
-The checkouts are read into one index. A name defined twice across repositories will be treated as an error. The index is then compiled for *this* host - the `Host` document matching `agent.yaml`'s `host` (default: the machine's hostname). See the [configuration model](configuration/model.md) and [values templating](configuration/values.md).
+- The checkouts are read into one index. A name defined twice across repositories will be treated as an error. The index is then compiled for *this* host - the `Host` document matching `agent.yaml`'s `host` (default: the machine's hostname). See the [configuration model](configuration/model.md) and [values templating](configuration/values.md).
 
-## Inspect
+- The runtime (currently podman only) is inspected: which units podcd wrote, their content hashes, whether systemd reports them active, which container image is actually running.
 
-The runtime (currently podman only) is inspected: which units podcd wrote, their content hashes, whether systemd reports them active, which container image is actually running. 
-
-## Plan
+#### Plan & Reconcile
 
 Desired and actual are compared per application:
 
@@ -31,21 +29,11 @@ Desired and actual are compared per application:
 
 Deletes are ordered before creates, so a renamed application frees its host port before its successor binds it.
 
-## Apply
-
-Actions run one at a time under a file lock, so a human running `podcd reconcile` and the agent's own loop cannot fight over the same unit files. A destructive action is logged before it happens. The first failure stops the run and is recorded.
-
-## Health
-
-Health is whether every workload container is running. podcd does not run or
-interpret container healthchecks. After applying a change it waits for the
-application to come back before calling the reconcile a success.
-
-## Retry
+Reconciles run one at a time under a file lock, so a human running `podcd reconcile` and the agent's own loop cannot fight over the same unit files. A destructive action is logged before it happens. The first failure stops the run and is recorded.
 
 A failed reconcile is retried after `retryInterval`, doubling on each further failure up to `maxRetryInterval`, then the regular `interval` resumes once a reconcile succeeds. `jitter` adds a random delay on top of `interval` so a fleet does not hit Git in lockstep.
 
-## State and history
+#### State and history
 
 The agent stores local state in `~/.local/state/podcd/state.json`. It records the agent identity, last revisions, last successful and failed reconciliation, and per-application history including the previous deployment. `podcd status` reads it, so status works offline.
 
