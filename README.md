@@ -210,8 +210,9 @@ podcd init        # scaffold a minimal repository: one host, one nginx
 podcd create      # print a document for a kind
 podcd install     # write the systemd user service file for the agent
 podcd uninstall   # stop the agent's systemd user service and remove its unit file
-podcd prune       # stop and remove applications directly, without consulting Git (--all, or by name)
-podcd teardown    # prune --all, then uninstall; --purge-state and --purge-config to also delete local state/config
+podcd prune       # remove what podcd manages here but Git no longer declares; nothing else
+podcd remove      # stop and remove applications directly, without consulting Git (--all, or by name); alias rm
+podcd teardown    # remove --all, then uninstall; --purge-state and --purge-config to also delete local state/config
 podcd config      # view, create or edit the agent config file
 ```
 

@@ -61,8 +61,9 @@ podcd config set repositories.0.values.0 values/common.yaml
 ## Taking things down
 
 ```bash
-podcd prune       # stop and remove applications directly, without consulting Git (--all, or by name)
-podcd teardown    # prune --all, then uninstall; --purge-state and --purge-config to also delete local state/config
+podcd prune       # remove what podcd manages here but Git no longer declares; nothing else
+podcd remove      # stop and remove applications directly, without consulting Git (--all, or by name); alias rm
+podcd teardown    # remove --all, then uninstall; --purge-state and --purge-config to also delete local state/config
 ```
 
 Both say what they are about to remove and ask first; `-y` skips the question.

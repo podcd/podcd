@@ -25,7 +25,8 @@ func TestEveryCommandOwnsItsFlags(t *testing.T) {
 		"version":   {"output"},
 		"install":   {"output", "yes"},
 		"uninstall": {"output", "yes"},
-		"prune":     {"all", "yes"},
+		"prune":     {"yes"},
+		"remove":    {"all", "yes"},
 		"teardown":  {"purge-state", "purge-config", "yes"},
 	}
 	for name, flags := range want {
