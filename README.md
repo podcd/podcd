@@ -20,7 +20,7 @@ podcd reconciles a Linux host to match what is declared in Git.
 Install the binary.
 
 ```bash
-V=3.0.0; A=amd64   # or arm64
+V=3.0.0; A=$(uname -m | sed 's/x86_64/amd64/; s/aarch64/arm64/')
 curl -fsSLO "https://github.com/podcd/podcd/releases/download/v$V/podcd_${V}_linux_${A}.tar.gz"
 curl -fsSLO "https://github.com/podcd/podcd/releases/download/v$V/podcd_${V}_linux_${A}.tar.gz.sha256"
 sha256sum -c "podcd_${V}_linux_${A}.tar.gz.sha256" && tar -xzf "podcd_${V}_linux_${A}.tar.gz"
@@ -112,9 +112,15 @@ On SELinux-enforcing hosts (RHEL, Fedora), add `:z` (shared) or `:Z` (private) t
 
 ```bash
 make test           # unit tests; also runs podman's Quadlet generator over rendered units
-make test-e2e       # real podman, quadlet and systemd on this machine (starts containers)
+make test-e2e       # real podman, quadlet, systemd and Vault on this machine (starts containers)
 make lint           # golangci-lint
 ```
+
+`make test-e2e` needs Linux and a user with no other podcd workloads (the
+suite prunes what its hosts do not declare, and refuses to start otherwise).
+On macOS, `contrib/macos-linux-tests.sh test-e2e` runs it inside the podman
+machine; the Linux-only parts of `make test` skip on a Mac, so run that
+through the script too before relying on a green run.
 
 ## Security
 

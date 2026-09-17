@@ -206,6 +206,34 @@ func requireTools(t *testing.T) {
 		!strings.Contains(string(out), "degraded") && !strings.Contains(string(out), "running") {
 		t.Skipf("no systemd user manager here: %s", out)
 	}
+	requireNoOtherWorkloads(t)
+}
+
+// requireNoOtherWorkloads fails, rather than skips, when this user already
+// runs podcd workloads. The suite reconciles hosts that declare only their
+// own applications, and anything else podcd manages here - a unit in the
+// shared unit directory, a labelled container - is exactly what prune
+// removes. Refusing is the only safe answer.
+func requireNoOtherWorkloads(t *testing.T) {
+	t.Helper()
+	var others []string
+	if home, err := os.UserHomeDir(); err == nil {
+		entries, _ := os.ReadDir(filepath.Join(home, ".config", "containers", "systemd"))
+		for _, e := range entries {
+			if name := e.Name(); strings.HasPrefix(name, "podcd-") && !strings.HasPrefix(name, "podcd-e2e-") {
+				others = append(others, name)
+			}
+		}
+	}
+	out, _ := exec.Command("podman", "ps", "--all", "--filter", "label="+config.LabelManaged+"=true", "--format", "{{.Names}}").Output()
+	for _, name := range strings.Fields(string(out)) {
+		if !strings.Contains(name, "podcd-e2e-") && !strings.HasSuffix(name, "-infra") {
+			others = append(others, name)
+		}
+	}
+	if len(others) > 0 {
+		t.Fatalf("this user already runs podcd workloads (%s); the end-to-end suite would prune them - run it on a host with none", strings.Join(others, ", "))
+	}
 }
 
 func imageDigest(t *testing.T) string {

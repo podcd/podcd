@@ -3,6 +3,7 @@ package reconciler
 import (
 	"context"
 	"errors"
+	"fmt"
 	"io"
 	"log/slog"
 	"os"
@@ -34,6 +35,7 @@ type fakeRuntime struct {
 	applyErr  error
 	removeErr map[string]error
 	unhealthy map[string]bool
+	healthErr error
 }
 
 func newFakeRuntime() *fakeRuntime {
@@ -95,13 +97,18 @@ func (f *fakeRuntime) Restart(_ context.Context, app string) error {
 }
 
 func (f *fakeRuntime) Health(_ context.Context, app model.Application) (model.Health, error) {
+	if f.healthErr != nil {
+		return model.Health{}, f.healthErr
+	}
 	if f.unhealthy[app.Name] {
 		return model.Health{App: app.Name, Status: model.HealthUnhealthy, Message: "it is broken"}, nil
 	}
 	return model.Health{App: app.Name, Status: model.HealthHealthy}, nil
 }
 
-func (f *fakeRuntime) Logs(context.Context, string, int) (string, error) { return "", nil }
+func (f *fakeRuntime) Logs(_ context.Context, app string, lines int) (string, error) {
+	return fmt.Sprintf("%s:%d", app, lines), nil
+}
 
 // appliedCount is safe to call while the engine is running on another goroutine.
 func (f *fakeRuntime) appliedCount() int {
