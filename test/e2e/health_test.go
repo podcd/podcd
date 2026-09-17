@@ -116,12 +116,24 @@ func TestMatrixExitedContainerIsUnhealthyWithItsExitCode(t *testing.T) {
 			t.Errorf("message should say %q: %s", want, h.Message)
 		}
 	}
-	// And a further reconcile does not keep restarting something Git said
-	// never to restart: the plan wants it running, podman refuses, the
-	// verdict stays honest rather than flapping.
-	if _, err := e.Reconcile(context.Background(), reconciler.Options{}); err == nil {
-		t.Fatal("still unhealthy; reconcile must keep saying so")
+	// A further reconcile restarts the unit (the plan wants it running) and
+	// the container exits again. Whether that call itself fails depends on
+	// whether the health poll catches the container in its few hundred
+	// milliseconds of running - the verdict is podman's at that instant -
+	// so what must hold is where the host settles: unhealthy, same reason.
+	_, _ = e.Reconcile(context.Background(), reconciler.Options{})
+	deadline := time.Now().Add(30 * time.Second)
+	for time.Now().Before(deadline) {
+		hs, err := e.Health(context.Background())
+		if err != nil {
+			t.Fatal(err)
+		}
+		if h = hs[0]; h.Status == model.HealthUnhealthy && strings.Contains(h.Message, "fatal: config missing") {
+			return
+		}
+		time.Sleep(2 * time.Second)
 	}
+	t.Fatalf("after another reconcile the host must settle unhealthy again: %+v", h)
 }
 
 // Under restartPolicy Always the same container crash-loops; the restart
