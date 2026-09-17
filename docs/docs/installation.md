@@ -143,11 +143,11 @@ Files the agent owns:
 ~/.local/state/podcd/               checkouts, state.json
 ```
 
-### 3. Secrets
+### Secrets
 
 See [Secrets](configuration/secrets.md) for `env:` and `file:` references.
 
-### 4. Status
+### Status
 
 When running as a dedicated service user with no login shell:
 
