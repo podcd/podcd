@@ -154,10 +154,10 @@ func TestMatrixCrashLoopShowsRestarts(t *testing.T) {
 	}
 }
 
-// A liveness probe that cannot pass: podman restarts the container every
-// failureThreshold, so it is "starting" again before it can be caught
-// "unhealthy". What gives it away is the restart count, and the verdict
-// quotes the probe's own output.
+// A liveness probe that cannot pass. What podman does about it depends on its version: 
+// 5.x restarts the container every failureThreshold, it is "starting" again with a climbing restart count;
+// 4.x marks it "unhealthy" and leaves it. 
+// Either way the verdict must never read healthy, must name the container, and must quote the probe's own output.
 func TestMatrixFailingLivenessProbeIsExplained(t *testing.T) {
 	digest := requireE2E(t)
 	const name = "podcd-e2e-probe"
@@ -180,7 +180,7 @@ func TestMatrixFailingLivenessProbeIsExplained(t *testing.T) {
 			t.Fatal(err)
 		}
 		h = hs[0]
-		if strings.Contains(h.Message, "restarted") && strings.Contains(h.Message, "probe says no") {
+		if strings.Contains(h.Message, "probe says no") {
 			break
 		}
 		time.Sleep(2 * time.Second)
@@ -188,10 +188,13 @@ func TestMatrixFailingLivenessProbeIsExplained(t *testing.T) {
 	if h.Status == model.HealthHealthy {
 		t.Fatalf("a failing liveness probe must never read as healthy: %+v", h)
 	}
-	for _, want := range []string{name + "-app restarted", "check failure", "last check: probe says no"} {
+	for _, want := range []string{name + "-app", "check failure", "last check: probe says no"} {
 		if !strings.Contains(h.Message, want) {
 			t.Errorf("message should say %q: %s", want, h.Message)
 		}
+	}
+	if !strings.Contains(h.Message, "healthcheck failing") && !strings.Contains(h.Message, "healthcheck not passed yet") {
+		t.Errorf("the verdict should be one of podman's two answers to a failing probe: %s", h.Message)
 	}
 }
 
