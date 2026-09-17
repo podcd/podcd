@@ -262,6 +262,29 @@ type ActualApp struct {
 	ContainerID    string `json:"containerId,omitempty"`
 	ContainerImage string `json:"containerImage,omitempty"`
 	ContainerState string `json:"containerState,omitempty"`
+
+	// Containers is every workload container the runtime has for this
+	// application (infra excluded), so the planner can see one that died
+	// inside a unit systemd still considers active.
+	Containers []ContainerStatus `json:"containers,omitempty"`
+}
+
+// ContainerStatus is one container's name and the runtime's word for its state.
+type ContainerStatus struct {
+	Name  string `json:"name"`
+	State string `json:"state"`
+}
+
+// IsInitContainer reports whether a runtime container name is one of the
+// pod's init containers. podman kube play prefixes container names with the
+// pod name, so the final "-<name>" segment is matched as well as the bare name.
+func IsInitContainer(initNames []string, containerName string) bool {
+	for _, n := range initNames {
+		if containerName == n || strings.HasSuffix(containerName, "-"+n) {
+			return true
+		}
+	}
+	return false
 }
 
 // ActualState is the observed state of the whole host.

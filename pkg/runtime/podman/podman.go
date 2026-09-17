@@ -171,6 +171,9 @@ func (r *Runtime) Inspect(ctx context.Context) (model.ActualState, error) {
 			cur.ContainerID = c[0].id
 			cur.ContainerImage = c[0].image
 			cur.ContainerState = c[0].state
+			for _, w := range c {
+				cur.Containers = append(cur.Containers, model.ContainerStatus{Name: w.name, State: w.state})
+			}
 		}
 		state.Apps[app] = cur
 	}
@@ -476,14 +479,7 @@ func healthForContainers(app string, containers []containerInfo, initNames []str
 // names and plain names returned by other Podman versions.
 func splitInitContainers(containers []containerInfo, initNames []string) (regular, init []containerInfo) {
 	for _, c := range containers {
-		isInit := false
-		for _, name := range initNames {
-			if c.name == name || strings.HasSuffix(c.name, "-"+name) {
-				isInit = true
-				break
-			}
-		}
-		if isInit {
+		if model.IsInitContainer(initNames, c.name) {
 			init = append(init, c)
 		} else {
 			regular = append(regular, c)

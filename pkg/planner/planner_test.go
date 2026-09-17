@@ -107,6 +107,46 @@ func TestRestartWhenUnitIsNotRunning(t *testing.T) {
 	}
 }
 
+// systemd only tracks the pod's service container: a workload container that
+// was killed leaves the unit active. That is drift, and restarting the unit
+// is what replays the pod.
+func TestRestartWhenAContainerDiedInsideAnActiveUnit(t *testing.T) {
+	a := app("api", "img@sha256:a")
+	cur := running(t, a)
+	cur.Containers = []model.ContainerStatus{
+		{Name: "api-web", State: "running"},
+		{Name: "api-db", State: "exited"},
+	}
+	p, err := Build(desired(a), actual(cur), rend(), Options{Prune: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if p.Actions[0].Type != model.ActionRestart {
+		t.Fatalf("a dead container in an active unit must be restarted, got %+v", p.Actions[0])
+	}
+	if !strings.Contains(p.Actions[0].Reason, "api-db is exited") {
+		t.Fatalf("the reason should name the dead container: %q", p.Actions[0].Reason)
+	}
+}
+
+// An init container exits by design; that is not drift.
+func TestExitedInitContainerIsNotDrift(t *testing.T) {
+	a := app("api", "img@sha256:a")
+	a.InitContainers = []string{"setup"}
+	cur := running(t, a)
+	cur.Containers = []model.ContainerStatus{
+		{Name: "api-setup", State: "exited"},
+		{Name: "api-web", State: "running"},
+	}
+	p, err := Build(desired(a), actual(cur), rend(), Options{Prune: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if p.Actions[0].Type != model.ActionNoOp {
+		t.Fatalf("an exited init container must not trigger a restart, got %+v", p.Actions[0])
+	}
+}
+
 func TestActivatingUnitIsLeftToFinishStarting(t *testing.T) {
 	a := app("api", "img@sha256:a")
 	cur := running(t, a)
