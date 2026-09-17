@@ -5,6 +5,8 @@ title: Secrets
 
 ## How it works
 
+![An ExternalSecret in Git references a value in Vault; podcd fetches it on the host and bundles the resulting Secret into the pod manifest podman plays](../../static/img/secrets.svg)
+
 Secrets should not be in Git as plaintext. Instead, you declare **where** a secret comes from, and the agent fetches and resolves it on the host at reconcile time before building the workload manifest.
 
 The mechanism is a pair of documents in your gitops repository:

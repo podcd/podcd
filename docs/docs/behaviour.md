@@ -4,16 +4,9 @@ title: Behaviour
 ---
 
 
-```mermaid
-flowchart TD
-  pull["pull every repository"] --> load["load documents, render templates"]
-  load --> resolve["resolve for this host"]
-  resolve --> inspect["inspect the container runtime"]
-  inspect --> plan["plan: create / update / delete / restart"]
-  plan --> apply["apply"]
-  apply --> health["wait for health"]
-  health --> record["record attempt in state.json"]
-```
+
+![podcd-diagram](../static/img/overview.svg)
+
 
 ## Pull
 
