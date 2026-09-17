@@ -139,13 +139,15 @@ func newHealthCommand(f *configFlags) *cobra.Command {
 
 func newLogsCommand(f *configFlags) *cobra.Command {
 	var tail int
-	var app string
+	app := "agent" // the agent's own unit is podcd-agent.service, the same shape as an application's
 	cmd := &cobra.Command{
-		Use:   "logs <application>",
-		Short: "recent log output for one application",
-		Args:  cobra.ExactArgs(1),
+		Use:   "logs [application]",
+		Short: "recent log output for the agent, or for one application",
+		Args:  cobra.MaximumNArgs(1),
 		PreRun: func(_ *cobra.Command, args []string) {
-			app = args[0]
+			if len(args) == 1 {
+				app = args[0]
+			}
 		},
 		RunE: withEngine(f, func(ctx context.Context, env *environment) error {
 			text, err := env.engine.Logs(ctx, app, tail)
