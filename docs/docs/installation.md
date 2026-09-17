@@ -44,17 +44,16 @@ This stops and removes every application podcd manages, then stops, disables and
 
 ## Production deploy
 
-### 1. Set up the GitOps repository
-
-:::tip
-`podcd lint` checks the files without fetching anything, so it runs anywhere. `podcd validate` compiles for this host, which means pulling Git and reading any secret the host's workloads reference. See [Secrets](configuration/secrets.md).
-:::
+### Set up the GitOps repository
+> [!TIP]
+> `podcd lint` to lint and `podcd validate` to compile for the host.
 
 Set up a repository with at least a `Host` and a `Pod`. See [`examples/`](https://github.com/podcd/podcd/tree/main/examples) or [podcd/podcd-gitops](https://github.com/podcd/podcd-gitops). No prescribed directory structure. See the [configuration model](configuration/model.md).
 
+You can setup manifests by hand or use the binary to generate it for you.
+
 - `podcd init` scaffolds a minimal repository.
-- `podcd create` generates documents.
-- `podcd lint` checks them.
+- `podcd create` generates a specific kind.
 
 ```bash
 podcd lint                          # current directory
@@ -92,13 +91,17 @@ ssh-keygen -t ed25519 -N "" -f ~/.ssh/deploy_key && ssh-keyscan github.com >> ~/
 # add ~/.ssh/deploy_key.pub as a read-only deploy key on your host.
 ```
 
-### 2. Deploy podcd
+### Deploy and activate podcd
+
+Agent refers to a running service running `podcd run`
+
+Deploying just means setting up the service and the `agent.yaml` config. To setup secrets you can refer to [secrets](https://podcd.github.io/podcd/configuration/secrets).
 
 podcd needs these files on the host:
 
 ```text
 ~/.config/podcd/agent.yaml                    agent config
-~/.config/podcd/agent.env                     secrets, 0600, never in Git
+~/.config/podcd/agent.env                     secrets
 ~/.config/systemd/user/podcd-agent.service    the agent's own unit (podcd install)
 ```
 
@@ -113,11 +116,13 @@ podcd install
 systemctl --user daemon-reload && systemctl --user enable --now podcd-agent.service
 ```
 
-For a fresh machine that also needs Podman installed and a dedicated service user, `bootstrap.sh` handles all of that. The script is idempotent.
+### `bootstrap.sh` helper script
+
+For a fresh machine that also needs Podman installed and a dedicated service user, `bootstrap.sh` can be used to quickly set it up. The script is idempotent.
 
 ```bash
 curl -fsSL https://raw.githubusercontent.com/podcd/podcd/main/deploy/bootstrap.sh | sudo bash -s -- \
-  --release-version 2.3.0 \
+  --release-version 3.0.0 \
   --user podcd \
   --revision main \
   --repo-url git@github.com:you/gitops.git
@@ -125,20 +130,22 @@ curl -fsSL https://raw.githubusercontent.com/podcd/podcd/main/deploy/bootstrap.s
 
 Installs Podman (apt or dnf), creates the `podcd` service user with a subordinate uid range (add `--allow-user-login` if needed), enables lingering, downloads and verifies the release, writes the agent config, and starts the service.
 
+### podcd agent's files
+
 On SELinux-enforcing hosts (RHEL default) bind mounts need the `Z` option: `volumes: [{source: /srv/data, destination: /data, options: Z}]`.
 
 Files the agent owns:
 
 ```text
 ~/.config/podcd/agent.yaml          agent config
-~/.config/podcd/agent.env           secrets, 0600, never in Git
+~/.config/podcd/agent.env           secrets
 ~/.config/containers/systemd/       Quadlet units
 ~/.local/state/podcd/               checkouts, state.json
 ```
 
 ### 3. Secrets
 
-Anything that must not be in Git is a *reference* in Git and a value on the host. See [Secrets](configuration/secrets.md) for `env:` and `file:` references.
+See [Secrets](configuration/secrets.md) for `env:` and `file:` references.
 
 ### 4. Status
 
@@ -151,7 +158,7 @@ sudo journalctl _UID="$(id -u podcd)" -u podcd-agent --user -f
 sudo -u podcd XDG_RUNTIME_DIR="/run/user/$(id -u podcd)" systemctl --user status podcd-agent.service
 ```
 
-`status` shows the last reconcile and per-application unit state. `health` exits non-zero if anything is unhealthy; add `-o json` for a scraper.
+`status` shows the last reconcile and per-application unit state.
 
 ## Container image
 
@@ -160,4 +167,5 @@ make image                                              # builds podcd:$(VERSION
 podman run --rm -v /repo:/repo:ro,Z ghcr.io/podcd/podcd:latest lint /repo
 ```
 
-The image carries `git`, `podman` and `systemctl`, so every podcd command runs in it, including `run`/`reconcile` - but those manage *the host's* rootless Podman and systemd `--user` session, so from inside a container they need the host's Podman socket and systemd user bus bind-mounted in.
+The image carries `git`, `podman` and `systemctl`.
+From inside a container they need the host's Podman socket and systemd user bus bind-mounted in.
