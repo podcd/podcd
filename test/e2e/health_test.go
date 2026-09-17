@@ -154,9 +154,9 @@ func TestMatrixCrashLoopShowsRestarts(t *testing.T) {
 	}
 }
 
-// A liveness probe that cannot pass. What podman does about it depends on its version: 
+// A liveness probe that cannot pass. What podman does about it depends on its version:
 // 5.x restarts the container every failureThreshold, it is "starting" again with a climbing restart count;
-// 4.x marks it "unhealthy" and leaves it. 
+// 4.x marks it "unhealthy" and leaves it.
 // Either way the verdict must never read healthy, must name the container, and must quote the probe's own output.
 func TestMatrixFailingLivenessProbeIsExplained(t *testing.T) {
 	digest := requireE2E(t)
