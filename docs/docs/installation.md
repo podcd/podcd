@@ -45,8 +45,8 @@ This stops and removes every application podcd manages, then stops, disables and
 ## Production deploy
 
 ### Set up the GitOps repository
-> [!TIP]
-> `podcd lint` to lint and `podcd validate` to compile for the host.
+
+> You can use `podcd lint` to lint and `podcd validate` to compile for the host.
 
 Set up a repository with at least a `Host` and a `Pod`. See [`examples/`](https://github.com/podcd/podcd/tree/main/examples) or [podcd/podcd-gitops](https://github.com/podcd/podcd-gitops). No prescribed directory structure. See the [configuration model](configuration/model.md).
 
