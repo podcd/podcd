@@ -1,5 +1,4 @@
 # podcd agent configuration.
-
 # Lines starting with # show the default; uncomment one to change it.
 
 # Which Host document this machine is. Empty means the system hostname (with
@@ -32,12 +31,17 @@ repositories:
     # A branch, a tag or a commit. A tag or commit pins the host.
     revision: main
     # Read only this subdirectory of the repository.
-    # path: ""
+    path: minimal
+    # Values file(s), relative to this repository's tree (path, if set), for
+    # {{ .Values }} templating of *.tpl files - a host-local fallback
+    # beneath what Host, Group and Environment documents declare. Repeated
+    # files merge, later ones winning per key.
+    # values: []
     # Disable host key / TLS verification. Visible here on purpose, rather
     # than an environment variable nobody sees.
     # insecure: false
     # A private repository needs a read credential. The token is a secret
-    # reference (env:, file:, vault:), never a literal in this file; it is
+    # reference (env: or file:), never a literal in this file; it is
     # resolved on every fetch. GitLab deploy tokens have their own username.
     # auth:
     #   username: gitlab+deploy-token-42
@@ -64,11 +68,3 @@ repositories:
 
 # text or json.
 # logFormat: text
-
-# HashiCorp Vault, for vault:<mount>/<path>/<key> (or <path>/<key>@<mount>)
-# references. Vault's own credentials are references as well, so they come
-# from the env file rather than from this file.
-# vault:
-#   address: https://vault.example.com
-#   roleId: env:VAULT_ROLE_ID
-#   secretId: env:VAULT_SECRET_ID

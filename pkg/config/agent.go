@@ -60,7 +60,7 @@ type AgentConfig struct {
 	StateDir   string `yaml:"stateDir,omitempty" doc:"Where the agent keeps checkouts, played manifests and state.json."`
 	UnitDir    string `yaml:"unitDir,omitempty" doc:"Where Quadlet units are written. Must be a directory systemd --user reads."`
 	SecretsDir string `yaml:"secretsDir,omitempty" doc:"Root for relative file: secret references."`
-	EnvFile    string `yaml:"envFile,omitempty" doc:"KEY=value file read for env: references (and loaded by the systemd unit). 0600, never in Git; re-read on every lookup so rotation needs no restart."`
+	EnvFile    string `yaml:"envFile,omitempty" doc:"KEY=value file read for env: references (and loaded by the systemd unit). Re-read on every lookup so rotation needs no restart."`
 
 	Prune *bool `yaml:"prune,omitempty" doc:"Remove applications that Git no longer declares. On by default; leaving orphans running is its own kind of drift."`
 

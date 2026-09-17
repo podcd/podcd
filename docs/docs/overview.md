@@ -43,7 +43,7 @@ Everything else the agent owns is under its running user's home:
 
 ```text
 ~/.config/podcd/agent.yaml          agent config
-~/.config/podcd/agent.env           secrets, 0600, never in Git
+~/.config/podcd/agent.env           secrets
 ~/.config/containers/systemd/       the Quadlet units podcd wrote
 ~/.local/state/podcd/               checkouts, played manifests, state.json
 ```

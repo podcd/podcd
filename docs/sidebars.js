@@ -13,7 +13,7 @@ const sidebars = {
     },
     {
       type: 'doc',
-      id: 'behaviour',
+      id: 'overview',
     },
     {
       type: 'category',

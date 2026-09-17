@@ -54,7 +54,7 @@ spec:
         key: DB_USER
 ```
 
-On the host, add the values to `~/.config/podcd/agent.env` (0600, never in Git):
+On the host, add the values to `~/.config/podcd/agent.env`:
 
 ```bash
 sudo -u podcd bash -lc 'umask 077 && cat >> ~/.config/podcd/agent.env' <<'EOF'
@@ -155,7 +155,7 @@ spec:
         #   name: env:VAULT_TOKEN          # alternative to AppRole
 ```
 
-Add the credentials to `agent.env` (0600, never in Git):
+Add the credentials to `agent.env`:
 
 ```bash
 sudo -u podcd bash -lc 'umask 077 && cat >> ~/.config/podcd/agent.env' <<'EOF'

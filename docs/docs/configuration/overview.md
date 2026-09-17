@@ -73,7 +73,7 @@ repositories:
 # secretsDir: ""
 
 # KEY=value file read for env: references (and loaded by the systemd unit).
-# 0600, never in Git; re-read on every lookup so rotation needs no restart.
+# Re-read on every lookup so rotation needs no restart.
 # envFile: /home/podcd/.config/podcd/agent.env
 
 # Remove applications that Git no longer declares. On by default; leaving
