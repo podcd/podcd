@@ -431,15 +431,12 @@ func healthForContainers(app string, containers []containerInfo, initNames []str
 		h.Status, h.Message = model.HealthUnhealthy, "no containers"
 		return h
 	}
+	// Only an init container podman still shows can say anything. kube play
+	// creates them as type "once" and removes them when they finish, so one
+	// that is absent has completed - and one that never ran leaves the regular
+	// containers un-started, which the check below catches.
 	var incomplete, failed []string
-	seenInit := make(map[string]bool, len(init))
 	for _, c := range init {
-		for _, name := range initNames {
-			if c.name == name || strings.HasSuffix(c.name, "-"+name) {
-				seenInit[name] = true
-				break
-			}
-		}
 		switch c.state {
 		case "exited":
 			if c.exitCode != 0 {
@@ -449,11 +446,6 @@ func healthForContainers(app string, containers []containerInfo, initNames []str
 			incomplete = append(incomplete, c.name)
 		default:
 			failed = append(failed, fmt.Sprintf("%s is %s", c.name, cmp.Or(c.state, "in an unknown state")))
-		}
-	}
-	for _, name := range initNames {
-		if !seenInit[name] {
-			incomplete = append(incomplete, name)
 		}
 	}
 	if len(failed) > 0 {
