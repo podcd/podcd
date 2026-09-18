@@ -52,6 +52,12 @@ func (f *configFlags) addFlags(root *cobra.Command) {
 	pf.StringVar(&f.logFormat, "log-format", "", "text or json")
 }
 
+// For the commands whose behaviour needs it
+// run reads that file, install writes its path into the service.
+func (f *configFlags) addConfigFlag(cmd *cobra.Command) {
+	cmd.Flags().StringVar(&f.config, "config", "", "agent config file (default: $PODCD_CONFIG, ~/.config/podcd/agent.yaml, /etc/podcd/agent.yaml)")
+}
+
 func newRootCommand() *cobra.Command {
 	f := &configFlags{}
 	root := &cobra.Command{
@@ -77,7 +83,7 @@ func newRootCommand() *cobra.Command {
 		newLintCommand(),
 		newInitCommand(),
 		newCreateCommand(),
-		newInstallCommand(),
+		newInstallCommand(f),
 		newUninstallCommand(),
 		newRemoveCommand(f),
 		newPruneCommand(f),
@@ -156,13 +162,9 @@ func withEngineArgs(f *configFlags, body func(context.Context, *environment, *co
 }
 
 func setup(f configFlags) (*environment, error) {
-	configPath := f.config
-	if configPath == "" {
-		found, err := config.FindAgentConfig()
-		if err != nil {
-			return nil, err
-		}
-		configPath = found
+	configPath, err := existingConfig(&f)
+	if err != nil {
+		return nil, err
 	}
 	cfg, err := config.LoadAgentConfig(configPath)
 	if err != nil {

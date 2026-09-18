@@ -6,7 +6,7 @@ title: Installation
 ## Install the binary
 
 ```bash
-V=3.0.0; A=$(uname -m | sed 's/x86_64/amd64/; s/aarch64/arm64/')
+V=4.1.0; A=$(uname -m | sed 's/x86_64/amd64/; s/aarch64/arm64/')
 curl -fsSLO "https://github.com/podcd/podcd/releases/download/v$V/podcd_${V}_linux_${A}.tar.gz"
 curl -fsSLO "https://github.com/podcd/podcd/releases/download/v$V/podcd_${V}_linux_${A}.tar.gz.sha256"
 sha256sum -c "podcd_${V}_linux_${A}.tar.gz.sha256" && tar -xzf "podcd_${V}_linux_${A}.tar.gz"
@@ -105,8 +105,11 @@ podcd needs these files on the host:
 ~/.config/systemd/user/podcd-agent.service    the agent's own unit (podcd install)
 ```
 
-- `podcd config create` writes `~/.config/podcd/agent.yaml`.
-- `podcd install` writes `~/.config/systemd/user/podcd-agent.service`. - Add secrets to `~/.config/podcd/agent.env` before or after starting the agent.
+- `podcd config create` writes `~/.config/podcd/agent.yaml`, with `envFile` pointing at an `agent.env` (`--env-file` puts it elsewhere). The agent reads secrets from that file; a config without a specified `envFile` is refused.
+- `podcd install` builds `~/.config/systemd/user/podcd-agent.service` from that config: the service runs `podcd run --config <the config>`. It needs the config to run properly.
+- Add secrets to `agent.env` before or after starting the agent.
+
+The config can live elsewhere: `podcd config create --path <file>` writes it there, and `podcd install --config <file>` makes the service run `podcd run --config <file>` loading whatever `envFile` points to. Manual `podcd run --config <file>` does the same for a foreground run.
 
 The following will setup the agent config, provision and enable the service.
 
@@ -122,7 +125,7 @@ For a fresh machine that also needs Podman installed and a dedicated service use
 
 ```bash
 curl -fsSL https://raw.githubusercontent.com/podcd/podcd/main/deploy/bootstrap.sh | sudo bash -s -- \
-  --release-version 3.0.0 \
+  --release-version 4.1.0 \
   --user podcd \
   --revision main \
   --repo-url git@github.com:you/gitops.git

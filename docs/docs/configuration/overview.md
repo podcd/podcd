@@ -72,9 +72,10 @@ repositories:
 # Root for relative file: secret references.
 # secretsDir: ""
 
-# KEY=value file read for env: references (and loaded by the systemd unit).
-# Re-read on every lookup so rotation needs no restart.
-# envFile: /home/podcd/.config/podcd/agent.env
+# KEY=value file read for env: references, and loaded by the systemd unit.
+# Required: this file is where secrets live, so it is never guessed. Re-read on
+# every lookup so rotation needs no restart.
+envFile: /home/podcd/.config/podcd/agent.env
 
 # Remove applications that Git no longer declares. On by default; leaving
 # orphans running is its own kind of drift.

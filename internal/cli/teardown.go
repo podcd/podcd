@@ -21,7 +21,7 @@ func newTeardownCommand(f *configFlags) *cobra.Command {
 		Long: "Composes `podcd prune --all` and `podcd uninstall`: every application podcd manages is\n" +
 			"stopped and removed, then the agent's own systemd unit is stopped, disabled and removed.\n" +
 			"--purge-state additionally deletes stateDir (checkouts, played manifests, state.json).\n" +
-			"--purge-config additionally deletes the directory holding agent.yaml and agent.env - the\n" +
+			"--purge-config additionally deletes the directory holding agent.yaml, and its envFile - the\n" +
 			"repository URL and any secrets resolved through env: references live there.",
 		Args: cobra.NoArgs,
 		RunE: withEngineArgs(f, func(ctx context.Context, env *environment, cmd *cobra.Command, _ []string) error {
@@ -47,7 +47,7 @@ func newTeardownCommand(f *configFlags) *cobra.Command {
 				fmt.Fprintln(env.out, "  delete "+stateDir+" (checkouts, played manifests, state.json)")
 			}
 			if purgeConfig {
-				fmt.Fprintln(env.out, "  delete "+configDir+", INCLUDING agent.env (secrets)")
+				fmt.Fprintln(env.out, "  delete "+configDir+" and "+env.cfg.EnvFile+" (secrets)")
 			}
 			if !yes && !confirm(cmd, "Proceed?") {
 				fmt.Fprintln(cmd.ErrOrStderr(), "aborted")
@@ -67,10 +67,15 @@ func newTeardownCommand(f *configFlags) *cobra.Command {
 				fmt.Fprintln(env.out, "removed "+stateDir)
 			}
 			if purgeConfig {
+				// The secrets file is wherever the config said, not
+				// necessarily in the config's directory.
+				if err := os.Remove(env.cfg.EnvFile); err != nil && !os.IsNotExist(err) {
+					return fmt.Errorf("removing %s: %w", env.cfg.EnvFile, err)
+				}
 				if err := os.RemoveAll(configDir); err != nil {
 					return fmt.Errorf("removing %s: %w", configDir, err)
 				}
-				fmt.Fprintln(env.out, "removed "+configDir)
+				fmt.Fprintln(env.out, "removed "+configDir+" and "+env.cfg.EnvFile)
 			}
 			if removeErr != nil {
 				return removeErr
@@ -79,7 +84,7 @@ func newTeardownCommand(f *configFlags) *cobra.Command {
 		}),
 	}
 	cmd.Flags().BoolVar(&purgeState, "purge-state", false, "also delete stateDir (checkouts, played manifests, state.json)")
-	cmd.Flags().BoolVar(&purgeConfig, "purge-config", false, "also delete agent.yaml and agent.env (secrets)")
+	cmd.Flags().BoolVar(&purgeConfig, "purge-config", false, "also delete agent.yaml and its envFile (secrets)")
 	cmd.Flags().BoolVarP(&yes, "yes", "y", false, "tear down without asking")
 	return cmd
 }

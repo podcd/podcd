@@ -140,7 +140,7 @@ func TestGetDefaultsToTheAgentConfigRepositories(t *testing.T) {
 	}
 	state := t.TempDir()
 	cfg := filepath.Join(state, "agent.yaml")
-	if err := os.WriteFile(cfg, []byte("host: vm-1\nstateDir: "+state+"\nrepositories:\n  - name: gitops\n    url: "+dir+"\n"), 0o644); err != nil {
+	if err := os.WriteFile(cfg, []byte("host: vm-1\nstateDir: "+state+"\nenvFile: "+filepath.Join(state, "agent.env")+"\nrepositories:\n  - name: gitops\n    url: "+dir+"\n"), 0o644); err != nil {
 		t.Fatal(err)
 	}
 	out, code := run(t, "--config", cfg, "get", "hosts")
@@ -165,7 +165,7 @@ func TestGetRepoResolvesNameThenPathThenURL(t *testing.T) {
 	// must not touch it, and the default must fail on it.
 	state := t.TempDir()
 	cfg := filepath.Join(state, "agent.yaml")
-	if err := os.WriteFile(cfg, []byte("host: vm-1\nstateDir: "+state+"\nrepositories:\n  - name: gitops\n    url: "+dir+"\n  - name: broken\n    url: "+filepath.Join(state, "missing")+"\n"), 0o644); err != nil {
+	if err := os.WriteFile(cfg, []byte("host: vm-1\nstateDir: "+state+"\nenvFile: "+filepath.Join(state, "agent.env")+"\nrepositories:\n  - name: gitops\n    url: "+dir+"\n  - name: broken\n    url: "+filepath.Join(state, "missing")+"\n"), 0o644); err != nil {
 		t.Fatal(err)
 	}
 	if _, code := run(t, "--config", cfg, "get", "hosts"); code == 0 {

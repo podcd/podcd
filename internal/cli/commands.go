@@ -195,7 +195,7 @@ func newValidateCommand(f *configFlags) *cobra.Command {
 }
 
 func newRunCommand(f *configFlags) *cobra.Command {
-	return &cobra.Command{
+	cmd := &cobra.Command{
 		Use:     "run",
 		Aliases: []string{"agent"},
 		Short:   "reconcile in a loop (this is what the systemd service runs)",
@@ -204,4 +204,6 @@ func newRunCommand(f *configFlags) *cobra.Command {
 			return env.engine.Run(ctx)
 		}),
 	}
+	f.addConfigFlag(cmd)
+	return cmd
 }

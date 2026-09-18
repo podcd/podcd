@@ -23,7 +23,7 @@ If a secret cannot be provisioned, only the workloads that reference it are held
 
 ## `env` store - secrets from agent.env
 
-The `env` store reads named variables from the agent's environment and from `~/.config/podcd/agent.env`, which is loaded by the systemd unit.
+The `env` store reads named variables from the agent's environment and from `envFile` defined in `agent.yaml`.
 
 ```yaml
 # In Git: declare the store and what to fetch
