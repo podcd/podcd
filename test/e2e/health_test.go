@@ -103,10 +103,11 @@ func TestMatrixExitedContainerIsUnhealthyWithItsExitCode(t *testing.T) {
       image: IMAGE
       command: ["sh", "-c", "echo fatal: config missing >&2; exit 3"]
 `))
-	// Whether the reconcile itself fails depends on whether its health poll
-	// catches the container in its few hundred milliseconds of running - the
-	// verdict is podman's at that instant - so what must hold is where the
-	// host settles: unhealthy, with no container left and the last output.
+	// podcd's report is podman's state at that point in time, and a container
+	// that exits on start is `running` for a few hundred milliseconds first.
+	// Whether the reconcile's own health poll lands in that window or after
+	// it is timing, not behaviour, so what must hold is where the host
+	// settles: unhealthy, with no container left and the last output.
 	_, _ = e.Reconcile(context.Background(), reconciler.Options{})
 	h := settlesUnhealthy(t, e, 30*time.Second, "fatal: config missing")
 	if !strings.Contains(h.Message, "no containers") {
@@ -314,10 +315,11 @@ func TestMatrixKilledContainerIsRestartedByReconcile(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	// With restartPolicy Never and its only container dead, the pod's exit
-	// policy stops it and the unit follows; depending on when the plan looks,
-	// it sees the exited container or the unit already on its way down.
-	// Either way it must want a restart.
+	// With restartPolicy Never and its only container `exited`, the pod's
+	// exit policy stops the pod and the unit goes `deactivating` behind it.
+	// The plan sees whichever podman and systemd report when it looks - the
+	// dead container under an active unit, or the unit on its way down - and
+	// wants a restart for either reason.
 	changes := plan.Plan.Changes()
 	if len(changes) != 1 || changes[0].Type != model.ActionRestart {
 		t.Fatalf("the plan should want a restart because the container is dead: %+v", changes)

@@ -269,11 +269,15 @@ func writeEmptyKubeHost(t *testing.T, dir string) {
 	write(t, filepath.Join(dir, "host.yaml"), fmt.Sprintf("apiVersion: gitops.podcd.io/v1\nkind: Host\nmetadata:\n  name: %s\nspec: {}\n", podHost))
 }
 
-// get fetches a path from a container port on localhost. The unit is active
-// and the container running before podcd reports healthy, but the process
-// inside may not have bound its port yet - rootlessport resets the connection
-// until it does - so transport errors are retried for a while, and only a
-// port that never answers fails the test.
+// get fetches a path from a container port on localhost.
+//
+// podcd reports healthy on podman's own report: every workload container is
+// `running` and, where the manifest declares a probe, its healthcheck is past
+// `starting` and not `unhealthy`. Podman has no readiness state, and podcd
+// does not invent one, so `running` says nothing about whether the process
+// has bound its port yet - rootlessport resets the connection until it has.
+// Waiting for the port is therefore the test's job: transport errors are
+// retried for a while, and only a port that never answers fails the test.
 func get(t *testing.T, port int, path string) string {
 	t.Helper()
 	url := fmt.Sprintf("http://127.0.0.1:%d%s", port, path)
