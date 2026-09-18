@@ -24,7 +24,7 @@ const sidebars = {
       },
       collapsed: false,
       items: [
-        'configuration/overview',
+        'configuration/agent',
         'configuration/model',
         'configuration/values',
         'configuration/secrets',
