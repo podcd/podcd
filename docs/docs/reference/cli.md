@@ -56,8 +56,8 @@ podcd config      # view, create or edit agent.yaml
 podcd config create --host prod-web-01 --repo-url git@github.com:you/gitops.git --revision main
 podcd config create --path /srv/podcd/agent.yaml --env-file /srv/podcd/secrets.env --repo-url ...   # elsewhere
 podcd config view
-podcd config set revision v1.4.0            # alias for repositories.0.revision
-podcd config set repositories.0.values.0 values/common.yaml
+podcd config set revision v1.4.0            # alias for repository.revision
+podcd config set repository.values.0 values/common.yaml
 ```
 
 ## Taking things down

@@ -16,7 +16,7 @@ import (
 )
 
 // TestValuesFilesTemplateApplicationsForThisHost is an end-to-end check that
-// a host's own agent.yaml (repositories[].values) picks which values file
+// a host's own agent.yaml (repository.values) picks which values file
 // templates the shared repository documents - the same document compiles to
 // a different image tag depending only on which host's agent loaded it.
 func TestValuesFilesTemplateApplicationsForThisHost(t *testing.T) {
@@ -64,7 +64,7 @@ spec: {applications: [web]}
 		cfg.Host = "vm-1"
 		cfg.StateDir = t.TempDir()
 		cfg.UnitDir = filepath.Join(t.TempDir(), "units")
-		cfg.Repositories = []config.RepositorySpec{{Name: "infra", URL: repoDir, Revision: "main", Values: []string{valuesFile}}}
+		cfg.Repository = config.RepositorySpec{Name: "infra", URL: repoDir, Revision: "main", Values: []string{valuesFile}}
 
 		log := slog.New(slog.NewTextHandler(io.Discard, nil))
 		e := &Engine{

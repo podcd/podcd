@@ -611,3 +611,58 @@ func callsOf(f *fake, bin, argSub string) string {
 	}
 	return strings.Join(out, "\n")
 }
+
+// A unit an older podcd wrote under another file name (podcd-agent-api.kube)
+// is found by Inspect through its header, so it must be the file Remove
+// stops and deletes - otherwise remove and teardown report success while the
+// unit, and the pod Quadlet restarts from it, stay behind.
+func TestRemoveActsOnTheUnitFileThatClaimsTheApp(t *testing.T) {
+	r, f := newRuntime(t, nil)
+	writeUnit(t, r, app("api"), true)
+	current := filepath.Join(r.unitDir, renderer.KubeFileName("api"))
+	content, _ := os.ReadFile(current)
+	legacy := filepath.Join(r.unitDir, "podcd-agent-api.kube")
+	if err := os.Rename(current, legacy); err != nil {
+		t.Fatal(err)
+	}
+	manifest := r.rend.ManifestPath("api")
+
+	st, err := r.Inspect(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if a := st.Apps["api"]; a.UnitFile != legacy || a.UnitName != "podcd-agent-api.service" {
+		t.Fatalf("the unit and its service should be the file's, not the name's: %+v", a)
+	}
+
+	if err := r.Remove(context.Background(), "api"); err != nil {
+		t.Fatal(err)
+	}
+	if !f.has("systemctl", "stop podcd-agent-api.service") {
+		t.Fatalf("the service Quadlet made from the file must be stopped: %+v", f.calls)
+	}
+	if _, err := os.Stat(legacy); !os.IsNotExist(err) {
+		t.Fatalf("the legacy unit should be gone, stat: %v", err)
+	}
+	if _, err := os.Stat(manifest); !os.IsNotExist(err) {
+		t.Fatalf("the manifest should be gone, stat: %v", err)
+	}
+
+	// The same file is retired by Apply, so an upgrade never leaves two units
+	// claiming one application.
+	if err := os.WriteFile(legacy, content, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := r.Apply(context.Background(), app("api")); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(legacy); !os.IsNotExist(err) {
+		t.Fatalf("apply should retire the legacy unit, stat: %v", err)
+	}
+	if _, err := os.Stat(current); err != nil {
+		t.Fatalf("apply should write the current unit: %v", err)
+	}
+	if _, err := r.Inspect(context.Background()); err != nil {
+		t.Fatalf("one unit per app after apply: %v", err)
+	}
+}

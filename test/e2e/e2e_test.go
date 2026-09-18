@@ -52,7 +52,7 @@ func TestReconcileEndToEnd(t *testing.T) {
 	cfg.Host = hostName
 	cfg.StateDir = stateDir
 	cfg.UnitDir = unitDir
-	cfg.Repositories = []config.RepositorySpec{{Name: "infra", URL: repoDir, Revision: "main"}}
+	cfg.Repository = config.RepositorySpec{Name: "infra", URL: repoDir, Revision: "main"}
 	cfg.Path = "(test)"
 
 	t.Cleanup(func() { cleanup(unitDir) })
@@ -177,7 +177,7 @@ func TestUnmanagedUnitsAreLeftAlone(t *testing.T) {
 	repoDir := t.TempDir()
 	writeEmptyHost(t, repoDir)
 	gitInit(t, repoDir)
-	cfg.Repositories = []config.RepositorySpec{{Name: "infra", URL: repoDir, Revision: "main"}}
+	cfg.Repository = config.RepositorySpec{Name: "infra", URL: repoDir, Revision: "main"}
 
 	engine, err := reconciler.NewEngine(cfg, slog.New(slog.NewTextHandler(io.Discard, nil)))
 	if err != nil {
@@ -400,13 +400,7 @@ func containerEnv(t *testing.T) string {
 
 func httpGet(t *testing.T, path string) string {
 	t.Helper()
-	resp, err := http.Get(fmt.Sprintf("http://127.0.0.1:%d%s", hostPort, path))
-	if err != nil {
-		t.Fatalf("GET %s: %v", path, err)
-	}
-	defer resp.Body.Close()
-	body, _ := io.ReadAll(resp.Body)
-	return string(body)
+	return get(t, hostPort, path)
 }
 
 func waitForHealthy(t *testing.T, within time.Duration) {

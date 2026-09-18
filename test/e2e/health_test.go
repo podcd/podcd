@@ -50,7 +50,7 @@ spec: {applications: [%s]}
 	cfg.Host = matrixHost
 	cfg.StateDir = t.TempDir()
 	cfg.UnitDir = unitDir
-	cfg.Repositories = []config.RepositorySpec{{Name: "infra", URL: repoDir, Revision: "main"}}
+	cfg.Repository = config.RepositorySpec{Name: "infra", URL: repoDir, Revision: "main"}
 	engine, err := reconciler.NewEngine(cfg, slog.New(slog.NewTextHandler(io.Discard, nil)))
 	if err != nil {
 		t.Fatal(err)
@@ -103,37 +103,40 @@ func TestMatrixExitedContainerIsUnhealthyWithItsExitCode(t *testing.T) {
       image: IMAGE
       command: ["sh", "-c", "echo fatal: config missing >&2; exit 3"]
 `))
-	res, err := e.Reconcile(context.Background(), reconciler.Options{})
-	if err == nil {
-		t.Fatalf("a pod that exits is not healthy after reconcile: %+v", res.Health)
-	}
-	h := healthOf(t, e, 20*time.Second)
-	if h.Status != model.HealthUnhealthy {
-		t.Fatalf("got %+v", h)
-	}
-	for _, want := range []string{"no containers", "last output: fatal: config missing"} {
-		if !strings.Contains(h.Message, want) {
-			t.Errorf("message should say %q: %s", want, h.Message)
-		}
+	// podcd's report is podman's state at that point in time, and a container
+	// that exits on start is `running` for a few hundred milliseconds first.
+	// Whether the reconcile's own health poll lands in that window or after
+	// it is timing, not behaviour, so what must hold is where the host
+	// settles: unhealthy, with no container left and the last output.
+	_, _ = e.Reconcile(context.Background(), reconciler.Options{})
+	h := settlesUnhealthy(t, e, 30*time.Second, "fatal: config missing")
+	if !strings.Contains(h.Message, "no containers") {
+		t.Errorf("message should say %q: %s", "no containers", h.Message)
 	}
 	// A further reconcile restarts the unit (the plan wants it running) and
-	// the container exits again. Whether that call itself fails depends on
-	// whether the health poll catches the container in its few hundred
-	// milliseconds of running - the verdict is podman's at that instant -
-	// so what must hold is where the host settles: unhealthy, same reason.
+	// the container exits again, so the host settles the same way.
 	_, _ = e.Reconcile(context.Background(), reconciler.Options{})
-	deadline := time.Now().Add(30 * time.Second)
+	settlesUnhealthy(t, e, 30*time.Second, "fatal: config missing")
+}
+
+// settlesUnhealthy keeps asking until the verdict is unhealthy for the given
+// reason, or the deadline passes and the test fails with the last verdict.
+func settlesUnhealthy(t *testing.T, e *reconciler.Engine, within time.Duration, reason string) model.Health {
+	t.Helper()
+	deadline := time.Now().Add(within)
+	var h model.Health
 	for time.Now().Before(deadline) {
 		hs, err := e.Health(context.Background())
 		if err != nil {
 			t.Fatal(err)
 		}
-		if h = hs[0]; h.Status == model.HealthUnhealthy && strings.Contains(h.Message, "fatal: config missing") {
-			return
+		if h = hs[0]; h.Status == model.HealthUnhealthy && strings.Contains(h.Message, reason) {
+			return h
 		}
 		time.Sleep(2 * time.Second)
 	}
-	t.Fatalf("after another reconcile the host must settle unhealthy again: %+v", h)
+	t.Fatalf("the host must settle unhealthy with %q: %+v", reason, h)
+	return h
 }
 
 // Under restartPolicy Always the same container crash-loops; the restart
@@ -312,8 +315,13 @@ func TestMatrixKilledContainerIsRestartedByReconcile(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	// With restartPolicy Never and its only container `exited`, the pod's
+	// exit policy stops the pod and the unit goes `deactivating` behind it.
+	// The plan sees whichever podman and systemd report when it looks - the
+	// dead container under an active unit, or the unit on its way down - and
+	// wants a restart for either reason.
 	changes := plan.Plan.Changes()
-	if len(changes) != 1 || changes[0].Type != model.ActionRestart || !strings.Contains(changes[0].Reason, name+"-app is exited") {
+	if len(changes) != 1 || changes[0].Type != model.ActionRestart {
 		t.Fatalf("the plan should want a restart because the container is dead: %+v", changes)
 	}
 	res, err := e.Reconcile(context.Background(), reconciler.Options{})

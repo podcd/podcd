@@ -362,10 +362,10 @@ func TestAgentConfigDefaultsAndValidation(t *testing.T) {
 host: prod-web-01
 interval: 30s
 envFile: /etc/podcd/agent.env
-repositories:
-  - name: infrastructure
-    url: https://example.com/infra.git
-    revision: main
+repository:
+  name: infrastructure
+  url: https://example.com/infra.git
+  revision: main
 `), 0o644); err != nil {
 		t.Fatal(err)
 	}
@@ -387,23 +387,23 @@ repositories:
 	}
 }
 
-func TestAgentConfigRejectsEmptyRepositories(t *testing.T) {
+func TestAgentConfigRejectsAMissingRepository(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "agent.yaml")
 	if err := os.WriteFile(path, []byte("host: x\n"), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := LoadAgentConfig(path); err == nil || !strings.Contains(err.Error(), "no repositories") {
-		t.Fatalf("want an error about missing repositories, got: %v", err)
+	if _, err := LoadAgentConfig(path); err == nil || !strings.Contains(err.Error(), "no repository") {
+		t.Fatalf("want an error about the missing repository, got: %v", err)
 	}
 }
 
 func TestAgentConfigRejectsBadValuesPaths(t *testing.T) {
 	base := AgentConfig{
-		Runtime:      "podman",
-		LogFormat:    "text",
-		EnvFile:      "/etc/podcd/agent.env",
-		Repositories: []RepositorySpec{{Name: "infra", URL: "https://example.com/infra.git"}},
+		EnvFile:    "/etc/podcd/agent.env",
+		Runtime:    "podman",
+		LogFormat:  "text",
+		Repository: RepositorySpec{Name: "infra", URL: "https://example.com/infra.git"},
 	}
 	for _, tc := range []struct {
 		name  string
@@ -414,7 +414,7 @@ func TestAgentConfigRejectsBadValuesPaths(t *testing.T) {
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			cfg := base
-			cfg.Repositories = []RepositorySpec{{Name: "infra", URL: "https://example.com/infra.git", Values: []string{tc.value}}}
+			cfg.Repository = RepositorySpec{Name: "infra", URL: "https://example.com/infra.git", Values: []string{tc.value}}
 			if err := cfg.Validate(); err == nil || !strings.Contains(err.Error(), "values file") {
 				t.Fatalf("want a values-file error for %q, got: %v", tc.value, err)
 			}
@@ -422,7 +422,7 @@ func TestAgentConfigRejectsBadValuesPaths(t *testing.T) {
 	}
 
 	cfg := base
-	cfg.Repositories = []RepositorySpec{{Name: "infra", URL: "https://example.com/infra.git", Values: []string{"values/prod.yaml"}}}
+	cfg.Repository = RepositorySpec{Name: "infra", URL: "https://example.com/infra.git", Values: []string{"values/prod.yaml"}}
 	if err := cfg.Validate(); err != nil {
 		t.Fatalf("a relative values path should validate cleanly: %v", err)
 	}
@@ -435,7 +435,7 @@ func TestEnvFileIsRequiredAndNeverDefaulted(t *testing.T) {
 	t.Setenv("PODCD_CONFIG", "")
 	dir := t.TempDir()
 	path := filepath.Join(dir, "agent.yaml")
-	const repo = "repositories:\n  - name: infra\n    url: https://example.com/infra.git\n"
+	const repo = "repository:\n  name: infra\n  url: https://example.com/infra.git\n"
 
 	if err := os.WriteFile(path, []byte(repo), 0o644); err != nil {
 		t.Fatal(err)

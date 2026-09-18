@@ -66,24 +66,24 @@ podcd get all --repo ./gitops       # inspect what a checkout defines
 Add a read credential in `agent.yaml`. HTTPS token:
 
 ```yaml
-repositories:
-  - name: gitops
-    url: https://gitlab.com/your-user/gitops.git
-    revision: main
-    auth:
-      username: gitlab+deploy-token-42   # GitLab tokens have usernames; GitHub PATs can omit this
-      token: env:GITOPS_TOKEN
+repository:
+  name: gitops
+  url: https://gitlab.com/your-user/gitops.git
+  revision: main
+  auth:
+    username: gitlab+deploy-token-42   # GitLab tokens have usernames; GitHub PATs can omit this
+    token: env:GITOPS_TOKEN
 ```
 
 SSH deploy key:
 
 ```yaml
-repositories:
-  - name: gitops
-    url: git@github.com:your-user/gitops.git
-    auth:
-      sshKeyPath: ~/.ssh/deploy_key
-      sshKnownHostsPath: ~/.ssh/known_hosts
+repository:
+  name: gitops
+  url: git@github.com:your-user/gitops.git
+  auth:
+    sshKeyPath: ~/.ssh/deploy_key
+    sshKnownHostsPath: ~/.ssh/known_hosts
 ```
 
 ```bash

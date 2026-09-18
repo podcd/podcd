@@ -244,7 +244,7 @@ func TestVaultEndToEnd(t *testing.T) {
 	cfg.Host = vaultAppHost
 	cfg.StateDir = t.TempDir()
 	cfg.UnitDir = unitDir
-	cfg.Repositories = []config.RepositorySpec{{Name: "infra", URL: repoDir, Revision: "main"}}
+	cfg.Repository = config.RepositorySpec{Name: "infra", URL: repoDir, Revision: "main"}
 	engine, err := reconciler.NewEngine(cfg, slog.New(slog.NewTextHandler(io.Discard, nil)))
 	if err != nil {
 		t.Fatal(err)

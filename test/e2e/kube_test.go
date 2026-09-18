@@ -11,6 +11,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/podcd/podcd/pkg/config"
 	"github.com/podcd/podcd/pkg/model"
@@ -52,7 +53,7 @@ func TestPodEndToEnd(t *testing.T) {
 	cfg.Host = podHost
 	cfg.StateDir = t.TempDir()
 	cfg.UnitDir = unitDir
-	cfg.Repositories = []config.RepositorySpec{{Name: "infra", URL: repoDir, Revision: "main"}}
+	cfg.Repository = config.RepositorySpec{Name: "infra", URL: repoDir, Revision: "main"}
 
 	engine, err := reconciler.NewEngine(cfg, slog.New(slog.NewTextHandler(io.Discard, nil)))
 	if err != nil {
@@ -268,15 +269,31 @@ func writeEmptyKubeHost(t *testing.T, dir string) {
 	write(t, filepath.Join(dir, "host.yaml"), fmt.Sprintf("apiVersion: gitops.podcd.io/v1\nkind: Host\nmetadata:\n  name: %s\nspec: {}\n", podHost))
 }
 
+// get fetches a path from a container port on localhost.
+//
+// podcd reports healthy on podman's own report: every workload container is
+// `running` and, where the manifest declares a probe, its healthcheck is past
+// `starting` and not `unhealthy`. Podman has no readiness state, and podcd
+// does not invent one, so `running` says nothing about whether the process
+// has bound its port yet - rootlessport resets the connection until it has.
+// Waiting for the port is therefore the test's job: transport errors are
+// retried for a while, and only a port that never answers fails the test.
 func get(t *testing.T, port int, path string) string {
 	t.Helper()
-	resp, err := http.Get(fmt.Sprintf("http://127.0.0.1:%d%s", port, path))
-	if err != nil {
-		t.Fatalf("GET :%d%s: %v", port, path, err)
+	url := fmt.Sprintf("http://127.0.0.1:%d%s", port, path)
+	deadline := time.Now().Add(15 * time.Second)
+	for {
+		resp, err := http.Get(url)
+		if err == nil {
+			defer resp.Body.Close()
+			body, _ := io.ReadAll(resp.Body)
+			return string(body)
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("GET :%d%s: %v", port, path, err)
+		}
+		time.Sleep(250 * time.Millisecond)
 	}
-	defer resp.Body.Close()
-	body, _ := io.ReadAll(resp.Body)
-	return string(body)
 }
 
 func cleanupPod(unitDir string) {
