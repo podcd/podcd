@@ -60,7 +60,7 @@ type AgentConfig struct {
 	StateDir   string `yaml:"stateDir,omitempty" doc:"Where the agent keeps checkouts, played manifests and state.json."`
 	UnitDir    string `yaml:"unitDir,omitempty" doc:"Where Quadlet units are written. Must be a directory systemd --user reads."`
 	SecretsDir string `yaml:"secretsDir,omitempty" doc:"Root for relative file: secret references."`
-	EnvFile    string `yaml:"envFile,omitempty" doc:"KEY=value file read for env: references (and loaded by the systemd unit). Re-read on every lookup so rotation needs no restart."`
+	EnvFile    string `yaml:"envFile" doc:"KEY=value file read for env: references, and loaded by the systemd unit. Required: this file is where secrets live, so it is never guessed. Re-read on every lookup so rotation needs no restart."`
 
 	Prune *bool `yaml:"prune,omitempty" doc:"Remove applications that Git no longer declares. On by default; leaving orphans running is its own kind of drift."`
 
@@ -82,7 +82,6 @@ func DefaultAgentConfig() AgentConfig {
 		StateDir:         defaultStateDir(),
 		UnitDir:          defaultUnitDir(),
 		SecretsDir:       "",
-		EnvFile:          defaultEnvFilePath(),
 		Prune:            &prune,
 		LogFormat:        "text",
 	}
@@ -115,6 +114,17 @@ func LoadAgentConfig(path string) (AgentConfig, error) {
 	}
 	cfg.Path = path
 	return cfg, nil
+}
+
+// EnvFileBeside is where `podcd config create` puts envFile when not told:
+// agent.env next to the config file it writes. It is a value written into
+// the config, never a fallback read from it - a config without envFile is
+// invalid, so the agent never guesses where its secrets are.
+func EnvFileBeside(configPath string) string {
+	if abs, err := filepath.Abs(configPath); err == nil {
+		configPath = abs
+	}
+	return filepath.Join(filepath.Dir(configPath), "agent.env")
 }
 
 // ParseAgentConfig decodes, defaults and validates one configuration document.
@@ -173,7 +183,7 @@ func (c *AgentConfig) applyDefaults() {
 	c.LogFormat = cmp.Or(c.LogFormat, d.LogFormat)
 	c.StateDir = expandPath(cmp.Or(c.StateDir, d.StateDir))
 	c.UnitDir = expandPath(cmp.Or(c.UnitDir, d.UnitDir))
-	c.EnvFile = expandPath(cmp.Or(c.EnvFile, d.EnvFile))
+	c.EnvFile = expandPath(c.EnvFile)
 	c.SecretsDir = expandPath(c.SecretsDir)
 	r := &c.Repository
 	r.Name = cmp.Or(r.Name, "infrastructure")
@@ -188,6 +198,9 @@ func (c *AgentConfig) applyDefaults() {
 // Validate rejects configurations that cannot work, loudly and all at once.
 func (c AgentConfig) Validate() error {
 	var p problems
+	if c.EnvFile == "" {
+		p.add("envFile is not set: name the KEY=value file holding this host's secrets (podcd config create writes agent.env beside the config)")
+	}
 	r := c.Repository
 	if r.URL == "" {
 		p.add("no repository configured (repository.url is empty): the agent has nothing to reconcile against")
@@ -255,19 +268,6 @@ func defaultStateDir() string {
 		return "/var/lib/podcd"
 	}
 	return filepath.Join(home, ".local", "state", "podcd")
-}
-
-func defaultEnvFilePath() string {
-	if p := os.Getenv("PODCD_ENV_FILE"); p != "" {
-		return p
-	}
-	if p := os.Getenv("PODCD_CONFIG"); p != "" {
-		return filepath.Join(filepath.Dir(p), "agent.env")
-	}
-	if home := userHome(); home != "" {
-		return filepath.Join(home, ".config", "podcd", "agent.env")
-	}
-	return "/etc/podcd/agent.env"
 }
 
 func defaultUnitDir() string {

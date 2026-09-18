@@ -23,7 +23,8 @@ func TestEveryCommandOwnsItsFlags(t *testing.T) {
 		"logs":      {"tail"},
 		"validate":  {"output"},
 		"version":   {"output"},
-		"install":   {"output", "yes"},
+		"install":   {"output", "yes", "config"},
+		"run":       {"config"},
 		"uninstall": {"output", "yes"},
 		"prune":     {"yes"},
 		"remove":    {"all", "yes"},
@@ -53,31 +54,118 @@ func TestEveryCommandOwnsItsFlags(t *testing.T) {
 	}
 }
 
-func TestInstallWritesTheEmbeddedServiceFile(t *testing.T) {
-	home := t.TempDir()
-	t.Setenv("HOME", home)
+// The unit install writes is deploy/podcd-agent.service with two lines
+// filled in from the agent config: the run command names the config, and the
+// environment file is the one the config's envFile names. Nothing about
+// secrets is guessed, so install needs the config to exist.
+func TestInstallBuildsTheServiceFileFromTheConfig(t *testing.T) {
+	home := agentConfig(t)
+	dest := filepath.Join(home, ".config", "systemd", "user", "podcd-agent.service")
+	configPath := filepath.Join(home, ".config", "podcd", "agent.yaml")
 
 	if code := Main([]string{"install"}); code != 0 {
 		t.Fatalf("install exit code = %d", code)
 	}
-	dest := filepath.Join(home, ".config", "systemd", "user", "podcd-agent.service")
 	got, err := os.ReadFile(dest)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if string(got) != string(deploy.AgentService) {
-		t.Fatal("the installed unit is not the file in deploy/")
-	}
-	for _, want := range []string{"ExecStart=/usr/local/bin/podcd run", "WorkingDirectory=%h", "WantedBy=default.target"} {
+	for _, want := range []string{
+		"\nExecStart=/usr/local/bin/podcd run --config " + configPath + "\n",
+		"\nEnvironmentFile=-" + filepath.Join(home, ".config", "podcd", "agent.env") + "\n",
+		"WorkingDirectory=%h", "WantedBy=default.target",
+	} {
 		if !strings.Contains(string(got), want) {
-			t.Errorf("service file is missing %q", want)
+			t.Errorf("service file is missing %q:\n%s", want, got)
+		}
+	}
+	// Everything else is the file in deploy/, untouched.
+	want := strings.Replace(string(deploy.AgentService), execStartLine+"\n", execStartLine+" --config "+configPath+"\n", 1)
+	want = strings.Replace(want, environmentFileLine+"\n", "EnvironmentFile=-"+filepath.Join(home, ".config", "podcd", "agent.env")+"\n", 1)
+	if string(got) != want {
+		t.Fatalf("the installed unit differs from deploy/ beyond the two filled-in lines:\n%s", got)
+	}
+	for _, format := range []string{"json", "yaml"} {
+		if code := Main([]string{"version", "-o", format}); code != 0 {
+			t.Errorf("version -o %s exit code = %d", format, code)
 		}
 	}
 }
 
-func TestInstallDoesNotOverwriteWithoutConsent(t *testing.T) {
+// Without a config there is nothing to build the service from.
+func TestInstallRefusesWithoutAConfig(t *testing.T) {
 	home := t.TempDir()
 	t.Setenv("HOME", home)
+	t.Setenv("PODCD_CONFIG", "")
+	if code := Main([]string{"install"}); code == 0 {
+		t.Fatal("install without an agent config must fail")
+	}
+	if _, err := os.Stat(filepath.Join(home, ".config", "systemd", "user", "podcd-agent.service")); !os.IsNotExist(err) {
+		t.Fatal("install wrote a unit it could not fill in")
+	}
+}
+
+// A config written elsewhere (podcd config create --path ...) is only any use
+// if the service reads it: --config on install names it, and its envFile -
+// beside it by default, or wherever --env-file put it - is what the unit loads.
+func TestInstallWritesTheConfigPathIntoExecStart(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	t.Setenv("PODCD_CONFIG", "")
+	dest := filepath.Join(home, ".config", "systemd", "user", "podcd-agent.service")
+	dir := filepath.Join(home, "srv", "podcd")
+	configPath := filepath.Join(dir, "agent.yaml")
+	if code := Main([]string{"config", "create", "--path", configPath, "--repo-url", "https://example.com/repo.git"}); code != 0 {
+		t.Fatalf("config create exit code = %d", code)
+	}
+
+	for _, args := range [][]string{
+		{"install", "-y", "--config", configPath},
+		{"--config", configPath, "install", "-y"},
+	} {
+		if code := Main(args); code != 0 {
+			t.Fatalf("%v exit code = %d", args, code)
+		}
+		got, err := os.ReadFile(dest)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if !strings.Contains(string(got), "\nExecStart=/usr/local/bin/podcd run --config "+configPath+"\n") {
+			t.Fatalf("%v: ExecStart should carry the config path:\n%s", args, got)
+		}
+		if !strings.Contains(string(got), "\nEnvironmentFile=-"+filepath.Join(dir, "agent.env")+"\n") {
+			t.Fatalf("%v: the unit should load the agent.env beside the config:\n%s", args, got)
+		}
+	}
+
+	// An envFile the config names elsewhere is what the unit loads.
+	if code := Main([]string{"config", "create", "--force", "--path", configPath, "--repo-url", "https://example.com/repo.git", "--env-file", "/run/secrets/podcd.env"}); code != 0 {
+		t.Fatalf("config create --env-file exit code = %d", code)
+	}
+	if code := Main([]string{"install", "-y", "--config", configPath}); code != 0 {
+		t.Fatalf("install exit code = %d", code)
+	}
+	got, _ := os.ReadFile(dest)
+	if !strings.Contains(string(got), "\nEnvironmentFile=-/run/secrets/podcd.env\n") {
+		t.Fatalf("the unit should load the envFile the config names:\n%s", got)
+	}
+
+	// A relative config path is made absolute: the unit runs from $HOME.
+	unit, err := renderAgentService("etc/agent.yaml", "/etc/podcd/agent.env")
+	if err != nil {
+		t.Fatal(err)
+	}
+	wd, _ := os.Getwd()
+	if !strings.Contains(string(unit), "--config "+filepath.Join(wd, "etc", "agent.yaml")+"\n") {
+		t.Fatalf("a relative config path must be made absolute:\n%s", unit)
+	}
+	if _, err := renderAgentService(configPath, ""); err == nil {
+		t.Fatal("a config without envFile must not produce a unit")
+	}
+}
+
+func TestInstallDoesNotOverwriteWithoutConsent(t *testing.T) {
+	home := agentConfig(t)
 	dest := filepath.Join(home, ".config", "systemd", "user", "podcd-agent.service")
 	if err := os.MkdirAll(filepath.Dir(dest), 0o755); err != nil {
 		t.Fatal(err)
@@ -122,9 +210,14 @@ func TestConfigCreateWritesTheFullAnnotatedSpec(t *testing.T) {
 			t.Errorf("config is missing the active line %q:\n%s", want, text)
 		}
 	}
+	// envFile is always written: secrets are read from there and nowhere
+	// else, so it is a decision the file records, beside the config by default.
+	if want := "\nenvFile: " + filepath.Join(home, ".config", "podcd", "agent.env") + "\n"; !strings.Contains(text, want) {
+		t.Errorf("config is missing the active line %q:\n%s", want, text)
+	}
 	// Every other field is present, as a commented default - documented, but
 	// not pinning this machine's paths or the current defaults into the file.
-	for _, field := range []string{"host", "jitter", "retryInterval", "maxRetryInterval", "runtime", "stateDir", "unitDir", "secretsDir", "envFile", "prune", "logFormat"} {
+	for _, field := range []string{"host", "jitter", "retryInterval", "maxRetryInterval", "runtime", "stateDir", "unitDir", "secretsDir", "prune", "logFormat"} {
 		if !strings.Contains(text, "\n# "+field+":") {
 			t.Errorf("config should show %q as a commented default:\n%s", field, text)
 		}
@@ -218,6 +311,18 @@ func TestHelpHidesGlobalFlags(t *testing.T) {
 	}
 	if !strings.Contains(help, "--yes") || !strings.Contains(help, `"podcd options"`) {
 		t.Fatalf("install --help should list its own flags and point at podcd options:\n%s", help)
+	}
+	// --config is global, but install and run turn on it, so each shows it.
+	if !strings.Contains(help, "--config") {
+		t.Fatalf("install --help should list --config:\n%s", help)
+	}
+	buf.Reset()
+	root.SetArgs([]string{"run", "--help"})
+	if err := root.Execute(); err != nil {
+		t.Fatal(err)
+	}
+	if help := buf.String(); !strings.Contains(help, "--config") || strings.Contains(help, "--log-level") {
+		t.Fatalf("run --help should list --config and no other global flag:\n%s", help)
 	}
 
 	buf.Reset()

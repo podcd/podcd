@@ -3,7 +3,9 @@
 # It runs as an ordinary, unprivileged user. That user owns its containers and
 # nothing else; nothing here needs root, and nothing here listens on a port.
 #
-# Install to ~/.config/systemd/user/podcd-agent.service and enable with:
+# `podcd install` writes it to ~/.config/systemd/user/podcd-agent.service with
+# ExecStart naming the agent config and EnvironmentFile the envFile that config
+# declares - the two lines below are what it fills in. Then enable with:
 #   loginctl enable-linger <user>       # so it starts at boot without a login
 #   systemctl --user enable --now podcd-agent.service
 
@@ -22,8 +24,9 @@ ExecStart=/usr/local/bin/podcd run
 Restart=always
 RestartSec=10
 
-# Secrets reach the agent through this file, never through Git. It is optional:
-# a host with no secretEnv references does not need it.
+# Secrets reach the agent through this file, never through Git. Its path is
+# the config's envFile; the file itself is optional on a host with no env:
+# references.
 EnvironmentFile=-%h/.config/podcd/agent.env
 
 # There is deliberately no systemd sandboxing here, and that is a finding, not

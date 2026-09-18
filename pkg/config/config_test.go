@@ -361,6 +361,7 @@ func TestAgentConfigDefaultsAndValidation(t *testing.T) {
 	if err := os.WriteFile(path, []byte(`
 host: prod-web-01
 interval: 30s
+envFile: /etc/podcd/agent.env
 repository:
   name: infrastructure
   url: https://example.com/infra.git
@@ -399,6 +400,7 @@ func TestAgentConfigRejectsAMissingRepository(t *testing.T) {
 
 func TestAgentConfigRejectsBadValuesPaths(t *testing.T) {
 	base := AgentConfig{
+		EnvFile:    "/etc/podcd/agent.env",
 		Runtime:    "podman",
 		LogFormat:  "text",
 		Repository: RepositorySpec{Name: "infra", URL: "https://example.com/infra.git"},
@@ -423,5 +425,37 @@ func TestAgentConfigRejectsBadValuesPaths(t *testing.T) {
 	cfg.Repository = RepositorySpec{Name: "infra", URL: "https://example.com/infra.git", Values: []string{"values/prod.yaml"}}
 	if err := cfg.Validate(); err != nil {
 		t.Fatalf("a relative values path should validate cleanly: %v", err)
+	}
+}
+
+// envFile is where this host's secrets are, so the agent never guesses it: a
+// config that does not name one is invalid, whatever the environment says,
+// and the one it names is taken as written.
+func TestEnvFileIsRequiredAndNeverDefaulted(t *testing.T) {
+	t.Setenv("PODCD_CONFIG", "")
+	dir := t.TempDir()
+	path := filepath.Join(dir, "agent.yaml")
+	const repo = "repository:\n  name: infra\n  url: https://example.com/infra.git\n"
+
+	if err := os.WriteFile(path, []byte(repo), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := LoadAgentConfig(path); err == nil || !strings.Contains(err.Error(), "envFile is not set") {
+		t.Fatalf("a config without envFile must be refused, got: %v", err)
+	}
+
+	if err := os.WriteFile(path, []byte(repo+"envFile: /run/secrets/agent.env\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	cfg, err := LoadAgentConfig(path)
+	if err != nil || cfg.EnvFile != "/run/secrets/agent.env" {
+		t.Fatalf("envFile must be exactly what the document says: %q %v", cfg.EnvFile, err)
+	}
+
+	if got, want := EnvFileBeside(path), filepath.Join(dir, "agent.env"); got != want {
+		t.Fatalf("EnvFileBeside(%s) = %q, want %q", path, got, want)
+	}
+	if DefaultAgentConfig().EnvFile != "" {
+		t.Fatal("DefaultAgentConfig must not carry an envFile: config create decides it, per config")
 	}
 }

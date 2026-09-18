@@ -10,6 +10,7 @@ import (
 
 func minimal() AgentConfig {
 	cfg := DefaultAgentConfig()
+	cfg.EnvFile = "/etc/podcd/agent.env"
 	cfg.Repository = RepositorySpec{Name: "infra", URL: "https://example.com/infra.git", Revision: "main"}
 	return cfg
 }
@@ -109,12 +110,12 @@ func TestRenderScalarSliceIsCommentedWhenEmptyAndRoundTripsWhenSet(t *testing.T)
 }
 
 func TestEditReplacesAValueInPlace(t *testing.T) {
-	src := "# my notes\nhost: vm-1   # keep this comment\ninterval: 60s\nrepository:\n  name: r\n  url: https://example.com/r.git\n  revision: main\n"
+	src := "# my notes\nhost: vm-1   # keep this comment\ninterval: 60s\nenvFile: /etc/podcd/agent.env\nrepository:\n  name: r\n  url: https://example.com/r.git\n  revision: main\n"
 	out, err := EditAgentConfigBytes([]byte(src), Setting{"host", "vm-2"}, Setting{"revision", "v2"})
 	if err != nil {
 		t.Fatal(err)
 	}
-	want := "# my notes\nhost: vm-2  # keep this comment\ninterval: 60s\nrepository:\n  name: r\n  url: https://example.com/r.git\n  revision: v2\n"
+	want := "# my notes\nhost: vm-2  # keep this comment\ninterval: 60s\nenvFile: /etc/podcd/agent.env\nrepository:\n  name: r\n  url: https://example.com/r.git\n  revision: v2\n"
 	if string(out) != want {
 		t.Fatalf("edit was not surgical:\n--- got ---\n%s--- want ---\n%s", out, want)
 	}
@@ -148,26 +149,26 @@ func TestEditAppendsToTheSectionAndNeverTouchesComments(t *testing.T) {
 }
 
 func TestEditAppendsAnUnknownButValidKey(t *testing.T) {
-	src := "host: vm-1\nrepository:\n  name: r\n  url: https://example.com/r.git\n  revision: main\n"
+	src := "host: vm-1\nenvFile: /etc/podcd/agent.env\nrepository:\n  name: r\n  url: https://example.com/r.git\n  revision: main\n"
 	out, err := EditAgentConfigBytes([]byte(src), Setting{"prune", "false"}, Setting{"repository.auth.token", "env:T"})
 	if err != nil {
 		t.Fatal(err)
 	}
-	want := "host: vm-1\nrepository:\n  name: r\n  url: https://example.com/r.git\n  revision: main\n  auth:\n    token: env:T\nprune: false\n"
+	want := "host: vm-1\nenvFile: /etc/podcd/agent.env\nrepository:\n  name: r\n  url: https://example.com/r.git\n  revision: main\n  auth:\n    token: env:T\nprune: false\n"
 	if string(out) != want {
 		t.Fatalf("--- got ---\n%s--- want ---\n%s", out, want)
 	}
 }
 
 func TestEditCreatesAndGrowsAScalarSequence(t *testing.T) {
-	src := "host: vm-1\nrepository:\n  name: r\n  url: https://example.com/r.git\n  revision: main\n  path: multi-env\n"
+	src := "host: vm-1\nenvFile: /etc/podcd/agent.env\nrepository:\n  name: r\n  url: https://example.com/r.git\n  revision: main\n  path: multi-env\n"
 
 	// First set creates the sequence from nothing.
 	out, err := EditAgentConfigBytes([]byte(src), Setting{"repository.values.0", "values/common.yaml"})
 	if err != nil {
 		t.Fatal(err)
 	}
-	want := "host: vm-1\nrepository:\n  name: r\n  url: https://example.com/r.git\n  revision: main\n  path: multi-env\n  values:\n    - values/common.yaml\n"
+	want := "host: vm-1\nenvFile: /etc/podcd/agent.env\nrepository:\n  name: r\n  url: https://example.com/r.git\n  revision: main\n  path: multi-env\n  values:\n    - values/common.yaml\n"
 	if string(out) != want {
 		t.Fatalf("--- got ---\n%s--- want ---\n%s", out, want)
 	}
@@ -182,7 +183,7 @@ func TestEditCreatesAndGrowsAScalarSequence(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	want = "host: vm-1\nrepository:\n  name: r\n  url: https://example.com/r.git\n  revision: main\n  path: multi-env\n  values:\n    - values/common.yaml\n    - values/zones/dmz.yaml\n    - values/envs/prd.yaml\n"
+	want = "host: vm-1\nenvFile: /etc/podcd/agent.env\nrepository:\n  name: r\n  url: https://example.com/r.git\n  revision: main\n  path: multi-env\n  values:\n    - values/common.yaml\n    - values/zones/dmz.yaml\n    - values/envs/prd.yaml\n"
 	if string(out) != want {
 		t.Fatalf("--- got ---\n%s--- want ---\n%s", out, want)
 	}

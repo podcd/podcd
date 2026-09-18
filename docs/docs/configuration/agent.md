@@ -1,5 +1,5 @@
 ---
-id: overview
+id: agent
 title: The agent configuration
 ---
 
@@ -12,6 +12,9 @@ title: The agent configuration
 
 `podcd config create` writes this file with every field documented and its default shown commented out; the reference below is that output.
 It lives at `~/.config/podcd/agent.yaml` (or `$PODCD_CONFIG`, or `/etc/podcd/agent.yaml`, looked up in that order).
+
+- You can alternatively point `podcd config create --path <>` to generate it elsewhere.
+- `podcd run --config <>` needs to be pointed to this path if you decide to put the agent-config elsewhere.
 
 ```yaml
 # podcd agent configuration.
@@ -71,10 +74,9 @@ repository:
 # Root for relative file: secret references.
 # secretsDir: ""
 
-# KEY=value file read for env: references, and loaded by the systemd unit.
-# Required: this file is where secrets live, so it is never guessed. Re-read on
-# every lookup so rotation needs no restart.
-envFile: /home/podcd/.config/podcd/agent.env
+# KEY=value file read for env: references (and loaded by the systemd unit).
+# Re-read on every lookup so rotation needs no restart.
+# envFile: /home/podcd/.config/podcd/agent.env
 
 # Remove applications that Git no longer declares. On by default; leaving
 # orphans running is its own kind of drift.

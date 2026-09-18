@@ -140,7 +140,7 @@ func TestGetDefaultsToTheAgentConfigRepository(t *testing.T) {
 	}
 	state := t.TempDir()
 	cfg := filepath.Join(state, "agent.yaml")
-	if err := os.WriteFile(cfg, []byte("host: vm-1\nstateDir: "+state+"\nrepository:\n  name: gitops\n  url: "+dir+"\n"), 0o644); err != nil {
+	if err := os.WriteFile(cfg, []byte("host: vm-1\nstateDir: "+state+"\nenvFile: "+filepath.Join(state, "agent.env")+"\nrepository:\n  name: gitops\n  url: "+dir+"\n"), 0o644); err != nil {
 		t.Fatal(err)
 	}
 	out, code := run(t, "--config", cfg, "get", "hosts")
@@ -163,7 +163,7 @@ func TestGetRepoResolvesNameThenPathThenURL(t *testing.T) {
 	}
 	state := t.TempDir()
 	cfg := filepath.Join(state, "agent.yaml")
-	if err := os.WriteFile(cfg, []byte("host: vm-1\nstateDir: "+state+"\nrepository:\n  name: gitops\n  url: "+dir+"\n"), 0o644); err != nil {
+	if err := os.WriteFile(cfg, []byte("host: vm-1\nstateDir: "+state+"\nenvFile: "+filepath.Join(state, "agent.env")+"\nrepository:\n  name: gitops\n  url: "+dir+"\n"), 0o644); err != nil {
 		t.Fatal(err)
 	}
 	out, code := run(t, "--config", cfg, "get", "hosts", "--repo", "gitops")

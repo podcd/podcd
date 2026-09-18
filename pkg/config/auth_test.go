@@ -19,6 +19,7 @@ func loadAgent(t *testing.T, yaml string) (AgentConfig, error) {
 func TestRepoAuthTokenMustBeAReference(t *testing.T) {
 	_, err := loadAgent(t, `
 host: x
+envFile: /etc/podcd/agent.env
 repository:
   name: gitops
   url: https://gitlab.com/acme/gitops.git
@@ -31,6 +32,7 @@ repository:
 
 	cfg, err := loadAgent(t, `
 host: x
+envFile: /etc/podcd/agent.env
 repository:
   name: gitops
   url: https://gitlab.com/acme/gitops.git
@@ -49,6 +51,7 @@ repository:
 func TestRepoAuthIsTokenOrSSHNotBoth(t *testing.T) {
 	_, err := loadAgent(t, `
 host: x
+envFile: /etc/podcd/agent.env
 repository:
   name: gitops
   url: git@github.com:acme/gitops.git

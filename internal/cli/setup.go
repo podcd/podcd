@@ -17,13 +17,16 @@ import (
 // The host-setup commands. They touch files under the user's home and never
 // need Git, the runtime or an agent config to already exist.
 
-func newInstallCommand() *cobra.Command {
+func newInstallCommand(f *configFlags) *cobra.Command {
 	var output string
 	var yes bool
 	cmd := &cobra.Command{
 		Use:   "install",
 		Short: "write the systemd user service file that runs the agent",
-		Long: "Writes the systemd user unit that runs the agent (the same file as deploy/podcd-agent.service).\n" +
+		Long: "Writes the systemd user unit that runs the agent, from deploy/podcd-agent.service.\n" +
+			"The unit is built from the agent config, so that must exist first (podcd config create):\n" +
+			"the service runs `podcd run --config <that file>` and loads the agent.env the config's\n" +
+			"envFile names. --config picks a config written somewhere other than the default.\n" +
 			"Enable it with: systemctl --user enable --now podcd-agent.service",
 		Args: cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, _ []string) error {
@@ -34,6 +37,18 @@ func newInstallCommand() *cobra.Command {
 					return err
 				}
 			}
+			configPath, err := existingConfig(f)
+			if err != nil {
+				return fmt.Errorf("%w; the service is built from the agent config, so create one first with podcd config create (then pass --config if it is not in a default place)", err)
+			}
+			cfg, err := config.LoadAgentConfig(configPath)
+			if err != nil {
+				return err
+			}
+			unit, err := renderAgentService(configPath, cfg.EnvFile)
+			if err != nil {
+				return err
+			}
 			if _, err := os.Stat(dest); err == nil && !yes {
 				if !confirm(cmd, dest+" already exists. Overwrite?") {
 					fmt.Fprintln(cmd.ErrOrStderr(), "aborted")
@@ -43,7 +58,7 @@ func newInstallCommand() *cobra.Command {
 			if err := os.MkdirAll(filepath.Dir(dest), 0o755); err != nil {
 				return fmt.Errorf("creating %s: %w", filepath.Dir(dest), err)
 			}
-			if err := os.WriteFile(dest, deploy.AgentService, 0o644); err != nil {
+			if err := os.WriteFile(dest, unit, 0o644); err != nil {
 				return fmt.Errorf("writing %s: %w", dest, err)
 			}
 			fmt.Fprintln(cmd.OutOrStdout(), dest)
@@ -52,7 +67,40 @@ func newInstallCommand() *cobra.Command {
 	}
 	cmd.Flags().StringVar(&output, "output", "", "destination for the service file (default: ~/.config/systemd/user/podcd-agent.service)")
 	cmd.Flags().BoolVarP(&yes, "yes", "y", false, "overwrite an existing file without asking")
+	f.addConfigFlag(cmd)
 	return cmd
+}
+
+// The lines of deploy/podcd-agent.service that install fills in from the
+// agent config: the run command gets the config's path, and the environment
+// file is the one the config's envFile names.
+const (
+	execStartLine       = "ExecStart=/usr/local/bin/podcd run"
+	environmentFileLine = "EnvironmentFile=-%h/.config/podcd/agent.env"
+)
+
+// renderAgentService returns the agent's unit for a config file and the
+// envFile it names. The config path is made absolute: the unit's
+// WorkingDirectory is the home directory, not wherever install ran.
+func renderAgentService(configPath, envFile string) ([]byte, error) {
+	abs, err := filepath.Abs(configPath)
+	if err != nil {
+		return nil, fmt.Errorf("resolving %s: %w", configPath, err)
+	}
+	if envFile == "" {
+		return nil, fmt.Errorf("%s names no envFile", abs)
+	}
+	unit := string(deploy.AgentService)
+	for line, with := range map[string]string{
+		execStartLine:       execStartLine + " --config " + abs,
+		environmentFileLine: "EnvironmentFile=-" + envFile,
+	} {
+		if !strings.Contains(unit, line+"\n") {
+			return nil, fmt.Errorf("deploy/podcd-agent.service has no %q line to fill in", line)
+		}
+		unit = strings.Replace(unit, line+"\n", with+"\n", 1)
+	}
+	return []byte(unit), nil
 }
 
 // confirm asks a yes/no question on the terminal. Anything but an explicit
@@ -125,9 +173,9 @@ func newConfigViewCommand(f *configFlags) *cobra.Command {
 
 func newConfigCreateCommand(f *configFlags) *cobra.Command {
 	var (
-		path, host, repoURL, repoName, repoPath, revision string
-		interval                                          time.Duration
-		force                                             bool
+		path, envFile, host, repoURL, repoName, repoPath, revision string
+		interval                                                   time.Duration
+		force                                                      bool
 	)
 	cmd := &cobra.Command{
 		Use:   "create",
@@ -148,6 +196,14 @@ func newConfigCreateCommand(f *configFlags) *cobra.Command {
 			if interval > 0 {
 				cfg.Interval = interval
 			}
+			// The secrets file is written into the config, never guessed at
+			// run time: beside the config unless told otherwise.
+			cfg.EnvFile = envFile
+			if cfg.EnvFile == "" {
+				cfg.EnvFile = config.EnvFileBeside(path)
+			} else if abs, err := filepath.Abs(cfg.EnvFile); err == nil {
+				cfg.EnvFile = abs
+			}
 			cfg.Repository = config.RepositorySpec{Name: repoName, URL: repoURL, Revision: revision, Path: repoPath}
 			if err := config.WriteAgentConfig(path, cfg); err != nil {
 				return err
@@ -157,6 +213,7 @@ func newConfigCreateCommand(f *configFlags) *cobra.Command {
 		},
 	}
 	cmd.Flags().StringVar(&path, "path", "", "where to write (default: the config path)")
+	cmd.Flags().StringVar(&envFile, "env-file", "", "KEY=value secrets file the agent reads (default: agent.env beside the config)")
 	cmd.Flags().StringVar(&host, "host", "", "this host's identity (default: the hostname)")
 	cmd.Flags().StringVar(&repoURL, "repo-url", "", "Git repository URL (required)")
 	cmd.Flags().StringVar(&repoName, "repo-name", "infrastructure", "repository name")

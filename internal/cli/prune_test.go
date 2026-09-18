@@ -40,7 +40,7 @@ func agentConfig(t *testing.T) string {
 	t.Helper()
 	home := t.TempDir()
 	t.Setenv("HOME", home)
-	for _, v := range []string{"PODCD_CONFIG", "PODCD_ENV_FILE", "PODCD_HOST", "XDG_STATE_HOME", "XDG_CONFIG_HOME"} {
+	for _, v := range []string{"PODCD_CONFIG", "PODCD_HOST", "XDG_STATE_HOME", "XDG_CONFIG_HOME"} {
 		t.Setenv(v, "")
 	}
 	if out, code := run(t, "config", "create", "--repo-url", "https://example.com/repo.git"); code != 0 {

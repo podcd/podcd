@@ -47,12 +47,14 @@ podcd get pods --repo https://github.com/podcd/podcd-gitops.git
 ```bash
 podcd run         # reconcile in a loop; what the systemd service runs
 podcd install     # write the systemd user service file for the agent
+podcd install --config /srv/podcd/agent.yaml   # ... running `podcd run --config /srv/podcd/agent.yaml`
 podcd uninstall   # stop the agent's systemd user service and remove its unit file
 podcd config      # view, create or edit agent.yaml
 ```
 
 ```bash
 podcd config create --host prod-web-01 --repo-url git@github.com:you/gitops.git --revision main
+podcd config create --path /srv/podcd/agent.yaml --env-file /srv/podcd/secrets.env --repo-url ...   # elsewhere
 podcd config view
 podcd config set revision v1.4.0            # alias for repository.revision
 podcd config set repository.values.0 values/common.yaml
