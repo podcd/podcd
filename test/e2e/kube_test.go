@@ -11,6 +11,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/podcd/podcd/pkg/config"
 	"github.com/podcd/podcd/pkg/model"
@@ -268,15 +269,27 @@ func writeEmptyKubeHost(t *testing.T, dir string) {
 	write(t, filepath.Join(dir, "host.yaml"), fmt.Sprintf("apiVersion: gitops.podcd.io/v1\nkind: Host\nmetadata:\n  name: %s\nspec: {}\n", podHost))
 }
 
+// get fetches a path from a container port on localhost. The unit is active
+// and the container running before podcd reports healthy, but the process
+// inside may not have bound its port yet - rootlessport resets the connection
+// until it does - so transport errors are retried for a while, and only a
+// port that never answers fails the test.
 func get(t *testing.T, port int, path string) string {
 	t.Helper()
-	resp, err := http.Get(fmt.Sprintf("http://127.0.0.1:%d%s", port, path))
-	if err != nil {
-		t.Fatalf("GET :%d%s: %v", port, path, err)
+	url := fmt.Sprintf("http://127.0.0.1:%d%s", port, path)
+	deadline := time.Now().Add(15 * time.Second)
+	for {
+		resp, err := http.Get(url)
+		if err == nil {
+			defer resp.Body.Close()
+			body, _ := io.ReadAll(resp.Body)
+			return string(body)
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("GET :%d%s: %v", port, path, err)
+		}
+		time.Sleep(250 * time.Millisecond)
 	}
-	defer resp.Body.Close()
-	body, _ := io.ReadAll(resp.Body)
-	return string(body)
 }
 
 func cleanupPod(unitDir string) {

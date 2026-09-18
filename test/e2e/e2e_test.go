@@ -400,13 +400,7 @@ func containerEnv(t *testing.T) string {
 
 func httpGet(t *testing.T, path string) string {
 	t.Helper()
-	resp, err := http.Get(fmt.Sprintf("http://127.0.0.1:%d%s", hostPort, path))
-	if err != nil {
-		t.Fatalf("GET %s: %v", path, err)
-	}
-	defer resp.Body.Close()
-	body, _ := io.ReadAll(resp.Body)
-	return string(body)
+	return get(t, hostPort, path)
 }
 
 func waitForHealthy(t *testing.T, within time.Duration) {
