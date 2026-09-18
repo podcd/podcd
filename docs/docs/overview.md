@@ -14,7 +14,7 @@ title: Overview
 
 - Every repository in `agent.yaml` is fetched at its `revision` (a branch, a tag or a commit). If a remote is unreachable and a checkout already exists on disk, the agent reconciles from the commit it has and reports the repository as offline.
 
-- The checkouts are read into one index. A name defined twice across repositories will be treated as an error. The index is then compiled for *this* host - the `Host` document matching `agent.yaml`'s `host` (default: the machine's hostname). See the [configuration model](configuration/model.md) and [values templating](configuration/values.md).
+- The checkout is read into one index. A name defined twice will be treated as an error. The index is then compiled for *this* host - the `Host` document matching `agent.yaml`'s `host` (default: the machine's hostname). See the [configuration model](configuration/model.md) and [values templating](configuration/values.md).
 
 - The runtime (currently podman only) is inspected: which units podcd wrote, their content hashes, whether systemd reports them active, which container image is actually running.
 
