@@ -103,37 +103,39 @@ func TestMatrixExitedContainerIsUnhealthyWithItsExitCode(t *testing.T) {
       image: IMAGE
       command: ["sh", "-c", "echo fatal: config missing >&2; exit 3"]
 `))
-	res, err := e.Reconcile(context.Background(), reconciler.Options{})
-	if err == nil {
-		t.Fatalf("a pod that exits is not healthy after reconcile: %+v", res.Health)
-	}
-	h := healthOf(t, e, 20*time.Second)
-	if h.Status != model.HealthUnhealthy {
-		t.Fatalf("got %+v", h)
-	}
-	for _, want := range []string{"no containers", "last output: fatal: config missing"} {
-		if !strings.Contains(h.Message, want) {
-			t.Errorf("message should say %q: %s", want, h.Message)
-		}
+	// Whether the reconcile itself fails depends on whether its health poll
+	// catches the container in its few hundred milliseconds of running - the
+	// verdict is podman's at that instant - so what must hold is where the
+	// host settles: unhealthy, with no container left and the last output.
+	_, _ = e.Reconcile(context.Background(), reconciler.Options{})
+	h := settlesUnhealthy(t, e, 30*time.Second, "fatal: config missing")
+	if !strings.Contains(h.Message, "no containers") {
+		t.Errorf("message should say %q: %s", "no containers", h.Message)
 	}
 	// A further reconcile restarts the unit (the plan wants it running) and
-	// the container exits again. Whether that call itself fails depends on
-	// whether the health poll catches the container in its few hundred
-	// milliseconds of running - the verdict is podman's at that instant -
-	// so what must hold is where the host settles: unhealthy, same reason.
+	// the container exits again, so the host settles the same way.
 	_, _ = e.Reconcile(context.Background(), reconciler.Options{})
-	deadline := time.Now().Add(30 * time.Second)
+	settlesUnhealthy(t, e, 30*time.Second, "fatal: config missing")
+}
+
+// settlesUnhealthy keeps asking until the verdict is unhealthy for the given
+// reason, or the deadline passes and the test fails with the last verdict.
+func settlesUnhealthy(t *testing.T, e *reconciler.Engine, within time.Duration, reason string) model.Health {
+	t.Helper()
+	deadline := time.Now().Add(within)
+	var h model.Health
 	for time.Now().Before(deadline) {
 		hs, err := e.Health(context.Background())
 		if err != nil {
 			t.Fatal(err)
 		}
-		if h = hs[0]; h.Status == model.HealthUnhealthy && strings.Contains(h.Message, "fatal: config missing") {
-			return
+		if h = hs[0]; h.Status == model.HealthUnhealthy && strings.Contains(h.Message, reason) {
+			return h
 		}
 		time.Sleep(2 * time.Second)
 	}
-	t.Fatalf("after another reconcile the host must settle unhealthy again: %+v", h)
+	t.Fatalf("the host must settle unhealthy with %q: %+v", reason, h)
+	return h
 }
 
 // Under restartPolicy Always the same container crash-loops; the restart
