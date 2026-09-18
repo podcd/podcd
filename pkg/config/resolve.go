@@ -176,7 +176,7 @@ func (ix *Index) Resolve(ctx context.Context, opts ResolveOptions) (model.Desire
 		apps = append(apps, app)
 	}
 
-	// An override for an application nobody defines is a mistake; 
+	// An override for an application nobody defines is a mistake;
 	// An environment or group may override an application only some of its members run\
 	// A host will have an list of its own applications.
 	// so a host override for something it does not run is a mistake.
