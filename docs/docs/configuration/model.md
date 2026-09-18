@@ -3,7 +3,9 @@ id: model
 title: The configuration model
 ---
 
-podcd reads documents from a Git repository. There is no prescribed directory structure; every `.yaml`/`.yml` file in the tree is read, and every document in them is decoded strictly against its real type - a misspelled field is an error, not something silently ignored. podcd's own kinds share one API version:
+podcd fetches documents from a Git repository.
+
+There is no prescribed directory structure; every `.yaml`/`.yml`/`.tpl` file in the tree is read and rendered.
 
 ```yaml
 apiVersion: gitops.podcd.io/v1
@@ -45,12 +47,11 @@ spec:
         httpGet: { path: /, port: 80 }
 ```
 
-podcd considers a workload healthy when its regular containers are running; it does not interpret container healthchecks. `readinessProbe` and `startupProbe` are ignored by podman, so a check written as either does nothing.
+`podcd` considers a workload healthy when its regular containers are running; it does not actively interpret container healthchecks. You can still define probes that `podman` supports, `podcd` will still consider running pods healthy.
 
-`initContainers` are supported as well. Podman runs them once, in declaration order, before regular containers. A completed init container with exit code zero is expected to be exited; podcd waits while an init container is still running and treats a non-zero exit as an unhealthy workload.
+`initContainers` are supported as well. the underlying `podman` runs them once in declaration order before regular containers. A completed init container with exit code zero is expected to be exited; `podcd` waits while an init container is still running and treats a non-zero exit as an unhealthy workload.
 
-Podman has no field for networks, so podcd takes them as an annotation and
-turns them into the unit's `Network=` lines:
+Podman has no field for networks, podcd instead takes them as an annotation and writes them into the unit's `Network=` lines:
 
 ```yaml
 metadata:
@@ -135,7 +136,7 @@ groups:
 
 `web` overrides `base`, and the host overrides both.
 
-An override is a **strategic merge patch** against the Pod, so it follows Kubernetes' own merge rules: containers merge by `name`, ports by `containerPort`, environment variables by `name`, and a plain list is replaced wholesale. Changing one variable leaves the others alone:
+An override is a **strategic merge patch** against the Pod, it follows Kubernetes' own merge rules:
 
 ```yaml
 # pod
@@ -164,4 +165,8 @@ containers:
       - {name: PORT, value: "8080"}
 ```
 
-An override may only name an application that every host in that layer actually runs; an environment-level override for an application only some of its hosts have is an error for the hosts that don't. For parametrizing *within* a shared definition - an image tag that differs between dev and prod, say - see [values templating](values.md).
+An environment or group override may name any application the repository defines, whether or not every member runs it: the override applies wherever the application does and is simply idle elsewhere.
+
+An override that no Pod defines is treated as an error. A Host's own overrides are held to a stricter rule, an override for one it does not run is a stale entry and is refused. 
+
+For parametrizing *within* a shared definition - an image tag that differs between dev and prod, say - see [values templating](values.md).

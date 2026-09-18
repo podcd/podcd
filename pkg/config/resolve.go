@@ -176,12 +176,20 @@ func (ix *Index) Resolve(ctx context.Context, opts ResolveOptions) (model.Desire
 		apps = append(apps, app)
 	}
 
-	// Overrides that name an application this host does not run are almost
-	// always a typo or a stale entry. Say so rather than ignoring them.
+	// An override for an application nobody defines is a mistake; 
+	// An environment or group may override an application only some of its members run\
+	// A host will have an list of its own applications.
+	// so a host override for something it does not run is a mistake.
 	for _, l := range layers {
 		for name := range l.overrides {
-			if !selected[name] {
+			switch {
+			case selected[name]:
+			case strings.HasPrefix(l.label, "host/"):
 				p.add("%s overrides application %q, which host %q does not run", l.label, name, opts.Host)
+			default:
+				if _, ok := docs.pod(name); !ok {
+					p.add("%s overrides application %q, but no Pod defines it", l.label, name)
+				}
 			}
 		}
 	}
