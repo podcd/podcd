@@ -48,8 +48,9 @@ func renderStruct(b *strings.Builder, v, def reflect.Value, indent string, top b
 		fv, dv := v.Field(i), def.Field(i)
 
 		switch {
-		case f.Type.Kind() == reflect.Slice && f.Type.Elem().Kind() == reflect.Struct:
-			renderSlice(b, key, fv, indent)
+		case f.Type.Kind() == reflect.Struct && f.Type != reflect.TypeOf(time.Duration(0)):
+			fmt.Fprintf(b, "%s%s:\n", indent, key)
+			renderStruct(b, fv, reflect.Zero(f.Type), indent+"  ", false)
 		case f.Type.Kind() == reflect.Slice:
 			renderScalarSlice(b, key, fv, indent)
 		case f.Type.Kind() == reflect.Pointer && f.Type.Elem().Kind() == reflect.Struct:
@@ -68,35 +69,6 @@ func renderStruct(b *strings.Builder, v, def reflect.Value, indent string, top b
 				fmt.Fprintf(b, "%s%s: %s\n", indent, key, yamlScalar(val))
 			} else {
 				fmt.Fprintf(b, "%s# %s: %s\n", indent, key, yamlScalar(dflt))
-			}
-		}
-	}
-}
-
-// renderSlice writes a list of structs. Items are compared against the zero
-// value, so anything set is active.
-func renderSlice(b *strings.Builder, key string, v reflect.Value, indent string) {
-	fmt.Fprintf(b, "%s%s:\n", indent, key)
-	for i := 0; i < v.Len(); i++ {
-		item := v.Index(i)
-		var itemBuf strings.Builder
-		renderStruct(&itemBuf, item, reflect.Zero(item.Type()), indent+"    ", false)
-		// Comments above the first field sit at the list's indent; the first
-		// field itself carries the "- ".
-		inner := indent + "    "
-		dashed := false
-		for _, line := range strings.SplitAfter(itemBuf.String(), "\n") {
-			if line == "" {
-				continue
-			}
-			switch {
-			case dashed:
-				b.WriteString(line)
-			case strings.HasPrefix(line, inner+"#"):
-				b.WriteString(indent + "  " + strings.TrimPrefix(line, inner))
-			default:
-				b.WriteString(indent + "  - " + strings.TrimPrefix(line, inner))
-				dashed = true
 			}
 		}
 	}
@@ -151,19 +123,18 @@ func writeComment(b *strings.Builder, indent, doc string) {
 }
 
 // Setting is one "path=value" change for EditAgentConfig. Paths are yaml
-// paths: "host", "interval", "repositories.0.url", "vault.address". A few
-// short aliases exist for the first repository, since that is what nearly
-// every host has exactly one of.
+// paths: "host", "interval", "repository.url", "vault.address". A few
+// short aliases exist for the repository's most-edited fields.
 type Setting struct {
 	Path  string
 	Value string
 }
 
 var setAliases = map[string]string{
-	"repo-url":  "repositories.0.url",
-	"repo-name": "repositories.0.name",
-	"repo-path": "repositories.0.path",
-	"revision":  "repositories.0.revision",
+	"repo-url":  "repository.url",
+	"repo-name": "repository.name",
+	"repo-path": "repository.path",
+	"revision":  "repository.revision",
 }
 
 func setByPath(v reflect.Value, path []string, value string) error {

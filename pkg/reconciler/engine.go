@@ -325,8 +325,8 @@ func (e *Engine) checkHealth(ctx context.Context, desired model.DesiredState, ap
 	return results, nil
 }
 
-// Index fetches the configured repositories and returns everything they
-// define, without resolving for a host or touching the runtime.
+// Index fetches the configured repository and returns everything it
+// defines, without resolving for a host or touching the runtime.
 func (e *Engine) Index(ctx context.Context, only ...string) (*config.Index, config.Values, map[string]string, []string, error) {
 	return e.source.LoadIndex(ctx, only...)
 }
@@ -350,14 +350,14 @@ func (e *Engine) Health(ctx context.Context) ([]model.Health, error) {
 
 // Status is what `podcd status` reports: local, fast, and it works offline.
 type Status struct {
-	Identity  identity.Identity       `json:"identity"`
-	Config    string                  `json:"configPath"`
-	Runtime   string                  `json:"runtime"`
-	Available bool                    `json:"runtimeAvailable"`
-	Why       string                  `json:"runtimeUnavailableReason,omitempty"`
-	State     state.State             `json:"state"`
-	Actual    model.ActualState       `json:"actual"`
-	Repos     []config.RepositorySpec `json:"repositories"`
+	Identity  identity.Identity     `json:"identity"`
+	Config    string                `json:"configPath"`
+	Runtime   string                `json:"runtime"`
+	Available bool                  `json:"runtimeAvailable"`
+	Why       string                `json:"runtimeUnavailableReason,omitempty"`
+	State     state.State           `json:"state"`
+	Actual    model.ActualState     `json:"actual"`
+	Repo      config.RepositorySpec `json:"repository"`
 }
 
 // Status reports what the agent knows without contacting Git.
@@ -374,7 +374,7 @@ func (e *Engine) Status(ctx context.Context) (Status, error) {
 		Available: available,
 		Why:       why,
 		State:     st,
-		Repos:     e.cfg.Repositories,
+		Repo:      e.cfg.Repository,
 	}
 	actual, err := e.rt.Inspect(ctx)
 	if err != nil {

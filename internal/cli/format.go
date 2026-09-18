@@ -31,15 +31,14 @@ func printStatus(env *environment, st reconciler.Status) {
 	fmt.Fprintf(w, "state\t%s\t\n", env.engine.Store().Path())
 	w.Flush()
 
-	fmt.Fprintln(env.out, "\nrepositories")
+	fmt.Fprintln(env.out, "\nrepository")
 	w = table(env.out)
-	for _, r := range st.Repos {
-		rev := ""
-		if st.State.LastSuccess != nil {
-			rev = model.ShortRev(st.State.LastSuccess.Revisions[r.Name])
-		}
-		fmt.Fprintf(w, "  %s\t%s\t%s\t%s\n", r.Name, r.URL, r.Revision, rev)
+	r := st.Repo
+	rev := ""
+	if st.State.LastSuccess != nil {
+		rev = model.ShortRev(st.State.LastSuccess.Revisions[r.Name])
 	}
+	fmt.Fprintf(w, "  %s\t%s\t%s\t%s\n", r.Name, r.URL, r.Revision, rev)
 	w.Flush()
 
 	fmt.Fprintln(env.out, "\nlast reconcile")

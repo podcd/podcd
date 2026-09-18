@@ -66,12 +66,12 @@ You can also pass value paths from the hosts `agent.yaml`.
 The agent config however is meant to stay a fire-and-forget pointer, values directly on the agent is not a recommended pattern.
 
 ```yaml
-repositories:
-  - name: gitops
-    url: https://github.com/your-user/podcd-gitops.git
-    revision: main
-    values:
-      - values/common.yaml
+repository:
+  name: gitops
+  url: https://github.com/your-user/podcd-gitops.git
+  revision: main
+  values:
+    - values/common.yaml
 ```
 
 ## Functions

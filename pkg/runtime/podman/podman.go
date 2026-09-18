@@ -145,7 +145,7 @@ func (r *Runtime) Inspect(ctx context.Context) (model.ActualState, error) {
 			UnitFileHash: model.HashBytes(content),
 			UnitContent:  content,
 			SpecHash:     m.SpecHash,
-			UnitName:     renderer.ServiceName(name),
+			UnitName:     renderer.ServiceNameOfFile(e.Name()),
 			UnitState:    model.UnitUnknown,
 		}
 		// A unit is only as current as the manifest it points at.
@@ -374,6 +374,18 @@ func (r *Runtime) Apply(ctx context.Context, app model.Application) error {
 		return fmt.Errorf("writing manifest for %s: %w", app.Name, err)
 	}
 
+	// A unit for this application under another file name - written by an
+	// older podcd - would be a second unit claiming the same app once ours
+	// is in place. Retire it first.
+	for _, stale := range r.unitFilesFor(app.Name) {
+		if stale == unit.Path {
+			continue
+		}
+		if err := r.stopUnitFile(ctx, stale); err != nil {
+			return err
+		}
+	}
+
 	if err := atomicfile.Write(unit.Path, unit.Content, 0o644); err != nil {
 		return fmt.Errorf("writing unit for %s: %w", app.Name, err)
 	}
@@ -392,15 +404,17 @@ func (r *Runtime) Apply(ctx context.Context, app model.Application) error {
 // Volumes are deliberately left alone.
 // Removing an application from Git is a configuration change, deleting its data is not, and podcd will not do it.
 func (r *Runtime) Remove(ctx context.Context, app string) error {
-	service := renderer.ServiceName(app)
-	if _, err := r.systemctlRun(ctx, "stop", service); err != nil {
-		// A unit that is not loaded is already stopped; anything else matters.
-		if !strings.Contains(err.Error(), "not loaded") && !strings.Contains(err.Error(), "not found") {
-			return fmt.Errorf("stopping %s: %w", service, err)
-		}
+	// The unit is whichever file claims this app, not just the name we would
+	// write today: Inspect finds units by their header, so Remove must too,
+	// or an older file name is reported as managed and then never removed.
+	files := r.unitFilesFor(app)
+	if len(files) == 0 {
+		files = []string{filepath.Join(r.unitDir, renderer.KubeFileName(app))}
 	}
-	if err := removeIfExists(filepath.Join(r.unitDir, renderer.KubeFileName(app))); err != nil {
-		return fmt.Errorf("removing unit for %s: %w", app, err)
+	for _, path := range files {
+		if err := r.stopUnitFile(ctx, path); err != nil {
+			return err
+		}
 	}
 	_ = removeIfExists(r.rend.ManifestPath(app))
 	if err := r.daemonReload(ctx); err != nil {
@@ -410,6 +424,54 @@ func (r *Runtime) Remove(ctx context.Context, app string) error {
 	// If something interrupted that, the names must still be free for the next reconcile.
 	// Volumes are untouched either way.
 	_, _ = r.podmanRun(ctx, "pod", "rm", "--force", "--time", "10", app)
+	return nil
+}
+
+// unitFilesFor returns every unit file in the unit directory that belongs to
+// app: named after it, or carrying its name in the header marker.
+func (r *Runtime) unitFilesFor(app string) []string {
+	entries, err := os.ReadDir(r.unitDir)
+	if err != nil {
+		return nil
+	}
+	var files []string
+	for _, e := range entries {
+		if e.IsDir() {
+			continue
+		}
+		name, ok := renderer.AppFromFileName(e.Name())
+		if !ok {
+			continue
+		}
+		path := filepath.Join(r.unitDir, e.Name())
+		if name != app {
+			content, err := os.ReadFile(path)
+			if err != nil || renderer.ParseMarkers(content).App != app {
+				continue
+			}
+		}
+		files = append(files, path)
+	}
+	return files
+}
+
+// stopUnitFile stops the service a unit file defines and deletes the file
+// and the manifest it plays. The service name follows the file name, as
+// Quadlet derives it.
+func (r *Runtime) stopUnitFile(ctx context.Context, path string) error {
+	service := renderer.ServiceNameOfFile(filepath.Base(path))
+	if _, err := r.systemctlRun(ctx, "stop", service); err != nil {
+		// A unit that is not loaded is already stopped; anything else matters.
+		if !strings.Contains(err.Error(), "not loaded") && !strings.Contains(err.Error(), "not found") {
+			return fmt.Errorf("stopping %s: %w", service, err)
+		}
+	}
+	if content, err := os.ReadFile(path); err == nil {
+		_ = removeIfExists(yamlPathOf(content))
+	}
+	if err := removeIfExists(path); err != nil {
+		return fmt.Errorf("removing unit %s: %w", path, err)
+	}
 	return nil
 }
 

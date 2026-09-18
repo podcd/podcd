@@ -77,8 +77,8 @@ func TestStatusWorksWithoutGitAndCarriesTheRuntimeView(t *testing.T) {
 	if len(s.Actual.Apps) != 2 || !s.Actual.Apps["api"].Managed {
 		t.Fatalf("the runtime's view should be included: %+v", s.Actual)
 	}
-	if len(s.Repos) != 1 || s.Repos[0].Name != "infra" {
-		t.Fatalf("the configured repositories should be listed: %+v", s.Repos)
+	if s.Repo.Name != "infra" {
+		t.Fatalf("the configured repository should be listed: %+v", s.Repo)
 	}
 }
 

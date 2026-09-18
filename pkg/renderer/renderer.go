@@ -63,6 +63,13 @@ func ServiceName(app string) string { return Prefix + app + ".service" }
 // KubeFileName returns the Quadlet file name for an application.
 func KubeFileName(app string) string { return Prefix + app + ".kube" }
 
+// ServiceNameOfFile returns the systemd service Quadlet generates for a
+// .kube file: the file name with its suffix swapped. It is the name to stop
+// or restart, whatever the application inside the file is called.
+func ServiceNameOfFile(fileName string) string {
+	return strings.TrimSuffix(fileName, ".kube") + ".service"
+}
+
 // ManifestPath is where the played manifest goes, or "" when no kube directory
 // is configured.
 func (r *Renderer) ManifestPath(app string) string {

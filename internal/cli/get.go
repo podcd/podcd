@@ -101,9 +101,9 @@ func newGetCommand(f *configFlags) *cobra.Command {
 	return cmd
 }
 
-// loadIndex reads the documents. Without --repo every repository in the
-// agent config is fetched as the agent would fetch it. With --repo, the value
-// is tried as a repository name from the agent config, then as a local
+// loadIndex reads the documents. Without --repo the repository in the agent
+// config is fetched as the agent would fetch it. With --repo, the value is
+// tried as the repository name from the agent config, then as a local
 // directory, then as a git URL; the config is only required in the first case.
 func loadIndex(ctx context.Context, f *configFlags, repo, revision string) (*config.Index, []string, error) {
 	env, setupErr := setup(*f)
@@ -114,7 +114,7 @@ func loadIndex(ctx context.Context, f *configFlags, repo, revision string) (*con
 		ix, _, _, offline, err := env.engine.Index(ctx)
 		return ix, offline, err
 	}
-	if setupErr == nil && slices.ContainsFunc(env.cfg.Repositories, func(r config.RepositorySpec) bool { return r.Name == repo }) {
+	if setupErr == nil && env.cfg.Repository.Name == repo {
 		ix, _, _, offline, err := env.engine.Index(ctx, repo)
 		return ix, offline, err
 	}
@@ -140,16 +140,12 @@ func loadIndex(ctx context.Context, f *configFlags, repo, revision string) (*con
 }
 
 // notARepo explains what --repo could have been, naming the configured
-// repositories when there is a config to name them from.
+// repository when there is a config to name it from.
 func notARepo(env *environment, setupErr error) string {
 	if setupErr != nil {
 		return fmt.Sprintf("not a directory or git URL, and the agent config could not be read to look it up by name (%v)", setupErr)
 	}
-	names := make([]string, 0, len(env.cfg.Repositories))
-	for _, r := range env.cfg.Repositories {
-		names = append(names, r.Name)
-	}
-	return fmt.Sprintf("not a configured repository (%s), a directory, or a git URL", strings.Join(names, ", "))
+	return fmt.Sprintf("not the configured repository (%s), a directory, or a git URL", env.cfg.Repository.Name)
 }
 
 // collect flattens the index into sorted items, filtered by kind and name.

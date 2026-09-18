@@ -3,7 +3,7 @@ id: model
 title: The configuration model
 ---
 
-podcd reads documents from one or more Git repositories. There is no prescribed directory structure; every `.yaml`/`.yml` file in the tree is read, and every document in them is decoded strictly against its real type - a misspelled field is an error, not something silently ignored. podcd's own kinds share one API version:
+podcd reads documents from a Git repository. There is no prescribed directory structure; every `.yaml`/`.yml` file in the tree is read, and every document in them is decoded strictly against its real type - a misspelled field is an error, not something silently ignored. podcd's own kinds share one API version:
 
 ```yaml
 apiVersion: gitops.podcd.io/v1

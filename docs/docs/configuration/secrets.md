@@ -230,12 +230,12 @@ A plain `v1/Secret` document can live in Git. It is bundled into the manifest as
 A private repository's read credential is a `env:` or `file:` reference in `agent.yaml`, resolved on every fetch:
 
 ```yaml
-repositories:
-  - name: gitops
-    url: https://github.com/you/gitops.git
-    revision: main
-    auth:
-      token: env:GITOPS_TOKEN   # in agent.env, not a literal
+repository:
+  name: gitops
+  url: https://github.com/you/gitops.git
+  revision: main
+  auth:
+    token: env:GITOPS_TOKEN   # in agent.env, not a literal
 ```
 
 See [installation](../installation.md#private-repositories).
