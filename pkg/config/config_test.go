@@ -330,28 +330,59 @@ spec:
 	}
 }
 
-func TestOverrideForApplicationNotOnHostIsAnError(t *testing.T) {
-	files := baseFiles()
-	files["groups/web.yaml"] = `
+func TestOverrideForApplicationNotOnHost(t *testing.T) {
+	override := func(app string) string {
+		return `
+  overrides:
+    ` + app + `:
+      spec:
+        containers:
+          - name: ` + app + `
+            env:
+              - name: X
+                value: "1"
+`
+	}
+	group := func(app string) string {
+		return `
 apiVersion: gitops.podcd.io/v1
 kind: Group
 metadata:
   name: web
 spec:
-  applications: [api]
-  overrides:
-    frontend:
-      spec:
-        containers:
-          - name: frontend
-            env:
-              - name: X
-                value: "1"
-`
+  applications: [api]` + override(app)
+	}
+
+	// frontend is defined, just not on prod-web-01: allowed at the group layer.
+	files := baseFiles()
+	files["groups/web.yaml"] = group("frontend")
 	ix := loadIndex(t, files)
+	if _, err := ix.Resolve(context.Background(), ResolveOptions{Host: "prod-web-01"}); err != nil {
+		t.Fatalf("a group override for an application another member runs must not fail this host: %v", err)
+	}
+
+	// frontnd is nobody's application: a typo, reported.
+	files["groups/web.yaml"] = group("frontnd")
+	ix = loadIndex(t, files)
 	_, err := ix.Resolve(context.Background(), ResolveOptions{Host: "prod-web-01"})
+	if err == nil || !strings.Contains(err.Error(), "no Pod defines it") {
+		t.Fatalf("a group override for an undefined application should be reported, got: %v", err)
+	}
+
+	// The host itself overriding what it does not run is stale, reported.
+	files = baseFiles()
+	files["groups/web.yaml"] = group("api")
+	files["hosts/prod-web-01.yaml"] = `
+apiVersion: gitops.podcd.io/v1
+kind: Host
+metadata:
+  name: prod-web-01
+spec:
+  groups: [web]` + override("frontend")
+	ix = loadIndex(t, files)
+	_, err = ix.Resolve(context.Background(), ResolveOptions{Host: "prod-web-01"})
 	if err == nil || !strings.Contains(err.Error(), "does not run") {
-		t.Fatalf("a stale override should be reported, got: %v", err)
+		t.Fatalf("a host override for an application it does not run should be reported, got: %v", err)
 	}
 }
 

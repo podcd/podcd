@@ -20,7 +20,7 @@ const sidebars = {
       label: 'Configuration',
       link: {
         type: 'doc',
-        id: 'configuration/overview',
+        id: 'configuration/agent',
       },
       collapsed: false,
       items: [

@@ -6,7 +6,7 @@ title: Installation
 ## Install the binary
 
 ```bash
-V=4.1.0; A=$(uname -m | sed 's/x86_64/amd64/; s/aarch64/arm64/')
+V=4.1.1; A=$(uname -m | sed 's/x86_64/amd64/; s/aarch64/arm64/')
 curl -fsSLO "https://github.com/podcd/podcd/releases/download/v$V/podcd_${V}_linux_${A}.tar.gz"
 curl -fsSLO "https://github.com/podcd/podcd/releases/download/v$V/podcd_${V}_linux_${A}.tar.gz.sha256"
 sha256sum -c "podcd_${V}_linux_${A}.tar.gz.sha256" && tar -xzf "podcd_${V}_linux_${A}.tar.gz"
@@ -125,7 +125,7 @@ For a fresh machine that also needs Podman installed and a dedicated service use
 
 ```bash
 curl -fsSL https://raw.githubusercontent.com/podcd/podcd/main/deploy/bootstrap.sh | sudo bash -s -- \
-  --release-version 4.1.0 \
+  --release-version 4.1.1 \
   --user podcd \
   --revision main \
   --repo-url git@github.com:you/gitops.git

@@ -20,7 +20,7 @@ podcd reconciles a Linux host to match what is declared in Git.
 Install the binary.
 
 ```bash
-V=4.1.0; A=$(uname -m | sed 's/x86_64/amd64/; s/aarch64/arm64/')
+V=4.1.1; A=$(uname -m | sed 's/x86_64/amd64/; s/aarch64/arm64/')
 curl -fsSLO "https://github.com/podcd/podcd/releases/download/v$V/podcd_${V}_linux_${A}.tar.gz"
 curl -fsSLO "https://github.com/podcd/podcd/releases/download/v$V/podcd_${V}_linux_${A}.tar.gz.sha256"
 sha256sum -c "podcd_${V}_linux_${A}.tar.gz.sha256" && tar -xzf "podcd_${V}_linux_${A}.tar.gz"
