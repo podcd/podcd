@@ -10,7 +10,7 @@ import (
 
 func minimal() AgentConfig {
 	cfg := DefaultAgentConfig()
-	cfg.Repositories = []RepositorySpec{{Name: "infra", URL: "https://example.com/infra.git", Revision: "main"}}
+	cfg.Repository = RepositorySpec{Name: "infra", URL: "https://example.com/infra.git", Revision: "main"}
 	return cfg
 }
 
@@ -22,12 +22,12 @@ func TestRenderShowsDefaultsCommentedAndValuesActive(t *testing.T) {
 	cfg.Prune = &off
 	out := "\n" + RenderAgentConfig(cfg)
 
-	for _, active := range []string{"\nhost: vm-1\n", "\njitter: 5s\n", "\nprune: false\n", "\n  - name: infra\n", "\n    url: https://example.com/infra.git\n"} {
+	for _, active := range []string{"\nhost: vm-1\n", "\njitter: 5s\n", "\nprune: false\n", "\n  name: infra\n", "\n  url: https://example.com/infra.git\n"} {
 		if !strings.Contains(out, active) {
 			t.Errorf("missing active line %q:\n%s", active, out)
 		}
 	}
-	for _, commented := range []string{"\n# interval: 1m0s\n", "\n# runtime: podman\n", "\n# logFormat: text\n", "\n    # path: \"\"\n", "\n    # insecure: false\n"} {
+	for _, commented := range []string{"\n# interval: 1m0s\n", "\n# runtime: podman\n", "\n# logFormat: text\n", "\n  # path: \"\"\n", "\n  # insecure: false\n"} {
 		if !strings.Contains(out, commented) {
 			t.Errorf("missing commented default %q:\n%s", commented, out)
 		}
@@ -47,7 +47,7 @@ func TestRenderShowsDefaultsCommentedAndValuesActive(t *testing.T) {
 func TestRenderUsesExampleBlocksForUnsetSections(t *testing.T) {
 	out := RenderAgentConfig(minimal())
 	for _, want := range []string{
-		"    # auth:\n    #   username: gitlab+deploy-token-42\n    #   token: env:GITOPS_TOKEN",
+		"  # auth:\n  #   username: gitlab+deploy-token-42\n  #   token: env:GITOPS_TOKEN",
 	} {
 		if !strings.Contains(out, want) {
 			t.Errorf("missing example block:\n%s\n--- in ---\n%s", want, out)
@@ -59,7 +59,7 @@ func TestRenderedFileRoundTrips(t *testing.T) {
 	cfg := minimal()
 	cfg.Host = "vm-1"
 	cfg.Interval = 30 * time.Second
-	cfg.Repositories[0].Auth = &RepoAuth{Username: "deploy", Token: "env:T"}
+	cfg.Repository.Auth = &RepoAuth{Username: "deploy", Token: "env:T"}
 
 	path := filepath.Join(t.TempDir(), "agent.yaml")
 	if err := WriteAgentConfig(path, cfg); err != nil {
@@ -70,7 +70,7 @@ func TestRenderedFileRoundTrips(t *testing.T) {
 		t.Fatalf("the rendered file does not load: %v", err)
 	}
 	back.Path = ""
-	if back.Host != "vm-1" || back.Interval != 30*time.Second || back.Repositories[0].Auth.Token != "env:T" {
+	if back.Host != "vm-1" || back.Interval != 30*time.Second || back.Repository.Auth.Token != "env:T" {
 		t.Fatalf("round trip lost values: %+v", back)
 	}
 	// Writing what was read back produces the same file: set is stable.
@@ -84,14 +84,14 @@ func TestRenderedFileRoundTrips(t *testing.T) {
 // structs: renderStruct must not try to treat its items as structs.
 func TestRenderScalarSliceIsCommentedWhenEmptyAndRoundTripsWhenSet(t *testing.T) {
 	out := RenderAgentConfig(minimal())
-	if !strings.Contains(out, "\n    # values: []\n") {
+	if !strings.Contains(out, "\n  # values: []\n") {
 		t.Errorf("an unset scalar slice should render as a commented placeholder:\n%s", out)
 	}
 
 	cfg := minimal()
-	cfg.Repositories[0].Values = []string{"values/zones/dmz.yaml", "values/envs/prd.yaml"}
+	cfg.Repository.Values = []string{"values/zones/dmz.yaml", "values/envs/prd.yaml"}
 	out = RenderAgentConfig(cfg)
-	if !strings.Contains(out, "\n    values:\n      - values/zones/dmz.yaml\n      - values/envs/prd.yaml\n") {
+	if !strings.Contains(out, "\n  values:\n    - values/zones/dmz.yaml\n    - values/envs/prd.yaml\n") {
 		t.Fatalf("a set scalar slice should render its items:\n%s", out)
 	}
 
@@ -103,18 +103,18 @@ func TestRenderScalarSliceIsCommentedWhenEmptyAndRoundTripsWhenSet(t *testing.T)
 	if err != nil {
 		t.Fatalf("the rendered file does not load: %v", err)
 	}
-	if strings.Join(back.Repositories[0].Values, ",") != "values/zones/dmz.yaml,values/envs/prd.yaml" {
-		t.Fatalf("round trip lost values: %+v", back.Repositories[0].Values)
+	if strings.Join(back.Repository.Values, ",") != "values/zones/dmz.yaml,values/envs/prd.yaml" {
+		t.Fatalf("round trip lost values: %+v", back.Repository.Values)
 	}
 }
 
 func TestEditReplacesAValueInPlace(t *testing.T) {
-	src := "# my notes\nhost: vm-1   # keep this comment\ninterval: 60s\nrepositories:\n  - name: r\n    url: https://example.com/r.git\n    revision: main\n"
+	src := "# my notes\nhost: vm-1   # keep this comment\ninterval: 60s\nrepository:\n  name: r\n  url: https://example.com/r.git\n  revision: main\n"
 	out, err := EditAgentConfigBytes([]byte(src), Setting{"host", "vm-2"}, Setting{"revision", "v2"})
 	if err != nil {
 		t.Fatal(err)
 	}
-	want := "# my notes\nhost: vm-2  # keep this comment\ninterval: 60s\nrepositories:\n  - name: r\n    url: https://example.com/r.git\n    revision: v2\n"
+	want := "# my notes\nhost: vm-2  # keep this comment\ninterval: 60s\nrepository:\n  name: r\n  url: https://example.com/r.git\n  revision: v2\n"
 	if string(out) != want {
 		t.Fatalf("edit was not surgical:\n--- got ---\n%s--- want ---\n%s", out, want)
 	}
@@ -124,7 +124,7 @@ func TestEditAppendsToTheSectionAndNeverTouchesComments(t *testing.T) {
 	src := RenderAgentConfig(minimal())
 	out, err := EditAgentConfigBytes([]byte(src),
 		Setting{"jitter", "5s"},
-		Setting{"repositories.0.path", "clusters/prod"},
+		Setting{"repository.path", "clusters/prod"},
 	)
 	if err != nil {
 		t.Fatal(err)
@@ -138,51 +138,51 @@ func TestEditAppendsToTheSectionAndNeverTouchesComments(t *testing.T) {
 			t.Errorf("original line was changed or lost: %q", line)
 		}
 	}
-	if !strings.Contains(got, "    revision: main\n    path: clusters/prod\n") {
+	if !strings.Contains(got, "  revision: main\n  path: clusters/prod\n") {
 		t.Errorf("path should follow the repository's last key:\n%s", got)
 	}
 	cfg, err := ParseAgentConfig(out)
-	if err != nil || cfg.Jitter.String() != "5s" || cfg.Repositories[0].Path != "clusters/prod" {
+	if err != nil || cfg.Jitter.String() != "5s" || cfg.Repository.Path != "clusters/prod" {
 		t.Fatalf("edited config does not parse as intended: %v %+v", err, cfg)
 	}
 }
 
 func TestEditAppendsAnUnknownButValidKey(t *testing.T) {
-	src := "host: vm-1\nrepositories:\n  - name: r\n    url: https://example.com/r.git\n    revision: main\n"
-	out, err := EditAgentConfigBytes([]byte(src), Setting{"prune", "false"}, Setting{"repositories.0.auth.token", "env:T"})
+	src := "host: vm-1\nrepository:\n  name: r\n  url: https://example.com/r.git\n  revision: main\n"
+	out, err := EditAgentConfigBytes([]byte(src), Setting{"prune", "false"}, Setting{"repository.auth.token", "env:T"})
 	if err != nil {
 		t.Fatal(err)
 	}
-	want := "host: vm-1\nrepositories:\n  - name: r\n    url: https://example.com/r.git\n    revision: main\n    auth:\n      token: env:T\nprune: false\n"
+	want := "host: vm-1\nrepository:\n  name: r\n  url: https://example.com/r.git\n  revision: main\n  auth:\n    token: env:T\nprune: false\n"
 	if string(out) != want {
 		t.Fatalf("--- got ---\n%s--- want ---\n%s", out, want)
 	}
 }
 
 func TestEditCreatesAndGrowsAScalarSequence(t *testing.T) {
-	src := "host: vm-1\nrepositories:\n  - name: r\n    url: https://example.com/r.git\n    revision: main\n    path: multi-env\n"
+	src := "host: vm-1\nrepository:\n  name: r\n  url: https://example.com/r.git\n  revision: main\n  path: multi-env\n"
 
 	// First set creates the sequence from nothing.
-	out, err := EditAgentConfigBytes([]byte(src), Setting{"repositories.0.values.0", "values/common.yaml"})
+	out, err := EditAgentConfigBytes([]byte(src), Setting{"repository.values.0", "values/common.yaml"})
 	if err != nil {
 		t.Fatal(err)
 	}
-	want := "host: vm-1\nrepositories:\n  - name: r\n    url: https://example.com/r.git\n    revision: main\n    path: multi-env\n    values:\n      - values/common.yaml\n"
+	want := "host: vm-1\nrepository:\n  name: r\n  url: https://example.com/r.git\n  revision: main\n  path: multi-env\n  values:\n    - values/common.yaml\n"
 	if string(out) != want {
 		t.Fatalf("--- got ---\n%s--- want ---\n%s", out, want)
 	}
 
 	// Two more sets append to it, one line each, exactly the sequence a
-	// user runs from the CLI: repositories.0.values.0, .1, .2 in turn.
-	out, err = EditAgentConfigBytes(out, Setting{"repositories.0.values.1", "values/zones/dmz.yaml"})
+	// user runs from the CLI: repository.values.0, .1, .2 in turn.
+	out, err = EditAgentConfigBytes(out, Setting{"repository.values.1", "values/zones/dmz.yaml"})
 	if err != nil {
 		t.Fatal(err)
 	}
-	out, err = EditAgentConfigBytes(out, Setting{"repositories.0.values.2", "values/envs/prd.yaml"})
+	out, err = EditAgentConfigBytes(out, Setting{"repository.values.2", "values/envs/prd.yaml"})
 	if err != nil {
 		t.Fatal(err)
 	}
-	want = "host: vm-1\nrepositories:\n  - name: r\n    url: https://example.com/r.git\n    revision: main\n    path: multi-env\n    values:\n      - values/common.yaml\n      - values/zones/dmz.yaml\n      - values/envs/prd.yaml\n"
+	want = "host: vm-1\nrepository:\n  name: r\n  url: https://example.com/r.git\n  revision: main\n  path: multi-env\n  values:\n    - values/common.yaml\n    - values/zones/dmz.yaml\n    - values/envs/prd.yaml\n"
 	if string(out) != want {
 		t.Fatalf("--- got ---\n%s--- want ---\n%s", out, want)
 	}
@@ -191,18 +191,8 @@ func TestEditCreatesAndGrowsAScalarSequence(t *testing.T) {
 	if err != nil {
 		t.Fatalf("edited config does not parse: %v", err)
 	}
-	if got := strings.Join(cfg.Repositories[0].Values, ","); got != "values/common.yaml,values/zones/dmz.yaml,values/envs/prd.yaml" {
-		t.Fatalf("values = %v", cfg.Repositories[0].Values)
-	}
-}
-
-func TestEditStillRefusesANewRepositoryByIndex(t *testing.T) {
-	// A sequence of mappings is a different story: repositories.1.url with
-	// only one repository configured must still be rejected, not silently
-	// produce a broken new list entry.
-	src := "host: vm-1\nrepositories:\n  - name: r\n    url: https://example.com/r.git\n    revision: main\n"
-	if _, err := EditAgentConfigBytes([]byte(src), Setting{"repositories.1.url", "https://example.com/other.git"}); err == nil || !strings.Contains(err.Error(), "does not exist") {
-		t.Fatalf("want a \"does not exist\" error, got %v", err)
+	if got := strings.Join(cfg.Repository.Values, ","); got != "values/common.yaml,values/zones/dmz.yaml,values/envs/prd.yaml" {
+		t.Fatalf("values = %v", cfg.Repository.Values)
 	}
 }
 
@@ -212,9 +202,9 @@ func TestEditLeavesTheFileAloneOnAnyError(t *testing.T) {
 		{"nonsense", "x", `no field "nonsense"`},
 		{"interval", "soon", "not a duration"},
 		{"prune", "maybe", "not true or false"},
-		{"repositories.1.url", "u", "does not exist"},
-		{"repositories.0.auth.token", "literal", "must be a secret reference"},
-		{"repositories", "x", "cannot set a slice"},
+		{"repository.values", "u", "cannot set a slice"},
+		{"repository.auth.token", "literal", "must be a secret reference"},
+		{"repository", "x", "cannot set a struct"},
 	} {
 		path := filepath.Join(t.TempDir(), "agent.yaml")
 		if err := os.WriteFile(path, []byte(src), 0o644); err != nil {

@@ -23,7 +23,7 @@ import (
 
 // RepositorySpec is one Git repository the agent pulls.
 type RepositorySpec struct {
-	Name     string    `yaml:"name" doc:"A short name for this repository; it appears in logs and status."`
+	Name     string    `yaml:"name,omitempty" default:"infrastructure" doc:"A short name for this repository; it appears in logs and status."`
 	URL      string    `yaml:"url" doc:"Where to fetch from: https://, ssh (git@host:path) or a local path."`
 	Revision string    `yaml:"revision" doc:"A branch, a tag or a commit. A tag or commit pins the host."`
 	Path     string    `yaml:"path,omitempty" doc:"Read only this subdirectory of the repository."`
@@ -55,7 +55,7 @@ type AgentConfig struct {
 
 	Runtime string `yaml:"runtime,omitempty" doc:"Container runtime. Only podman (rootless, via Quadlet) is implemented."`
 
-	Repositories []RepositorySpec `yaml:"repositories" doc:"One or more repositories, composed into a single desired state. A name defined twice across them is an error, not a race."`
+	Repository RepositorySpec `yaml:"repository" doc:"The Git repository this host reconciles against."`
 
 	StateDir   string `yaml:"stateDir,omitempty" doc:"Where the agent keeps checkouts, played manifests and state.json."`
 	UnitDir    string `yaml:"unitDir,omitempty" doc:"Where Quadlet units are written. Must be a directory systemd --user reads."`
@@ -175,37 +175,25 @@ func (c *AgentConfig) applyDefaults() {
 	c.UnitDir = expandPath(cmp.Or(c.UnitDir, d.UnitDir))
 	c.EnvFile = expandPath(cmp.Or(c.EnvFile, d.EnvFile))
 	c.SecretsDir = expandPath(c.SecretsDir)
-	for i := range c.Repositories {
-		r := &c.Repositories[i]
-		r.Revision = cmp.Or(r.Revision, "main")
-		r.URL = expandPath(r.URL)
-		if a := r.Auth; a != nil {
-			a.SSHKeyPath = expandPath(a.SSHKeyPath)
-			a.SSHKnownHostsPath = expandPath(a.SSHKnownHostsPath)
-		}
+	r := &c.Repository
+	r.Name = cmp.Or(r.Name, "infrastructure")
+	r.Revision = cmp.Or(r.Revision, "main")
+	r.URL = expandPath(r.URL)
+	if a := r.Auth; a != nil {
+		a.SSHKeyPath = expandPath(a.SSHKeyPath)
+		a.SSHKnownHostsPath = expandPath(a.SSHKnownHostsPath)
 	}
 }
 
 // Validate rejects configurations that cannot work, loudly and all at once.
 func (c AgentConfig) Validate() error {
 	var p problems
-	if len(c.Repositories) == 0 {
-		p.add("no repositories configured: the agent has nothing to reconcile against")
-	}
-	seen := map[string]bool{}
-	for i, r := range c.Repositories {
-		switch {
-		case r.Name == "":
-			p.add("repository %d has no name", i)
-		case !validName(r.Name):
+	r := c.Repository
+	if r.URL == "" {
+		p.add("no repository configured (repository.url is empty): the agent has nothing to reconcile against")
+	} else {
+		if !validName(r.Name) {
 			p.add("repository name %q must be lowercase letters, digits and dashes", r.Name)
-		case seen[r.Name]:
-			p.add("repository %q is listed twice", r.Name)
-		default:
-			seen[r.Name] = true
-		}
-		if r.URL == "" {
-			p.add("repository %q has no url", r.Name)
 		}
 		if filepath.IsAbs(r.Path) {
 			p.add("repository %q: path %q must be relative to the repository root", r.Name, r.Path)

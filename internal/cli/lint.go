@@ -23,7 +23,7 @@ func newLintCommand() *cobra.Command {
 			"conflicts. Secret references are checked for syntax, not looked up, so this runs anywhere.\n" +
 			"*.tpl files are rendered per host against that host's Environment/Group/Host values;\n" +
 			"--values adds the lowest-precedence layer beneath them, the same way a host's own\n" +
-			"agent.yaml repositories[].values would.\n" +
+			"agent.yaml repository.values would.\n" +
 			"Exits non-zero on any finding.",
 		Args: cobra.ArbitraryArgs,
 		RunE: func(cmd *cobra.Command, args []string) error {

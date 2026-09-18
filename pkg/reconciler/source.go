@@ -100,29 +100,26 @@ func (s *Source) logWarn(msg string, args ...any) {
 }
 
 // ReposFromConfig builds the repository list from the agent configuration,
-// and returns the token references to resolve before each fetch and each
-// repository's configured values files.
+// and returns the token references to resolve before each fetch and the
+// repository's configured values files, both keyed by repository name.
 func ReposFromConfig(cfg config.AgentConfig) ([]*git.Repository, map[string]string, map[string][]string) {
-	repos := make([]*git.Repository, 0, len(cfg.Repositories))
+	r := cfg.Repository
 	tokenRefs := map[string]string{}
 	valuesFiles := map[string][]string{}
-	for _, r := range cfg.Repositories {
-		if len(r.Values) > 0 {
-			valuesFiles[r.Name] = r.Values
-		}
-		repo := git.New(r.Name, r.URL, r.Revision, r.Path, cfg.ReposDir())
-		repo.Insecure = r.Insecure
-		if a := r.Auth; a != nil {
-			repo.Auth = git.Auth{
-				Username:          a.Username,
-				SSHKeyPath:        a.SSHKeyPath,
-				SSHKnownHostsPath: a.SSHKnownHostsPath,
-			}
-			if a.Token != "" {
-				tokenRefs[r.Name] = a.Token
-			}
-		}
-		repos = append(repos, repo)
+	if len(r.Values) > 0 {
+		valuesFiles[r.Name] = r.Values
 	}
-	return repos, tokenRefs, valuesFiles
+	repo := git.New(r.Name, r.URL, r.Revision, r.Path, cfg.ReposDir())
+	repo.Insecure = r.Insecure
+	if a := r.Auth; a != nil {
+		repo.Auth = git.Auth{
+			Username:          a.Username,
+			SSHKeyPath:        a.SSHKeyPath,
+			SSHKnownHostsPath: a.SSHKnownHostsPath,
+		}
+		if a.Token != "" {
+			tokenRefs[r.Name] = a.Token
+		}
+	}
+	return []*git.Repository{repo}, tokenRefs, valuesFiles
 }

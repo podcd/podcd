@@ -126,7 +126,7 @@ func TestGetReadsAGitURL(t *testing.T) {
 	}
 }
 
-func TestGetDefaultsToTheAgentConfigRepositories(t *testing.T) {
+func TestGetDefaultsToTheAgentConfigRepository(t *testing.T) {
 	if _, err := exec.LookPath("git"); err != nil {
 		t.Skip("git not available")
 	}
@@ -140,7 +140,7 @@ func TestGetDefaultsToTheAgentConfigRepositories(t *testing.T) {
 	}
 	state := t.TempDir()
 	cfg := filepath.Join(state, "agent.yaml")
-	if err := os.WriteFile(cfg, []byte("host: vm-1\nstateDir: "+state+"\nrepositories:\n  - name: gitops\n    url: "+dir+"\n"), 0o644); err != nil {
+	if err := os.WriteFile(cfg, []byte("host: vm-1\nstateDir: "+state+"\nrepository:\n  name: gitops\n  url: "+dir+"\n"), 0o644); err != nil {
 		t.Fatal(err)
 	}
 	out, code := run(t, "--config", cfg, "get", "hosts")
@@ -161,19 +161,14 @@ func TestGetRepoResolvesNameThenPathThenURL(t *testing.T) {
 			t.Fatalf("git %v: %v\n%s", args, err, out)
 		}
 	}
-	// A second configured repository that is not fetchable: naming the first
-	// must not touch it, and the default must fail on it.
 	state := t.TempDir()
 	cfg := filepath.Join(state, "agent.yaml")
-	if err := os.WriteFile(cfg, []byte("host: vm-1\nstateDir: "+state+"\nrepositories:\n  - name: gitops\n    url: "+dir+"\n  - name: broken\n    url: "+filepath.Join(state, "missing")+"\n"), 0o644); err != nil {
+	if err := os.WriteFile(cfg, []byte("host: vm-1\nstateDir: "+state+"\nrepository:\n  name: gitops\n  url: "+dir+"\n"), 0o644); err != nil {
 		t.Fatal(err)
-	}
-	if _, code := run(t, "--config", cfg, "get", "hosts"); code == 0 {
-		t.Fatal("without --repo every configured repository is fetched, so the broken one must fail")
 	}
 	out, code := run(t, "--config", cfg, "get", "hosts", "--repo", "gitops")
 	if code != 0 || !strings.Contains(out, "gitops/hosts.yaml:") {
-		t.Fatalf("--repo NAME should fetch only that configured repository:\n%s", out)
+		t.Fatalf("--repo NAME should fetch the configured repository:\n%s", out)
 	}
 	// A directory and a URL work with the same config, and without any config.
 	for _, repo := range []string{dir, "file://" + dir} {
@@ -185,8 +180,8 @@ func TestGetRepoResolvesNameThenPathThenURL(t *testing.T) {
 		}
 	}
 	// Nothing matched: the error names what it could have been.
-	if out, code := run(t, "--config", cfg, "get", "--repo", "nothing"); code == 0 || !strings.Contains(out, "gitops, broken") {
-		t.Fatalf("an unknown --repo should list the configured names:\n%s", out)
+	if out, code := run(t, "--config", cfg, "get", "--repo", "nothing"); code == 0 || !strings.Contains(out, "(gitops)") {
+		t.Fatalf("an unknown --repo should name the configured repository:\n%s", out)
 	}
 	if out, code := run(t, "--config", filepath.Join(state, "nope.yaml"), "get", "--repo", "nothing"); code == 0 || !strings.Contains(out, "config could not be read") {
 		t.Fatalf("an unknown --repo without a config should say why the name lookup was impossible:\n%s", out)

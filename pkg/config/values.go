@@ -2,7 +2,7 @@
 // several hosts, by filling in the parts that differ (an image tag, a
 // resource limit, a domain) from values chosen by a Host's own Environment,
 // Groups and Host document - the same precedence overrides already use -
-// with an agent.yaml `repositories[].values` list as a last-resort, host-local
+// with an agent.yaml `repository.values` list as a last-resort, host-local
 // fallback beneath all of that.
 //
 // A template is a file named *.tpl (edge-api.yaml.tpl, say). Nothing about

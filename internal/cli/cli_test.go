@@ -117,7 +117,7 @@ func TestConfigCreateWritesTheFullAnnotatedSpec(t *testing.T) {
 	text := "\n" + string(got)
 
 	// What was set is active.
-	for _, want := range []string{"\n    url: https://example.com/repo.git\n", "\n    path: clusters/prod\n", "\ninterval: 30s\n"} {
+	for _, want := range []string{"\n  url: https://example.com/repo.git\n", "\n  path: clusters/prod\n", "\ninterval: 30s\n"} {
 		if !strings.Contains(text, want) {
 			t.Errorf("config is missing the active line %q:\n%s", want, text)
 		}
@@ -143,7 +143,7 @@ func TestConfigCreateWritesTheFullAnnotatedSpec(t *testing.T) {
 	if err != nil {
 		t.Fatalf("the written config does not load: %v", err)
 	}
-	if cfg.Interval.String() != "30s" || cfg.Repositories[0].Path != "clusters/prod" || !cfg.PruneEnabled() {
+	if cfg.Interval.String() != "30s" || cfg.Repository.Path != "clusters/prod" || !cfg.PruneEnabled() {
 		t.Errorf("round trip lost values: %+v", cfg)
 	}
 

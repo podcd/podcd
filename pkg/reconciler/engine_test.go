@@ -131,7 +131,7 @@ func newTestEngine(t *testing.T, rt *fakeRuntime, docs string) (*Engine, string)
 	cfg.Host = "vm-1"
 	cfg.StateDir = t.TempDir()
 	cfg.UnitDir = filepath.Join(t.TempDir(), "units")
-	cfg.Repositories = []config.RepositorySpec{{Name: "infra", URL: repoDir, Revision: "main"}}
+	cfg.Repository = config.RepositorySpec{Name: "infra", URL: repoDir, Revision: "main"}
 
 	log := slog.New(slog.NewTextHandler(io.Discard, nil))
 	e := &Engine{

@@ -21,33 +21,32 @@
 # Container runtime. Only podman (rootless, via Quadlet) is implemented.
 # runtime: podman
 
-# One or more repositories, composed into a single desired state. A name
-# defined twice across them is an error, not a race.
-repositories:
+# The Git repository this host reconciles against.
+repository:
   # A short name for this repository; it appears in logs and status.
-  - name: infrastructure
-    # Where to fetch from: https://, ssh (git@host:path) or a local path.
-    url: https://github.com/podcd/podcd-gitops.git
-    # A branch, a tag or a commit. A tag or commit pins the host.
-    revision: main
-    # Read only this subdirectory of the repository.
-    path: minimal
-    # Values file(s), relative to this repository's tree (path, if set), for
-    # {{ .Values }} templating of *.tpl files - a host-local fallback
-    # beneath what Host, Group and Environment documents declare. Repeated
-    # files merge, later ones winning per key.
-    # values: []
-    # Disable host key / TLS verification. Visible here on purpose, rather
-    # than an environment variable nobody sees.
-    # insecure: false
-    # A private repository needs a read credential. The token is a secret
-    # reference (env: or file:), never a literal in this file; it is
-    # resolved on every fetch. GitLab deploy tokens have their own username.
-    # auth:
-    #   username: gitlab+deploy-token-42
-    #   token: env:GITOPS_TOKEN
-    #   sshKeyPath: ~/.ssh/deploy_key
-    #   sshKnownHostsPath: ~/.ssh/known_hosts
+  # name: infrastructure
+  # Where to fetch from: https://, ssh (git@host:path) or a local path.
+  url: https://github.com/podcd/podcd-gitops.git
+  # A branch, a tag or a commit. A tag or commit pins the host.
+  revision: main
+  # Read only this subdirectory of the repository.
+  path: minimal
+  # Values file(s), relative to this repository's tree (path, if set), for
+  # {{ .Values }} templating of *.tpl files - a host-local fallback beneath
+  # what Host, Group and Environment documents declare. Repeated files
+  # merge, later ones winning per key.
+  # values: []
+  # Disable host key / TLS verification. Visible here on purpose, rather
+  # than an environment variable nobody sees.
+  # insecure: false
+  # A private repository needs a read credential. The token is a secret
+  # reference (env: or file:), never a literal in this file; it is resolved
+  # on every fetch. GitLab deploy tokens have their own username.
+  # auth:
+  #   username: gitlab+deploy-token-42
+  #   token: env:GITOPS_TOKEN
+  #   sshKeyPath: ~/.ssh/deploy_key
+  #   sshKnownHostsPath: ~/.ssh/known_hosts
 
 # Where the agent keeps checkouts, played manifests and state.json.
 # stateDir: /home/podcd/.local/state/podcd

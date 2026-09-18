@@ -148,7 +148,7 @@ func newConfigCreateCommand(f *configFlags) *cobra.Command {
 			if interval > 0 {
 				cfg.Interval = interval
 			}
-			cfg.Repositories = []config.RepositorySpec{{Name: repoName, URL: repoURL, Revision: revision, Path: repoPath}}
+			cfg.Repository = config.RepositorySpec{Name: repoName, URL: repoURL, Revision: revision, Path: repoPath}
 			if err := config.WriteAgentConfig(path, cfg); err != nil {
 				return err
 			}
@@ -176,8 +176,8 @@ func newConfigSetCommand(f *configFlags) *cobra.Command {
 		Long: "Edits the file where it is: an existing key has its value replaced on its line, a new\n" +
 			"key is appended to its section, and nothing else - comments included - is touched.\n" +
 			"Fields are yaml paths: host, interval, jitter, prune, logFormat, stateDir, unitDir,\n" +
-			"secretsDir, envFile, repositories.N.url, repositories.N.auth.token, ...\n" +
-			"Shorthands for the first repository: repo-url, repo-name, repo-path, revision.",
+			"secretsDir, envFile, repository.url, repository.auth.token, ...\n" +
+			"Shorthands for the repository: repo-url, repo-name, repo-path, revision.",
 		Args: cobra.MinimumNArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			settings, err := parseSettings(args)
