@@ -14,11 +14,12 @@ apiVersion: gitops.podcd.io/v1
 The core document types are:
 
 - `Pod`: a workload definition, referenced by name
+- `Network`: how a podman network the pods join should be created
 - `Environment`: what applies broadly to a whole environment
 - `Group`: a role or machine-purpose definition
 - `Host`: a specific VM, including its environment, groups, and overrides
 
-`Pod` defines a workload. `Environment`, `Group` and `Host` decide **which workloads run on a host** and may override their configuration.
+`Pod` defines a workload. `Environment`, `Group` and `Host` decide **which workloads run on a host** and may override their configuration. A `Network` is neither: it follows the pods that name it.
 
 ## Pod
 
@@ -59,10 +60,62 @@ metadata:
     io.podcd.networks: "edge,monitoring"
 ```
 
+A name here is either a network a [`Network` document](#network) declares, which podcd then creates and removes, or one that already exists on the host - podman's own `podman`, or one made by hand - which podcd leaves alone.
+
 Pods are validated before anything is written:
 
 - referenced ConfigMaps and Secrets must exist, or be marked optional
 - host port conflicts across the workloads one host runs
+
+## Network
+
+A `Network` says how podman should create a network of that name. Every field is optional; an empty spec is a plain bridge network with podman's defaults. The fields are the ones `podman network create` takes:
+
+```yaml
+apiVersion: gitops.podcd.io/v1
+kind: Network
+metadata:
+  name: backend
+spec:
+  driver: bridge          # bridge (default), macvlan, ipvlan
+  subnet: 10.90.0.0/24
+  gateway: 10.90.0.1
+  ipRange: 10.90.0.128/25
+  internal: false         # no route out of the host
+  ipv6: false
+  disableDNS: false
+  dns: [10.90.0.53]
+  options: {mtu: "1400"}  # driver options, --opt key=value
+```
+
+A `Network` is not selected by a `Host`, `Group` or `Environment`. It exists on a host when a pod that host runs names it in `io.podcd.networks`, and is removed once no pod there does. 
+
+Pods on it resolve each other by pod name. Declaring one that nothing joins will simply creates nothing.
+
+`podcd` writes a Quadlet `.network` unit for it, and a pod's own unit refers to the network through that unit, so systemd creates the network before the pod and stops the pod when the network is stopped.
+
+Podman cannot change an existing network in place, so **changing a `Network` recreates it, and every pod on this host that joins it is restarted** in the same reconcile.
+
+A network of that name that already exists on the host when the document first appears is adopted as it is and will not be replaced: `podcd` will not tear a network out from under containers it does not manage. From then on it is podcd's, and a later change to the document recreates it. The full lifecycle - adoption, recreation, removal, ordering - is on the [Networks](networks.md) page. 
+
+A `Network` resource may be a template, so a subnet that differs per host is one document rendered with each host's values. And like a `Pod`, it can be overridden per layer, under `networkOverrides` rather than `overrides` so a network and an application may share a name:
+
+```yaml
+apiVersion: gitops.podcd.io/v1
+kind: Host
+metadata:
+  name: vm-1
+spec:
+  groups: [web]
+  networkOverrides:
+    backend:
+      subnet: 10.91.0.0/24
+      options: {mtu: "1500"}
+```
+
+A network override is a plain merge into the spec: a field it names is set, one it does not name is kept, `options` gains and replaces keys, and a list such as `dns` is replaced whole. Precedence and the rules about stale entries are the ones below.
+
+`podcd create network NAME [--subnet CIDR] [--gateway IP] [--internal] [--dns IP]... [--opt KEY=VALUE]...` prints one, validated.
 
 ## Host
 
@@ -167,6 +220,6 @@ containers:
 
 An environment or group override may name any application the repository defines, whether or not every member runs it: the override applies wherever the application does and is simply idle elsewhere.
 
-An override that no Pod defines is treated as an error. A Host's own overrides are held to a stricter rule, an override for one it does not run is a stale entry and is refused. 
+An override that no Pod defines is treated as an error. A Host's own overrides are held to a stricter rule, an override for one it does not run is a stale entry and is refused. `networkOverrides` follow the same two rules, against the Network documents and the networks the host's applications join.
 
 For parametrizing *within* a shared definition - an image tag that differs between dev and prod, say - see [values templating](values.md).

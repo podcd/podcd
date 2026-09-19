@@ -53,5 +53,15 @@ func (r *Runtime) Logs(context.Context, string, int) (string, error) {
 	return "", fmt.Errorf("docker runtime: %w", runtime.ErrNotImplemented)
 }
 
+// ApplyNetwork implements runtime.Runtime.
+func (r *Runtime) ApplyNetwork(context.Context, model.Network) error {
+	return fmt.Errorf("docker runtime: %w", runtime.ErrNotImplemented)
+}
+
+// RemoveNetwork implements runtime.Runtime.
+func (r *Runtime) RemoveNetwork(context.Context, string) error {
+	return fmt.Errorf("docker runtime: %w", runtime.ErrNotImplemented)
+}
+
 // compile-time check that the stub really does satisfy the interface.
 var _ runtime.Runtime = (*Runtime)(nil)

@@ -28,6 +28,14 @@ func Build(desired model.DesiredState, actual model.ActualState, rend *renderer.
 	var plan model.Plan
 	seen := map[string]bool{}
 
+	// Networks first: a pod's unit Requires= its network's unit, so a network
+	// that is recreated takes its pods down with it, and those must come
+	// back. recreated remembers which, for the application loop below.
+	recreated, err := planNetworks(desired, actual, rend, opts, &plan)
+	if err != nil {
+		return model.Plan{}, err
+	}
+
 	apps := slices.Clone(desired.Applications)
 	slices.SortFunc(apps, func(a, b model.Application) int { return cmp.Compare(a.Name, b.Name) })
 
@@ -62,6 +70,8 @@ func Build(desired model.DesiredState, actual model.ActualState, rend *renderer.
 			// container that died - or was killed - leaves the unit active and
 			// the application broken. Restarting the unit replays the pod.
 			act(model.ActionRestart, "container "+strings.Join(deadContainers(cur, *app), ", ")+", should be running")
+		case len(changedNetworks(*app, recreated)) > 0:
+			act(model.ActionRestart, "network "+strings.Join(changedNetworks(*app, recreated), ", ")+" is recreated")
 		default:
 			act(model.ActionNoOp, "up to date")
 		}
@@ -85,25 +95,135 @@ func Build(desired model.DesiredState, actual model.ActualState, rend *renderer.
 	}
 
 	slices.SortStableFunc(plan.Actions, func(a, b model.Action) int {
-		return cmp.Or(cmp.Compare(rank(a.Type), rank(b.Type)), cmp.Compare(a.App, b.App))
+		return cmp.Or(cmp.Compare(rank(a), rank(b)), cmp.Compare(a.App, b.App))
 	})
 	return plan, nil
 }
 
-// rank orders the plan so removals happen before creations.
-// Freeing a host port before something else tries to bind it is the difference between a clean rename and a crash loop.
-func rank(t model.ActionType) int {
-	switch t {
+// planNetworks adds the actions for networks and returns the names of the
+// ones being created or recreated - the ones whose pods need a restart.
+func planNetworks(desired model.DesiredState, actual model.ActualState, rend *renderer.Renderer, opts Options, plan *model.Plan) (map[string]bool, error) {
+	seen := map[string]bool{}
+	recreated := map[string]bool{}
+
+	nets := slices.Clone(desired.Networks)
+	slices.SortFunc(nets, func(a, b model.Network) int { return cmp.Compare(a.Name, b.Name) })
+	for i := range nets {
+		net := &nets[i]
+		seen[net.Name] = true
+		act := func(t model.ActionType, reason string, details ...string) {
+			plan.Actions = append(plan.Actions, model.Action{Type: t, Kind: model.KindNetwork, App: net.Name, Reason: reason, Details: details, Network: net})
+		}
+
+		unit, err := rend.RenderNetwork(*net)
+		if err != nil {
+			return nil, fmt.Errorf("rendering network %s: %w", net.Name, err)
+		}
+
+		cur, exists := actual.Networks[net.Name]
+		switch {
+		case !exists:
+			// No unit and no label. podman may still have a network of this
+			// name, made by hand; the runtime adopts it rather than replacing it.
+			act(model.ActionCreate, "not present on this host")
+		case !cur.Managed:
+			return nil, fmt.Errorf("network %q: unit %s exists but is not managed by podcd; "+
+				"remove it by hand or restore its podcd header before reconciling", net.Name, cur.UnitFile)
+		case cur.UnitFile == "":
+			// Labelled as ours, unit gone: write it again.
+			act(model.ActionCreate, "unit file is missing")
+		case cur.UnitFileHash != model.HashBytes(unit.Content):
+			recreated[net.Name] = true
+			act(model.ActionUpdate, "configuration in Git changed; the network is recreated and every application on it restarted",
+				unitDiff(contentLines(string(cur.UnitContent)), contentLines(string(unit.Content)))...)
+		case !cur.Exists, cur.UnitState != model.UnitActive:
+			// The unit is right but the network is not there, or its oneshot
+			// never ran: running it is all that is needed.
+			act(model.ActionRestart, "network should exist")
+		default:
+			act(model.ActionNoOp, "up to date")
+		}
+	}
+
+	// A managed network Git no longer needs here. An application that could
+	// not be compiled this round keeps its network, since nobody can say yet
+	// whether it still joins it.
+	for _, name := range actual.NetworkNames() {
+		cur := actual.Networks[name]
+		if seen[name] || !cur.Managed || usedByProtected(name, actual, opts.Protected) {
+			continue
+		}
+		if !opts.Prune {
+			plan.Actions = append(plan.Actions, model.Action{Type: model.ActionNoOp, Kind: model.KindNetwork, App: name, Reason: "no longer needed by anything in Git, but pruning is disabled"})
+			continue
+		}
+		plan.Actions = append(plan.Actions, model.Action{
+			Type:        model.ActionDelete,
+			Kind:        model.KindNetwork,
+			App:         name,
+			Reason:      "no longer needed by anything in Git",
+			Details:     []string{"removes " + renderer.NetworkServiceName(name) + " and the podman network"},
+			Destructive: true,
+		})
+	}
+	return recreated, nil
+}
+
+// usedByProtected reports whether a protected application's unit on disk
+// names this network. Protected applications were not compiled, so their
+// desired networks are unknown; what they currently use is on disk.
+func usedByProtected(network string, actual model.ActualState, protected map[string]bool) bool {
+	ref := "Network=" + renderer.NetworkFileName(network)
+	for app := range protected {
+		for _, line := range strings.Split(string(actual.Apps[app].UnitContent), "\n") {
+			if strings.TrimSpace(line) == ref {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+// changedNetworks lists the managed networks of an application that this
+// plan recreates, sorted.
+func changedNetworks(app model.Application, recreated map[string]bool) []string {
+	var out []string
+	for _, n := range app.ManagedNetworks {
+		if recreated[n] {
+			out = append(out, n)
+		}
+	}
+	slices.Sort(out)
+	return out
+}
+
+// rank orders the plan so removals happen before creations, and networks
+// are dealt with between the applications that leave them and the ones that
+// join them: freeing a host port before something else binds it is the
+// difference between a clean rename and a crash loop, and a network cannot
+// be removed while a pod is on it, nor joined before it exists.
+func rank(a model.Action) int {
+	if a.Kind == model.KindNetwork {
+		switch a.Type {
+		case model.ActionDelete:
+			return 1
+		case model.ActionUpdate, model.ActionCreate, model.ActionRestart:
+			return 2
+		default:
+			return 9
+		}
+	}
+	switch a.Type {
 	case model.ActionDelete:
 		return 0
 	case model.ActionUpdate:
-		return 1
-	case model.ActionCreate:
-		return 2
-	case model.ActionRestart:
 		return 3
-	default:
+	case model.ActionCreate:
 		return 4
+	case model.ActionRestart:
+		return 5
+	default:
+		return 9
 	}
 }
 

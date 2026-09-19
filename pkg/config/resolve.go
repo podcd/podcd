@@ -1,6 +1,7 @@
 package config
 
 import (
+	"bytes"
 	"cmp"
 	"context"
 	"errors"
@@ -10,6 +11,7 @@ import (
 	"strings"
 
 	corev1 "k8s.io/api/core/v1"
+	sigyaml "sigs.k8s.io/yaml"
 
 	"github.com/podcd/podcd/pkg/model"
 )
@@ -22,6 +24,10 @@ import (
 // machine. ok is false when no ExternalSecret targets that name.
 type SecretProvisioner interface {
 	ProvisionSecret(ctx context.Context, name string) (sec corev1.Secret, ok bool, err error)
+	// AddExternalSecrets makes the ExternalSecrets a host's templates rendered
+	// to known alongside the plain ones. Templates render per host, inside
+	// Resolve, so these cannot be handed over any earlier.
+	AddExternalSecrets(docs map[string]Doc[ExternalSecretSpec])
 }
 
 // ProvisioningError means one application's ExternalSecret could not be
@@ -84,7 +90,7 @@ func (ix *Index) Resolve(ctx context.Context, opts ResolveOptions) (model.Desire
 		if err != nil {
 			return fmt.Errorf("%s: %w", label, err)
 		}
-		layers = append(layers, layer{label, spec.Overrides, values})
+		layers = append(layers, layer{label, spec.Overrides, spec.NetworkOverrides, values})
 		return nil
 	}
 
@@ -108,7 +114,7 @@ func (ix *Index) Resolve(ctx context.Context, opts ResolveOptions) (model.Desire
 			return zero, err
 		}
 	}
-	hostSelection := SelectionSpec{Applications: host.Spec.Applications, Overrides: host.Spec.Overrides, Values: host.Spec.Values}
+	hostSelection := SelectionSpec{Applications: host.Spec.Applications, Overrides: host.Spec.Overrides, NetworkOverrides: host.Spec.NetworkOverrides, Values: host.Spec.Values}
 	if err := addLayer("host/"+opts.Host, host.Source.Repo, hostSelection); err != nil {
 		return zero, err
 	}
@@ -136,6 +142,9 @@ func (ix *Index) Resolve(ctx context.Context, opts ResolveOptions) (model.Desire
 		return zero, err
 	}
 	docs := hostDocuments{ix, rendered}
+	if opts.Secrets != nil {
+		opts.Secrets.AddExternalSecrets(rendered.ExternalSecrets)
+	}
 
 	var p problems
 	var apps []model.Application
@@ -156,7 +165,7 @@ func (ix *Index) Resolve(ctx context.Context, opts ResolveOptions) (model.Desire
 		}
 		pod := doc.Spec
 		src = doc.Source
-		origins, err = overlay(layers, name, "pod", src, func(o Override) (e error) {
+		origins, err = overlay(layers, podOverrides, name, "pod", src, func(o Override) (e error) {
 			pod, e = patchPod(pod, o)
 			return e
 		})
@@ -174,6 +183,51 @@ func (ix *Index) Resolve(ctx context.Context, opts ResolveOptions) (model.Desire
 		app.SourceRepo = src.Repo
 		app.Origins = origins
 		apps = append(apps, app)
+	}
+
+	// A network is wanted here exactly when an application here joins it.
+	// One with a Network document is podcd's to create, and the application
+	// records that so its unit can depend on the network's unit. One without
+	// is expected to exist already - created by hand, or podman's own - and
+	// podcd neither creates nor removes it.
+	var networks []model.Network
+	seenNet := map[string]bool{}
+	for i := range apps {
+		for _, n := range apps[i].Networks {
+			doc, ok := docs.network(n)
+			if !ok {
+				continue
+			}
+			apps[i].ManagedNetworks = append(apps[i].ManagedNetworks, n)
+			if seenNet[n] {
+				continue
+			}
+			seenNet[n] = true
+			net, err := networkFromDoc(doc, layers)
+			if err != nil {
+				p.errs = append(p.errs, err)
+				continue
+			}
+			networks = append(networks, net)
+		}
+	}
+	slices.SortFunc(networks, func(a, b model.Network) int { return cmp.Compare(a.Name, b.Name) })
+
+	// The same rule as for applications: an override for a network no
+	// document defines is a mistake, and a host may only override a network
+	// it actually uses.
+	for _, l := range layers {
+		for name := range l.networkOverrides {
+			switch {
+			case seenNet[name]:
+			case strings.HasPrefix(l.label, "host/"):
+				p.add("%s overrides network %q, which no application on host %q joins", l.label, name, opts.Host)
+			default:
+				if _, ok := docs.network(name); !ok {
+					p.add("%s overrides network %q, but no Network defines it", l.label, name)
+				}
+			}
+		}
 	}
 
 	// An override for an application nobody defines is a mistake;
@@ -204,6 +258,7 @@ func (ix *Index) Resolve(ctx context.Context, opts ResolveOptions) (model.Desire
 		Groups:       slices.Clone(host.Spec.Groups),
 		Revisions:    opts.Revisions,
 		Applications: apps,
+		Networks:     networks,
 	}
 	if len(provisioningFailures) > 0 {
 		return desired, &ProvisioningError{Applications: provisioningFailures}
@@ -232,10 +287,16 @@ func isProvisioningFailure(err error) bool {
 // environment, then each group in the order the host lists them, then the
 // host itself.
 type layer struct {
-	label     string
-	overrides map[string]Override
-	values    Values
+	label            string
+	overrides        map[string]Override
+	networkOverrides map[string]Override
+	values           Values
 }
+
+// podOverrides and networkOverrides pick which of a layer's override maps
+// overlay walks.
+func podOverrides(l layer) map[string]Override     { return l.overrides }
+func networkOverrides(l layer) map[string]Override { return l.networkOverrides }
 
 // layerValues loads and merges a layer's own values files, in list order,
 // resolved against the repository the document naming them came from - the
@@ -292,6 +353,16 @@ func (ix *Index) checkNoOverlap(rendered *documents) error {
 			return fmt.Errorf("Secret %q is defined twice: %s and %s (rendered)", name, prev.Source, doc.Source)
 		}
 	}
+	for name, doc := range rendered.ExternalSecrets {
+		if prev, ok := ix.ExternalSecrets[name]; ok {
+			return fmt.Errorf("ExternalSecret %q is defined twice: %s and %s (rendered)", name, prev.Source, doc.Source)
+		}
+	}
+	for name, doc := range rendered.Networks {
+		if prev, ok := ix.Networks[name]; ok {
+			return fmt.Errorf("Network %q is defined twice: %s and %s (rendered)", name, prev.Source, doc.Source)
+		}
+	}
 	return nil
 }
 
@@ -319,6 +390,59 @@ func (h hostDocuments) configMap(name string) (Doc[corev1.ConfigMap], bool) {
 	}
 	d, ok := h.rendered.ConfigMaps[name]
 	return d, ok
+}
+
+func (h hostDocuments) network(name string) (Doc[NetworkSpec], bool) {
+	if d, ok := h.Networks[name]; ok {
+		return d, true
+	}
+	d, ok := h.rendered.Networks[name]
+	return d, ok
+}
+
+// networkFromDoc turns a Network document, with every layer's override for
+// it applied in precedence order, into the canonical network. The spec is
+// already the model's shape; what is checked here is the name, which becomes
+// a unit file name and a podman network name.
+func networkFromDoc(doc Doc[NetworkSpec], layers []layer) (model.Network, error) {
+	if !validName(doc.Name) {
+		return model.Network{}, fmt.Errorf("%s: network %q: name must be lowercase letters, digits and dashes", doc.Source, doc.Name)
+	}
+	sp := doc.Spec
+	origins, err := overlay(layers, networkOverrides, doc.Name, "network", doc.Source, func(o Override) error {
+		return patchNetwork(&sp, o)
+	})
+	if err != nil {
+		return model.Network{}, err
+	}
+	return model.Network{
+		Name:       doc.Name,
+		Driver:     sp.Driver,
+		Subnet:     sp.Subnet,
+		Gateway:    sp.Gateway,
+		IPRange:    sp.IPRange,
+		Internal:   sp.Internal,
+		IPv6:       sp.IPv6,
+		DisableDNS: sp.DisableDNS,
+		DNS:        slices.Clone(sp.DNS),
+		Options:    maps.Clone(sp.Options),
+		SourceRepo: doc.Source.Repo,
+		Origins:    origins,
+	}, nil
+}
+
+// patchNetwork merges one override into a network spec. Decoding into the
+// existing value is the merge: a field the override names is set, one it
+// does not name is kept, and options gains and replaces keys rather than
+// starting over. Strict, so a misspelled field is refused like anywhere else.
+func patchNetwork(sp *NetworkSpec, o Override) error {
+	if len(bytes.TrimSpace(o)) == 0 {
+		return nil
+	}
+	if err := sigyaml.UnmarshalStrict(o, sp); err != nil {
+		return err
+	}
+	return nil
 }
 
 func (h hostDocuments) secret(name string) (Doc[corev1.Secret], bool) {
@@ -354,10 +478,11 @@ func (h hostDocuments) externalSecretDeclares(name string) bool {
 
 // overlay applies every layer's override for name, in order, and returns the
 // provenance trail: the document's source, then each layer that touched it.
-func overlay(layers []layer, name, kind string, src Source, apply func(Override) error) ([]string, error) {
+// pick says which of a layer's override maps is meant.
+func overlay(layers []layer, pick func(layer) map[string]Override, name, kind string, src Source, apply func(Override) error) ([]string, error) {
 	origins := []string{src.String()}
 	for _, l := range layers {
-		o, ok := l.overrides[name]
+		o, ok := pick(l)[name]
 		if !ok {
 			continue
 		}

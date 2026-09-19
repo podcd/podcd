@@ -145,10 +145,16 @@ type Application struct {
 
 	Env map[string]string `json:"env,omitempty"`
 
-	Ports    []Port            `json:"ports,omitempty"`
-	Volumes  []Volume          `json:"volumes,omitempty"`
-	Networks []string          `json:"networks,omitempty"`
-	Labels   map[string]string `json:"labels,omitempty"`
+	Ports   []Port   `json:"ports,omitempty"`
+	Volumes []Volume `json:"volumes,omitempty"`
+	// Networks are the podman networks the pod joins, by name. Ones a Network
+	// document in Git defines are listed again in ManagedNetworks: the unit
+	// refers to those through their own Quadlet unit, so systemd creates the
+	// network first and stops the pod when the network goes away. A name
+	// with no document is expected to exist already and is left alone.
+	Networks        []string          `json:"networks,omitempty"`
+	ManagedNetworks []string          `json:"managedNetworks,omitempty"`
+	Labels          map[string]string `json:"labels,omitempty"`
 
 	RestartPolicy string `json:"restartPolicy,omitempty"` // always (default), on-failure, no
 	User          string `json:"user,omitempty"`          // user[:group] inside the container
@@ -179,6 +185,29 @@ func (a *Application) SetManifest(manifest []byte) {
 	a.ManifestHash = HashBytes(manifest)
 }
 
+// Network is a podman network a Network document declares, resolved for one
+// host. It exists on a host only while a desired application names it: a
+// network nobody joins is not created, and one nobody joins any more is
+// removed. The fields are the subset of `podman network create` that Quadlet
+// takes in a .network unit.
+type Network struct {
+	Name string `json:"name"`
+
+	Driver     string            `json:"driver,omitempty"` // bridge (default), macvlan, ipvlan
+	Subnet     string            `json:"subnet,omitempty"`
+	Gateway    string            `json:"gateway,omitempty"`
+	IPRange    string            `json:"ipRange,omitempty"`
+	Internal   bool              `json:"internal,omitempty"`
+	IPv6       bool              `json:"ipv6,omitempty"`
+	DisableDNS bool              `json:"disableDNS,omitempty"`
+	DNS        []string          `json:"dns,omitempty"`
+	Options    map[string]string `json:"options,omitempty"` // driver options, --opt k=v
+
+	// Provenance, as on Application.
+	SourceRepo string   `json:"sourceRepo,omitempty"`
+	Origins    []string `json:"origins,omitempty"`
+}
+
 // DesiredState is everything that should exist on this host at a given Git revision.
 type DesiredState struct {
 	Host        string            `json:"host"`
@@ -187,6 +216,7 @@ type DesiredState struct {
 	Revisions   map[string]string `json:"revisions,omitempty"` // repo name -> commit sha
 
 	Applications []Application `json:"applications"`
+	Networks     []Network     `json:"networks,omitempty"`
 }
 
 // App returns the application with the given name.
@@ -294,14 +324,39 @@ func IsInitContainer(initNames []string, containerName string) bool {
 	return false
 }
 
+// ActualNetwork is what really exists on the host for one network: the unit
+// podcd wrote for it, what systemd says about that unit, and whether podman
+// has the network at all.
+type ActualNetwork struct {
+	Name string `json:"name"`
+
+	// Managed is false for .network units podcd did not write. Never touched.
+	Managed bool `json:"managed"`
+
+	UnitFile     string `json:"unitFile,omitempty"`
+	UnitFileHash string `json:"unitFileHash,omitempty"`
+	UnitContent  []byte `json:"-"`
+	SpecHash     string `json:"specHash,omitempty"`
+
+	UnitName  string    `json:"unitName,omitempty"`
+	UnitState UnitState `json:"unitState,omitempty"`
+
+	// Exists reports whether podman has a network of this name right now.
+	Exists bool `json:"exists"`
+}
+
 // ActualState is the observed state of the whole host.
 type ActualState struct {
-	Runtime string               `json:"runtime"`
-	Apps    map[string]ActualApp `json:"apps"`
+	Runtime  string                   `json:"runtime"`
+	Apps     map[string]ActualApp     `json:"apps"`
+	Networks map[string]ActualNetwork `json:"networks,omitempty"`
 }
 
 // Names returns the observed application names, sorted.
 func (s ActualState) Names() []string { return slices.Sorted(maps.Keys(s.Apps)) }
+
+// NetworkNames returns the observed network names, sorted.
+func (s ActualState) NetworkNames() []string { return slices.Sorted(maps.Keys(s.Networks)) }
 
 // ActionType is the kind of change the planner decided on.
 type ActionType string
@@ -314,18 +369,41 @@ const (
 	ActionNoOp    ActionType = "noop"
 )
 
-// Action is one change to one application.
+// ActionKind says what an action is about. Empty means an application, the
+// original and common case, so older state and callers read unchanged.
+type ActionKind string
+
+const (
+	KindApplication ActionKind = ""
+	KindNetwork     ActionKind = "network"
+)
+
+// Action is one change to one application or network.
 type Action struct {
-	Type    ActionType `json:"type"`
-	App     string     `json:"app"`
-	Reason  string     `json:"reason"`
-	Details []string   `json:"details,omitempty"`
+	Type ActionType `json:"type"`
+	Kind ActionKind `json:"kind,omitempty"`
+	// App is the name of what changes: an application, or with Kind set, a
+	// network. The field keeps its name so the JSON people already parse
+	// does not move.
+	App     string   `json:"app"`
+	Reason  string   `json:"reason"`
+	Details []string `json:"details,omitempty"`
 
 	// Destructive marks actions that remove something a human might miss.
 	Destructive bool `json:"destructive,omitempty"`
 
-	// Application is the desired spec; empty for deletes.
+	// Application is the desired spec; empty for deletes and for networks.
 	Application *Application `json:"-"`
+	// Network is the desired spec; empty for deletes and for applications.
+	Network *Network `json:"-"`
+}
+
+// Subject names what the action is about the way a human would say it.
+func (a Action) Subject() string {
+	if a.Kind == KindNetwork {
+		return "network " + a.App
+	}
+	return a.App
 }
 
 // Plan is the ordered set of actions to make reality match Git.

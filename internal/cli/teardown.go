@@ -25,7 +25,7 @@ func newTeardownCommand(f *configFlags) *cobra.Command {
 			"repository URL and any secrets resolved through env: references live there.",
 		Args: cobra.NoArgs,
 		RunE: withEngineArgs(f, func(ctx context.Context, env *environment, cmd *cobra.Command, _ []string) error {
-			candidates, _, err := env.engine.RemoveCandidates(ctx, nil, true)
+			candidates, networks, _, err := env.engine.RemoveCandidates(ctx, nil, true)
 			if err != nil {
 				return err
 			}
@@ -41,6 +41,9 @@ func newTeardownCommand(f *configFlags) *cobra.Command {
 				fmt.Fprintf(env.out, "  stop and remove %d application(s): %s\n", len(candidates), strings.Join(candidates, ", "))
 			} else {
 				fmt.Fprintln(env.out, "  stop and remove 0 applications (none are managed by podcd here)")
+			}
+			if len(networks) > 0 {
+				fmt.Fprintf(env.out, "  remove %d network(s): %s\n", len(networks), strings.Join(networks, ", "))
 			}
 			fmt.Fprintln(env.out, "  stop, disable and remove "+serviceUnitName+" ("+serviceFile+")")
 			if purgeState {

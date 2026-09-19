@@ -22,6 +22,18 @@ func (a Application) SpecHash() string {
 	return hashString(string(b))
 }
 
+// SpecHash is the fingerprint of a network's desired state, provenance excluded.
+func (n Network) SpecHash() string {
+	payload := n
+	payload.SourceRepo = ""
+	payload.Origins = nil
+	b, err := json.Marshal(payload)
+	if err != nil {
+		panic(fmt.Sprintf("model: hashing network %q: %v", n.Name, err))
+	}
+	return hashString(string(b))
+}
+
 func hashString(s string) string { return HashBytes([]byte(s)) }
 
 // HashBytes returns the hex sha256 of b. Used for comparing rendered unit files.

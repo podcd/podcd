@@ -6,11 +6,18 @@ title: Installation
 ## Install the binary
 
 ```bash
-V=4.1.1; A=$(uname -m | sed 's/x86_64/amd64/; s/aarch64/arm64/')
+V=$(curl -fsSLI https://github.com/podcd/podcd/releases/latest \
+  | sed -n 's/^[Ll]ocation:.*\/tag\/v\([^[:space:]]*\).*/\1/p' \
+  | tr -d '\r')
+
+A=$(uname -m | sed 's/x86_64/amd64/; s/aarch64/arm64/')
+
 curl -fsSLO "https://github.com/podcd/podcd/releases/download/v$V/podcd_${V}_linux_${A}.tar.gz"
 curl -fsSLO "https://github.com/podcd/podcd/releases/download/v$V/podcd_${V}_linux_${A}.tar.gz.sha256"
-sha256sum -c "podcd_${V}_linux_${A}.tar.gz.sha256" && tar -xzf "podcd_${V}_linux_${A}.tar.gz"
-sudo install -m 0755 podcd /usr/local/bin/podcd
+
+sha256sum -c "podcd_${V}_linux_${A}.tar.gz.sha256" &&
+  tar -xzf "podcd_${V}_linux_${A}.tar.gz" &&
+  sudo install -m 0755 podcd /usr/local/bin/podcd
 ```
 
 You can alternatively build from source instead.
@@ -125,13 +132,12 @@ For a fresh machine that also needs Podman installed and a dedicated service use
 
 ```bash
 curl -fsSL https://raw.githubusercontent.com/podcd/podcd/main/deploy/bootstrap.sh | sudo bash -s -- \
-  --release-version 4.1.1 \
   --user podcd \
   --revision main \
   --repo-url git@github.com:you/gitops.git
 ```
 
-Installs Podman (apt or dnf), creates the `podcd` service user with a subordinate uid range (add `--allow-user-login` if needed), enables lingering, downloads and verifies the release, writes the agent config, and starts the service.
+Installs Podman (apt or dnf), creates the `podcd` service user with a subordinate uid range (add `--allow-user-login` if needed), enables lingering, downloads and verifies the latest release (`--release-version 4.1.1` pins one; it is also how a host is upgraded), writes the agent config, and starts the service.
 
 ### podcd agent's files
 

@@ -23,6 +23,7 @@ const (
 	KindGroup       = "Group"
 	KindEnvironment = "Environment"
 	KindHost        = "Host"
+	KindNetwork     = "Network"
 
 	KindPod       = "Pod"
 	KindConfigMap = "ConfigMap"
@@ -82,11 +83,33 @@ type Doc[T any] struct {
 }
 
 // SelectionSpec is the body of a Group or an Environment: the applications
-// every member runs, and overrides for any application a member runs.
+// every member runs, and overrides for any application a member runs. A
+// network override is keyed by network name and merged into that Network's
+// spec the same way, layer by layer.
 type SelectionSpec struct {
-	Applications []string            `json:"applications,omitempty"`
-	Overrides    map[string]Override `json:"overrides,omitempty"`
-	Values       []string            `json:"values,omitempty"`
+	Applications     []string            `json:"applications,omitempty"`
+	Overrides        map[string]Override `json:"overrides,omitempty"`
+	NetworkOverrides map[string]Override `json:"networkOverrides,omitempty"`
+	Values           []string            `json:"values,omitempty"`
+}
+
+// NetworkSpec is a kind: Network document body: how podman should create the
+// network of that name. Every field is optional; an empty spec is a plain
+// bridge network. The names follow `podman network create`.
+//
+// A Network is not selected by a Host, Group or Environment. It exists on a
+// host because a Pod there names it in its io.podcd.networks annotation, and
+// goes away when no Pod does.
+type NetworkSpec struct {
+	Driver     string            `json:"driver,omitempty"`
+	Subnet     string            `json:"subnet,omitempty"`
+	Gateway    string            `json:"gateway,omitempty"`
+	IPRange    string            `json:"ipRange,omitempty"`
+	Internal   bool              `json:"internal,omitempty"`
+	IPv6       bool              `json:"ipv6,omitempty"`
+	DisableDNS bool              `json:"disableDNS,omitempty"`
+	DNS        []string          `json:"dns,omitempty"`
+	Options    map[string]string `json:"options,omitempty"`
 }
 
 // HostSpec is a kind: Host document body.
@@ -96,5 +119,6 @@ type HostSpec struct {
 	Applications        []string            `json:"applications,omitempty"`
 	ExcludeApplications []string            `json:"excludeApplications,omitempty"`
 	Overrides           map[string]Override `json:"overrides,omitempty"`
+	NetworkOverrides    map[string]Override `json:"networkOverrides,omitempty"`
 	Values              []string            `json:"values,omitempty"`
 }

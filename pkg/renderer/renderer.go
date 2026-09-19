@@ -8,7 +8,9 @@ import (
 	"bytes"
 	"cmp"
 	"fmt"
+	"maps"
 	"path/filepath"
+	"slices"
 	"strings"
 
 	"github.com/podcd/podcd/pkg/model"
@@ -27,6 +29,8 @@ const (
 	// markerManifest records the hash of the played manifest.
 	// The unit bytes alone say whether a kube workload changed.
 	markerManifest = "# podcd-manifest-hash: "
+	// markerNetwork names the network a .network unit creates.
+	markerNetwork = "# podcd-network: "
 )
 
 // Version is bumped when the rendered output format changes.
@@ -69,6 +73,107 @@ func KubeFileName(app string) string { return Prefix + app + ".kube" }
 func ServiceNameOfFile(fileName string) string {
 	return strings.TrimSuffix(fileName, ".kube") + ".service"
 }
+
+// NetworkFileName returns the Quadlet file name for a network. A .kube unit
+// refers to the network by this name, which is what makes systemd create the
+// network before the pod and stop the pod when the network goes away.
+func NetworkFileName(network string) string { return Prefix + network + ".network" }
+
+// NetworkServiceName returns the oneshot service Quadlet generates for a
+// .network file: the file's base name with "-network.service" appended.
+func NetworkServiceName(network string) string { return Prefix + network + "-network.service" }
+
+// NetworkFromFileName returns the network name for a managed .network file,
+// and whether it is one of ours by name.
+func NetworkFromFileName(name string) (string, bool) {
+	if !strings.HasPrefix(name, Prefix) || !strings.HasSuffix(name, ".network") {
+		return "", false
+	}
+	return strings.TrimSuffix(strings.TrimPrefix(name, Prefix), ".network"), true
+}
+
+// NetworkUnit is everything that must exist on disk for one network.
+type NetworkUnit struct {
+	Network     string
+	FileName    string // podcd-ai.network
+	Path        string
+	ServiceName string // podcd-ai-network.service
+	Content     []byte
+	SpecHash    string
+}
+
+// RenderNetwork produces the .network unit for one network. Quadlet turns it
+// into a oneshot service that runs `podman network create --ignore`, so the
+// unit only says what the network should look like; it does not create it.
+func (r *Renderer) RenderNetwork(net model.Network) (NetworkUnit, error) {
+	if net.Name == "" {
+		return NetworkUnit{}, fmt.Errorf("network has no name")
+	}
+	u := NetworkUnit{
+		Network:     net.Name,
+		FileName:    NetworkFileName(net.Name),
+		Path:        filepath.Join(r.UnitDir, NetworkFileName(net.Name)),
+		ServiceName: NetworkServiceName(net.Name),
+		SpecHash:    net.SpecHash(),
+	}
+	for what, v := range map[string]string{"driver": net.Driver, "subnet": net.Subnet, "gateway": net.Gateway, "ipRange": net.IPRange} {
+		if err := checkUnitValue("network "+net.Name+" "+what, v); err != nil {
+			return NetworkUnit{}, err
+		}
+	}
+
+	var b bytes.Buffer
+	b.WriteString(markerManaged + "\n")
+	b.WriteString(markerNetwork + net.Name + "\n")
+	b.WriteString(markerSpec + u.SpecHash + "\n")
+	b.WriteString(markerVersion + Version + "\n\n")
+	fmt.Fprintf(&b, "[Unit]\nDescription=podcd network %s\n\n", net.Name)
+	b.WriteString("[Network]\n")
+	// Without NetworkName Quadlet would call it systemd-podcd-<name>; the
+	// document's name is what people expect to see in `podman network ls`.
+	fmt.Fprintf(&b, "NetworkName=%s\n", net.Name)
+	fmt.Fprintf(&b, "Label=%s=true\n", labelManaged)
+	fmt.Fprintf(&b, "Label=%s=%s\n", labelNetwork, net.Name)
+	if net.Driver != "" {
+		fmt.Fprintf(&b, "Driver=%s\n", net.Driver)
+	}
+	if net.Subnet != "" {
+		fmt.Fprintf(&b, "Subnet=%s\n", net.Subnet)
+	}
+	if net.Gateway != "" {
+		fmt.Fprintf(&b, "Gateway=%s\n", net.Gateway)
+	}
+	if net.IPRange != "" {
+		fmt.Fprintf(&b, "IPRange=%s\n", net.IPRange)
+	}
+	if net.Internal {
+		b.WriteString("Internal=true\n")
+	}
+	if net.IPv6 {
+		b.WriteString("IPv6=true\n")
+	}
+	if net.DisableDNS {
+		b.WriteString("DisableDNS=true\n")
+	}
+	for _, d := range net.DNS {
+		fmt.Fprintf(&b, "DNS=%s\n", quoteIfNeeded(d))
+	}
+	for _, k := range slices.Sorted(maps.Keys(net.Options)) {
+		fmt.Fprintf(&b, "Options=%s\n", quoteIfNeeded(k+"="+net.Options[k]))
+	}
+	b.WriteString("\n")
+	writeInstall(&b)
+	u.Content = b.Bytes()
+	return u, nil
+}
+
+// Labels podcd stamps on the networks it creates, so Inspect can find one
+// whose unit file is gone. They mirror the pod labels in package config; the
+// renderer cannot import config, so they are spelled out here.
+const (
+	labelManaged = "io.podcd.managed"
+	labelNetwork = "io.podcd.network"
+)
 
 // ManifestPath is where the played manifest goes, or "" when no kube directory
 // is configured.
@@ -122,8 +227,15 @@ func (r *Renderer) renderKube(app model.Application, u Unit) (Unit, error) {
 	writeHeader(&b, u)
 	fmt.Fprintf(&b, "[Unit]\nDescription=podcd pod %s\n\n", app.Name)
 	fmt.Fprintf(&b, "[Kube]\nYaml=%s\n", u.ManifestPath)
+	// A network podcd manages is named by its unit file, which Quadlet
+	// resolves to the network's name and turns into a Requires=/After= on
+	// the network's service. Any other network is named as it is.
 	for _, n := range app.Networks {
-		fmt.Fprintf(&b, "Network=%s\n", n)
+		if slices.Contains(app.ManagedNetworks, n) {
+			fmt.Fprintf(&b, "Network=%s\n", NetworkFileName(n))
+		} else {
+			fmt.Fprintf(&b, "Network=%s\n", n)
+		}
 	}
 	b.WriteString("\n")
 	// Quadlet generates `podman kube play --replace` and `podman kube down`.
@@ -174,6 +286,7 @@ func writeInstall(b *bytes.Buffer) {
 type Markers struct {
 	Managed      bool
 	App          string
+	Network      string
 	SpecHash     string
 	ManifestHash string
 	Version      string
@@ -188,6 +301,8 @@ func ParseMarkers(content []byte) Markers {
 			m.Managed = true
 		case strings.HasPrefix(line, markerApp):
 			m.App = strings.TrimSpace(strings.TrimPrefix(line, markerApp))
+		case strings.HasPrefix(line, markerNetwork):
+			m.Network = strings.TrimSpace(strings.TrimPrefix(line, markerNetwork))
 		case strings.HasPrefix(line, markerSpec):
 			m.SpecHash = strings.TrimSpace(strings.TrimPrefix(line, markerSpec))
 		case strings.HasPrefix(line, markerVersion):

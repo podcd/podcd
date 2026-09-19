@@ -31,7 +31,7 @@ spec:
           memory: '{{ default "256Mi" .Values.resources.memory }}'
 ```
 
-A template may render any deployable kind - `Pod`, `ConfigMap`, `Secret` - but not a `Host`, `Group` or `Environment`, since those are what decide a host's values in the first place.
+A template may render any deployable kind - `Pod`, `ConfigMap`, `Secret`, `ExternalSecret`, `Network` - but not a `Host`, `Group` or `Environment`, since those are what decide a host's values in the first place. A `SecretStore` is not templated either: it is shared by every host, and its credentials are already references resolved on the host.
 
 One consequence of the whole file being a template: inside a `.tpl`, a YAML `#` comment is still template text, so a comment that quotes template syntax literally (a bare `{{ if }}`) fails to parse. Write it as a Go template comment, `{{/* like this */}}`, which renders to nothing.
 

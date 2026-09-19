@@ -81,6 +81,48 @@ func Host(o HostOptions) ([]byte, error) {
 	})
 }
 
+// NetworkOptions describes a Network to generate.
+type NetworkOptions struct {
+	Name     string
+	Driver   string
+	Subnet   string
+	Gateway  string
+	IPRange  string
+	Internal bool
+	IPv6     bool
+	// DNS are resolver addresses for containers on the network.
+	DNS []string
+	// Options are "key=value" driver options.
+	Options []string
+}
+
+// Network renders a Network document. Nothing is required but the name: an
+// empty spec is a plain bridge network podman fills in itself.
+func Network(o NetworkOptions) ([]byte, error) {
+	if o.Gateway != "" && o.Subnet == "" {
+		return nil, errors.New("--gateway needs --subnet")
+	}
+	if o.IPRange != "" && o.Subnet == "" {
+		return nil, errors.New("--ip-range needs --subnet")
+	}
+	spec := config.NetworkSpec{Driver: o.Driver, Subnet: o.Subnet, Gateway: o.Gateway, IPRange: o.IPRange, Internal: o.Internal, IPv6: o.IPv6, DNS: o.DNS}
+	for _, opt := range o.Options {
+		k, v, ok := strings.Cut(opt, "=")
+		if !ok || k == "" {
+			return nil, fmt.Errorf("--opt %q: expected key=value", opt)
+		}
+		if spec.Options == nil {
+			spec.Options = map[string]string{}
+		}
+		spec.Options[k] = v
+	}
+	doc, err := render(config.APIVersion, config.KindNetwork, o.Name, spec)
+	if err != nil {
+		return nil, err
+	}
+	return check(doc)
+}
+
 // Group renders a Group document selecting the given applications.
 func Group(name string, applications []string) ([]byte, error) {
 	return render(config.APIVersion, config.KindGroup, name, config.SelectionSpec{Applications: applications})

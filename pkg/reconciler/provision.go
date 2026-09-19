@@ -31,15 +31,22 @@ type Provisioner struct {
 // NewProvisioner indexes the ExternalSecrets by the Secret name each produces.
 // agent resolves the env:/file: references inside a SecretStore's own credentials.
 func NewProvisioner(index *config.Index, agent *secrets.Resolver) *Provisioner {
-	targets := make(map[string]config.Doc[config.ExternalSecretSpec], len(index.ExternalSecrets))
-	for name, doc := range index.ExternalSecrets {
+	p := &Provisioner{index: index, agent: agent, targets: map[string]config.Doc[config.ExternalSecretSpec]{}, cache: map[string]corev1.Secret{}}
+	p.AddExternalSecrets(index.ExternalSecrets)
+	return p
+}
+
+// AddExternalSecrets implements config.SecretProvisioner: the ExternalSecrets
+// a host's templates rendered to join the plain ones. A rendered one cannot
+// share a name with a plain one - Resolve refuses that before getting here.
+func (p *Provisioner) AddExternalSecrets(docs map[string]config.Doc[config.ExternalSecretSpec]) {
+	for name, doc := range docs {
 		target := doc.Spec.Target.Name
 		if target == "" {
 			target = name
 		}
-		targets[target] = doc
+		p.targets[target] = doc
 	}
-	return &Provisioner{index: index, agent: agent, targets: targets, cache: map[string]corev1.Secret{}}
 }
 
 // ProvisionSecret implements config.SecretProvisioner.

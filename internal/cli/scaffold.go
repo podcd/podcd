@@ -66,7 +66,7 @@ func newCreateCommand() *cobra.Command {
 			return cmd.Help()
 		},
 	}
-	cmd.AddCommand(newCreatePod(), newCreateHost(), newCreateGroup(), newCreateEnvironment())
+	cmd.AddCommand(newCreatePod(), newCreateNetwork(), newCreateHost(), newCreateGroup(), newCreateEnvironment())
 	return cmd
 }
 
@@ -101,6 +101,36 @@ func newCreatePod() *cobra.Command {
 	cmd.Flags().StringArrayVar(&o.Ports, "port", nil, "host:container port to publish on 127.0.0.1 (repeatable)")
 	cmd.Flags().StringArrayVar(&o.Env, "env", nil, "KEY=value environment variable (repeatable)")
 	_ = cmd.MarkFlagRequired("image")
+	return cmd
+}
+
+func newCreateNetwork() *cobra.Command {
+	var o scaffold.NetworkOptions
+	cmd := &cobra.Command{
+		Use:     "network NAME [--subnet CIDR] [--gateway IP] [--internal] [--dns IP]... [--opt KEY=VALUE]...",
+		Aliases: []string{"net"},
+		Short:   "a Network: a podman network the pods that name it join",
+		Long: "A Network is created on a host when a Pod there names it in its io.podcd.networks\n" +
+			"annotation, and removed when none does. Every flag is optional: with none, podman picks\n" +
+			"the subnet the way it does for `podman network create NAME`.",
+		Args: cobra.ExactArgs(1),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			o.Name = args[0]
+			doc, err := scaffold.Network(o)
+			if err != nil {
+				return err
+			}
+			return emit(cmd, doc)
+		},
+	}
+	cmd.Flags().StringVar(&o.Driver, "driver", "", "bridge (the default), macvlan or ipvlan")
+	cmd.Flags().StringVar(&o.Subnet, "subnet", "", "subnet in CIDR notation")
+	cmd.Flags().StringVar(&o.Gateway, "gateway", "", "gateway address within the subnet")
+	cmd.Flags().StringVar(&o.IPRange, "ip-range", "", "range within the subnet to allocate from")
+	cmd.Flags().BoolVar(&o.Internal, "internal", false, "no route out of the host")
+	cmd.Flags().BoolVar(&o.IPv6, "ipv6", false, "dual-stack")
+	cmd.Flags().StringArrayVar(&o.DNS, "dns", nil, "resolver for containers on the network (repeatable)")
+	cmd.Flags().StringArrayVar(&o.Options, "opt", nil, "driver option, key=value (repeatable)")
 	return cmd
 }
 
