@@ -15,6 +15,8 @@ podcd reconciles a Linux host to match what is declared in Git.
 - The agent compiles the resulting configuration.
 - Quadlet and systemd manage the running containers and networks.
 
+Hosts without podman can run the same repository on Docker (`runtime: docker` in `agent.yaml`): each pod becomes a Compose project with a pause container standing in for the pod. See [Docker runtime](https://podcd.github.io/podcd/configuration/docker).
+
 ## Quick Start
 
 Install the binary.

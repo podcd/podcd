@@ -29,6 +29,7 @@ const sidebars = {
         'configuration/networks',
         'configuration/values',
         'configuration/secrets',
+        'configuration/docker',
       ],
     },
     {
