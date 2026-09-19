@@ -124,7 +124,7 @@ type service struct {
 	Restart         string                `json:"restart,omitempty"`
 	PullPolicy      string                `json:"pull_policy,omitempty"`
 	NetworkMode     string                `json:"network_mode,omitempty"`
-	Networks        []string              `json:"networks,omitempty"`
+	Networks        map[string]attachment `json:"networks,omitempty"`
 	Ports           []port                `json:"ports,omitempty"`
 	Entrypoint      []string              `json:"entrypoint,omitempty"`
 	Command         []string              `json:"command,omitempty"`
@@ -151,6 +151,13 @@ type port struct {
 
 type dependency struct {
 	Condition string `json:"condition"`
+}
+
+// attachment is how the infra container joins one network. The pod's name
+// is an alias, so other pods on the network reach it the way they do on
+// podman, where the pod's name is what the network's DNS answers for.
+type attachment struct {
+	Aliases []string `json:"aliases,omitempty"`
 }
 
 type healthcheck struct {
@@ -212,10 +219,11 @@ func compose(app string, m manifest, dir, pauseImage string) (composeFile, []fil
 		infra.Hostname = cmp.Or(pod.Spec.Hostname, pod.Name)
 		infra.Ports = publishedPorts(pod)
 		for _, n := range podNetworks(pod) {
-			infra.Networks = append(infra.Networks, n)
-			if cf.Networks == nil {
+			if infra.Networks == nil {
+				infra.Networks = map[string]attachment{}
 				cf.Networks = map[string]composeNetwork{}
 			}
+			infra.Networks[n] = attachment{Aliases: []string{pod.Name}}
 			cf.Networks[n] = composeNetwork{External: true}
 		}
 	}

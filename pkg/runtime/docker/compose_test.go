@@ -122,8 +122,8 @@ func TestComposeTranslatesThePod(t *testing.T) {
 	if len(infra.Ports) != 1 || infra.Ports[0] != (port{Target: 80, Published: "8080", Protocol: "tcp"}) {
 		t.Fatalf("the pod's ports are published on infra: %+v", infra.Ports)
 	}
-	if strings.Join(infra.Networks, ",") != "backend,frontend" || !cf.Networks["backend"].External {
-		t.Fatalf("networks from the annotation, external: %+v %+v", infra.Networks, cf.Networks)
+	if len(infra.Networks) != 2 || infra.Networks["backend"].Aliases[0] != "web" || !cf.Networks["frontend"].External {
+		t.Fatalf("networks from the annotation, external, pod name as alias: %+v %+v", infra.Networks, cf.Networks)
 	}
 
 	seed := cf.Services["seed"]
