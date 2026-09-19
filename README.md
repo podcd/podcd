@@ -15,6 +15,8 @@ podcd reconciles a Linux host to match what is declared in Git.
 - The agent compiles the resulting configuration.
 - Quadlet and systemd manage the running containers and networks.
 
+Hosts without podman can run the same repository on Docker (`runtime: docker` in `agent.yaml`): each pod becomes a Compose project with a pause container standing in for the pod. See [Docker runtime](https://podcd.github.io/podcd/configuration/docker).
+
 ## Quick Start
 
 Install the binary.
@@ -120,6 +122,7 @@ On SELinux-enforcing hosts (RHEL, Fedora), add `:z` (shared) or `:Z` (private) t
 ```bash
 make test           # unit tests; also runs podman's Quadlet generator over rendered units
 make test-e2e       # real podman, quadlet, systemd and Vault on this machine (starts containers)
+make test-e2e-docker # the docker runtime; uses the Docker daemon here, or starts one in a privileged container
 make lint           # golangci-lint
 ```
 
