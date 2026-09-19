@@ -120,6 +120,7 @@ On SELinux-enforcing hosts (RHEL, Fedora), add `:z` (shared) or `:Z` (private) t
 ```bash
 make test           # unit tests; also runs podman's Quadlet generator over rendered units
 make test-e2e       # real podman, quadlet, systemd and Vault on this machine (starts containers)
+make test-e2e-docker # the docker runtime; uses the Docker daemon here, or starts one in a privileged container
 make lint           # golangci-lint
 ```
 

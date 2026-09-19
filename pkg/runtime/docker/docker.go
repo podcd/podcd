@@ -387,11 +387,13 @@ func (r *Runtime) play(ctx context.Context, app string, manifest []byte) error {
 			return fmt.Errorf("%s: clearing %s: %w", app, filepath.Join(dir, sub), err)
 		}
 	}
-	if err := os.MkdirAll(dir, 0o700); err != nil {
+	// The directory is traversable by the containers' own users; what must
+	// stay private (the compose file) is private by its own mode.
+	if err := os.MkdirAll(dir, 0o755); err != nil {
 		return fmt.Errorf("%s: creating %s: %w", app, dir, err)
 	}
 	for _, f := range files {
-		if err := atomicfile.Write(f.path, f.data, f.mode); err != nil {
+		if err := writeFile(f); err != nil {
 			return fmt.Errorf("%s: writing %s: %w", app, f.path, err)
 		}
 	}
@@ -403,6 +405,20 @@ func (r *Runtime) play(ctx context.Context, app string, manifest []byte) error {
 		return fmt.Errorf("starting %s: %w%s", projectName(app), err, r.diagnose(ctx, app))
 	}
 	return nil
+}
+
+// writeFile lays out one file of a project: a key's content, or a mount
+// point (a directory, or an empty file) docker must find already there.
+func writeFile(f file) error {
+	if f.dir {
+		return os.MkdirAll(f.path, 0o755)
+	}
+	if f.data == nil {
+		if _, err := os.Stat(f.path); err == nil {
+			return nil // a key already written is its own mount point
+		}
+	}
+	return atomicfile.Write(f.path, f.data, f.mode)
 }
 
 // Remove takes the project down and deletes its record, manifest and files.

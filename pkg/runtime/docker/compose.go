@@ -8,9 +8,11 @@ package docker
 // become services the rest depend on having completed.
 //
 // ConfigMaps and Secrets have no Docker object to become. Ones a container
-// reads as environment are resolved into the compose file; ones it mounts are
-// written as files next to it. Both live in the project directory, which is
-// readable by the agent user only.
+// reads as environment are resolved into the compose file, which only the
+// agent user can read. Ones it mounts are written as files next to it, with
+// the mode Kubernetes gives them (defaultMode, 0644 unless the volume says
+// otherwise): the container's own user has to be able to read them, and
+// docker runs containers as real host uids.
 
 import (
 	"cmp"
@@ -182,12 +184,14 @@ type composeVolume struct {
 	Name string `json:"name,omitempty"`
 }
 
-// file is something Apply writes beside the compose file: a ConfigMap key or
-// a Secret key a container mounts.
+// file is something Apply writes beside the compose file: a ConfigMap key or a Secret key a container mounts.
 type file struct {
 	path string
 	data []byte
 	mode os.FileMode
+	// dir marks an empty directory to create rather than a file to write:
+	// a mount point docker needs to find already there.
+	dir bool
 }
 
 // projectName is the Compose project an application runs as.
@@ -265,23 +269,32 @@ func compose(app string, m manifest, dir, pauseImage string) (composeFile, []fil
 		if s.Environment, err = environment(c, m); err != nil {
 			return cf, nil, fmt.Errorf("container %q: %w", c.Name, err)
 		}
+		var mountpoints []mountpoint
 		for _, vm := range c.VolumeMounts {
 			src, ok := mounts[vm.Name]
 			if !ok {
 				return cf, nil, fmt.Errorf("container %q mounts volume %q, which the pod does not define", c.Name, vm.Name)
 			}
-			spec, err := src.mount(vm)
+			spec, mp, err := src.mount(vm)
 			if err != nil {
 				return cf, nil, fmt.Errorf("container %q: %w", c.Name, err)
 			}
 			s.Volumes = append(s.Volumes, spec)
+			mountpoints = append(mountpoints, mp)
+		}
+		files = append(files, nestedMountpoints(mountpoints)...)
+		// The pod's own runAsUser/runAsGroup apply to every container that
+		// does not set its own, as in Kubernetes.
+		var uid, gid *int64
+		if psc := pod.Spec.SecurityContext; psc != nil {
+			uid, gid = psc.RunAsUser, psc.RunAsGroup
 		}
 		if sc := c.SecurityContext; sc != nil {
 			if sc.RunAsUser != nil {
-				s.User = strconv.FormatInt(*sc.RunAsUser, 10)
-				if sc.RunAsGroup != nil {
-					s.User += ":" + strconv.FormatInt(*sc.RunAsGroup, 10)
-				}
+				uid = sc.RunAsUser
+			}
+			if sc.RunAsGroup != nil {
+				gid = sc.RunAsGroup
 			}
 			s.Privileged = sc.Privileged != nil && *sc.Privileged
 			s.ReadOnly = sc.ReadOnlyRootFilesystem != nil && *sc.ReadOnlyRootFilesystem
@@ -292,6 +305,12 @@ func compose(app string, m manifest, dir, pauseImage string) (composeFile, []fil
 				for _, c := range caps.Drop {
 					s.CapDrop = append(s.CapDrop, string(c))
 				}
+			}
+		}
+		if uid != nil {
+			s.User = strconv.FormatInt(*uid, 10)
+			if gid != nil {
+				s.User += ":" + strconv.FormatInt(*gid, 10)
 			}
 		}
 		if s.Healthcheck, err = probe(c); err != nil {
@@ -377,10 +396,40 @@ func pullPolicy(p corev1.PullPolicy) string {
 type source struct {
 	path   string // bind mount, when set
 	volume string // named volume otherwise
+	// written marks a directory podcd lays out itself (a ConfigMap or a
+	// Secret), where it may also create mount points for nested mounts.
+	written bool
+}
+
+// mountpoint is one bind mount of a container, kept to find mounts nested
+// inside a directory podcd writes.
+type mountpoint struct {
+	src, dst string
+	written  bool
+	file     bool // a single key mounted with subPath
+}
+
+// nestedMountpoints returns the directories to create inside podcd-written
+// mount sources so docker finds every nested mount point already there.
+// Docker mounts a read-only ConfigMap directory and then cannot create the
+// mount point of a Secret mounted below it; podman and Kubernetes can. The
+// host directory is podcd's own, so the mount point is created there.
+func nestedMountpoints(mounts []mountpoint) []file {
+	var out []file
+	for _, child := range mounts {
+		for _, parent := range mounts {
+			if !parent.written || parent.file || !strings.HasPrefix(child.dst, parent.dst+"/") {
+				continue
+			}
+			rel := strings.TrimPrefix(child.dst, parent.dst+"/")
+			out = append(out, file{path: filepath.Join(parent.src, rel), dir: !child.file, mode: 0o644})
+		}
+	}
+	return out
 }
 
 // mount renders one volumeMount in Compose's short syntax.
-func (s source) mount(vm corev1.VolumeMount) (string, error) {
+func (s source) mount(vm corev1.VolumeMount) (string, mountpoint, error) {
 	src := s.volume
 	if s.path != "" {
 		src = s.path
@@ -388,13 +437,14 @@ func (s source) mount(vm corev1.VolumeMount) (string, error) {
 			src = filepath.Join(src, vm.SubPath)
 		}
 	} else if vm.SubPath != "" {
-		return "", fmt.Errorf("volume %q: subPath on a named volume is not supported by docker", vm.Name)
+		return "", mountpoint{}, fmt.Errorf("volume %q: subPath on a named volume is not supported by docker", vm.Name)
 	}
 	spec := src + ":" + vm.MountPath
 	if vm.ReadOnly {
 		spec += ":ro"
 	}
-	return spec, nil
+	mp := mountpoint{src: src, dst: vm.MountPath, written: s.written, file: s.written && vm.SubPath != ""}
+	return spec, mp, nil
 }
 
 // volumeSources resolves every pod volume. ConfigMaps and Secrets become
@@ -433,8 +483,8 @@ func volumeSources(m manifest, dir string, cf *composeFile) (map[string]source, 
 			}
 			maps.Copy(data, cm.BinaryData)
 			base := filepath.Join(dir, "configmaps", v.Name)
-			files = append(files, keyFiles(base, data, v.ConfigMap.Items, 0o644)...)
-			sources[v.Name] = source{path: base}
+			files = append(files, keyFiles(base, data, v.ConfigMap.Items, v.ConfigMap.DefaultMode)...)
+			sources[v.Name] = source{path: base, written: true}
 		case v.Secret != nil:
 			sec, ok := m.secrets[v.Secret.SecretName]
 			if !ok {
@@ -444,8 +494,8 @@ func volumeSources(m manifest, dir string, cf *composeFile) (map[string]source, 
 				return nil, nil, fmt.Errorf("volume %q: Secret %q is not in the manifest", v.Name, v.Secret.SecretName)
 			}
 			base := filepath.Join(dir, "secrets", v.Name)
-			files = append(files, keyFiles(base, secretData(sec), v.Secret.Items, 0o600)...)
-			sources[v.Name] = source{path: base}
+			files = append(files, keyFiles(base, secretData(sec), v.Secret.Items, v.Secret.DefaultMode)...)
+			sources[v.Name] = source{path: base, written: true}
 		default:
 			return nil, nil, fmt.Errorf("volume %q: only hostPath, emptyDir, persistentVolumeClaim, configMap and secret volumes are supported by docker", v.Name)
 		}
@@ -454,8 +504,12 @@ func volumeSources(m manifest, dir string, cf *composeFile) (map[string]source, 
 }
 
 // keyFiles lays a ConfigMap or Secret out as one file per key, or as the
-// items list says.
-func keyFiles(base string, data map[string][]byte, items []corev1.KeyToPath, mode os.FileMode) []file {
+// items list says, with the volume's defaultMode or Kubernetes' own default.
+func keyFiles(base string, data map[string][]byte, items []corev1.KeyToPath, defaultMode *int32) []file {
+	mode := os.FileMode(0o644)
+	if defaultMode != nil {
+		mode = os.FileMode(*defaultMode)
+	}
 	var files []file
 	if len(items) == 0 {
 		for _, k := range slices.Sorted(maps.Keys(data)) {
@@ -468,7 +522,11 @@ func keyFiles(base string, data map[string][]byte, items []corev1.KeyToPath, mod
 		if !ok {
 			continue
 		}
-		files = append(files, file{path: filepath.Join(base, it.Path), data: d, mode: mode})
+		m := mode
+		if it.Mode != nil {
+			m = os.FileMode(*it.Mode)
+		}
+		files = append(files, file{path: filepath.Join(base, it.Path), data: d, mode: m})
 	}
 	return files
 }

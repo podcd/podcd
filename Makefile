@@ -19,7 +19,7 @@ TESTCOVER ?= $(RACE) -covermode=atomic -coverprofile=coverage.out -coverpkg=./..
 GOJUNITREPORT_VERSION ?= v2.1.0
 VAULT_IMAGE ?= docker.io/hashicorp/vault:1.17
 
-.PHONY: all build image test test-report cover test-e2e vet fmt lint clean install docs docs-serve
+.PHONY: all build image test test-report cover test-e2e test-e2e-docker vet fmt lint clean install docs docs-serve
 
 all: build
 
@@ -55,6 +55,11 @@ test-e2e:
 	podman pull docker.io/library/nginx:alpine
 	podman pull $(VAULT_IMAGE)
 	PODCD_E2E=1 go test ./test/e2e/ -v -timeout 10m
+
+## test-e2e-docker: the docker runtime against a real Docker daemon with Compose v2.
+## With no daemon on this machine it runs inside a privileged docker-in-docker container.
+test-e2e-docker:
+	scripts/e2e-docker.sh
 
 vet:
 	go vet ./...

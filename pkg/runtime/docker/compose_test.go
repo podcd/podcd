@@ -82,6 +82,8 @@ spec:
     securityContext:
       runAsUser: 101
   restartPolicy: OnFailure
+  securityContext:
+    runAsGroup: 102
   volumes:
   - name: conf
     configMap:
@@ -161,7 +163,7 @@ func TestComposeTranslatesThePod(t *testing.T) {
 		nginx.Healthcheck.Interval != "5s" || nginx.Healthcheck.Retries != 2 {
 		t.Fatalf("healthcheck: %+v", nginx.Healthcheck)
 	}
-	if nginx.User != "101" || nginx.Deploy.Resources.Limits["memory"] != "67108864" || nginx.Deploy.Resources.Limits["cpus"] != "0.5" {
+	if nginx.User != "101:102" || nginx.Deploy.Resources.Limits["memory"] != "67108864" || nginx.Deploy.Resources.Limits["cpus"] != "0.5" {
 		t.Fatalf("user and limits: %+v %+v", nginx.User, nginx.Deploy)
 	}
 
@@ -234,8 +236,8 @@ func TestHostNetworkPodHasNoPortsOrHostname(t *testing.T) {
 	}
 }
 
-func TestSecretVolumeFilesAreAgentOnly(t *testing.T) {
-	spec := "apiVersion: v1\nkind: Secret\nmetadata:\n  name: s\nstringData:\n  key: v\n---\napiVersion: v1\nkind: Pod\nmetadata:\n  name: p\nspec:\n  containers:\n  - name: c\n    image: i\n    volumeMounts:\n    - name: sec\n      mountPath: /run/secrets/key\n      subPath: key\n  volumes:\n  - name: sec\n    secret:\n      secretName: s\n"
+func TestSecretVolumeFilesTakeTheVolumeMode(t *testing.T) {
+	spec := "apiVersion: v1\nkind: Secret\nmetadata:\n  name: s\nstringData:\n  key: v\n---\napiVersion: v1\nkind: Pod\nmetadata:\n  name: p\nspec:\n  containers:\n  - name: c\n    image: i\n    volumeMounts:\n    - name: sec\n      mountPath: /run/secrets/key\n      subPath: key\n  volumes:\n  - name: sec\n    secret:\n      secretName: s\n      defaultMode: 0400\n"
 	m, err := parseManifest([]byte(spec))
 	if err != nil {
 		t.Fatal(err)
@@ -244,10 +246,40 @@ func TestSecretVolumeFilesAreAgentOnly(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(files) != 1 || files[0].path != "/d/secrets/sec/key" || files[0].mode != os.FileMode(0o600) || string(files[0].data) != "v" {
+	if len(files) != 1 || files[0].path != "/d/secrets/sec/key" || files[0].mode != os.FileMode(0o400) || string(files[0].data) != "v" {
 		t.Fatalf("secret files: %+v", files)
 	}
 	if got := cf.Services["c"].Volumes[0]; got != "/d/secrets/sec/key:/run/secrets/key" {
 		t.Fatalf("subPath mount: %q", got)
+	}
+}
+
+func TestNestedMountInsideWrittenDirectoryGetsAMountPoint(t *testing.T) {
+	spec := "apiVersion: v1\nkind: ConfigMap\nmetadata:\n  name: html\ndata:\n  index.html: hi\n---\n" +
+		"apiVersion: v1\nkind: Secret\nmetadata:\n  name: s\nstringData:\n  token: v\n---\n" +
+		"apiVersion: v1\nkind: Pod\nmetadata:\n  name: p\nspec:\n  containers:\n  - name: c\n    image: i\n    volumeMounts:\n" +
+		"    - name: html\n      mountPath: /srv\n      readOnly: true\n" +
+		"    - name: sec\n      mountPath: /srv/secret\n" +
+		"    - name: sec\n      mountPath: /srv/one/token\n      subPath: token\n" +
+		"  volumes:\n  - name: html\n    configMap:\n      name: html\n  - name: sec\n    secret:\n      secretName: s\n"
+	m, err := parseManifest([]byte(spec))
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, files, err := compose("p", m, "/d", "pause")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var got []string
+	for _, f := range files {
+		kind := "file"
+		if f.dir {
+			kind = "dir"
+		}
+		got = append(got, kind+" "+f.path)
+	}
+	want := "file /d/configmaps/html/index.html, file /d/secrets/sec/token, dir /d/configmaps/html/secret, file /d/configmaps/html/one/token"
+	if strings.Join(got, ", ") != want {
+		t.Fatalf("want %s\ngot  %s", want, strings.Join(got, ", "))
 	}
 }

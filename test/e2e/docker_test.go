@@ -37,7 +37,7 @@ func TestDockerReconcileEndToEnd(t *testing.T) {
 
 	ctx := context.Background()
 	repoDir := t.TempDir()
-	stateDir := t.TempDir()
+	stateDir := dockerStateDir(t)
 	writeDockerConfig(t, repoDir, digest, true)
 	gitInit(t, repoDir)
 	t.Cleanup(func() { cleanupDocker(dockerApp) })
@@ -159,7 +159,7 @@ func TestDockerNetworkEndToEnd(t *testing.T) {
 
 	ctx := context.Background()
 	repoDir := t.TempDir()
-	stateDir := t.TempDir()
+	stateDir := dockerStateDir(t)
 	t.Cleanup(func() {
 		cleanupDocker(clientName, serverName)
 		_ = exec.Command("docker", "network", "rm", netName).Run()
@@ -279,8 +279,10 @@ func requireDocker(t *testing.T) {
 	if strings.Contains(strings.ToLower(string(out)), "podman") {
 		t.Skip("docker here is podman's shim, not a Docker daemon; run make test-e2e-docker")
 	}
-	if out, err := exec.Command("docker", "compose", "version", "--short").CombinedOutput(); err != nil || !strings.HasPrefix(strings.TrimSpace(string(out)), "2") {
-		t.Skipf("docker compose v2 is not installed: %s", out)
+	// Compose v1 (the python docker-compose) cannot wait for a service to complete;
+	// anything from v2 on can.
+	if out, err := exec.Command("docker", "compose", "version", "--short").CombinedOutput(); err != nil || strings.HasPrefix(strings.TrimSpace(string(out)), "1.") {
+		t.Skipf("docker compose v2 or later is not installed: %s", out)
 	}
 	// Anything else podcd manages on this daemon is what prune would remove.
 	list, _ := exec.Command("docker", "ps", "--all", "--filter", "label="+config.LabelManaged+"=true", "--format", "{{.Names}}").Output()
@@ -293,6 +295,21 @@ func requireDocker(t *testing.T) {
 	if len(others) > 0 {
 		t.Fatalf("this daemon already runs podcd workloads (%s); the end-to-end suite would prune them", strings.Join(others, ", "))
 	}
+}
+
+// dockerStateDir is a state directory the containers' own users can reach:
+// mounted ConfigMaps and Secrets live under it, and t.TempDir is 0700.
+func dockerStateDir(t *testing.T) string {
+	t.Helper()
+	dir, err := os.MkdirTemp("", "podcd-e2e-docker-")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chmod(dir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { os.RemoveAll(dir) })
+	return dir
 }
 
 // dockerEngine wires an engine on the docker runtime. The unit directory is
@@ -417,5 +434,151 @@ func cleanupDocker(apps ...string) {
 			_ = exec.Command("docker", append([]string{"rm", "--force"}, ids...)...).Run()
 		}
 		_ = exec.Command("docker", "network", "rm", "podcd-"+app+"_default").Run()
+	}
+}
+
+// --- the failure matrix, on docker ---------------------------------------
+//
+// The verdicts the podman matrix pins down, read back through docker: a
+// probe's log and failing streak come from `docker inspect`, init containers
+// stay around exited (compose does not remove them), and a failed one stops
+// `up` before the workload starts.
+
+const dockerMatrixHost = "podcd-e2e-docker-matrix"
+
+func dockerMatrixEngine(t *testing.T, name, manifest string) *reconciler.Engine {
+	t.Helper()
+	requireDocker(t)
+	repoDir := t.TempDir()
+	write(t, filepath.Join(repoDir, "app.yaml"), manifest+fmt.Sprintf(`---
+apiVersion: gitops.podcd.io/v1
+kind: Host
+metadata: {name: %s}
+spec: {applications: [%s]}
+`, dockerMatrixHost, name))
+	gitInit(t, repoDir)
+	t.Cleanup(func() { cleanupDocker(name) })
+	return dockerEngine(t, dockerMatrixHost, repoDir, dockerStateDir(t))
+}
+
+func TestDockerMatrixFailingLivenessProbeIsExplained(t *testing.T) {
+	requireDocker(t)
+	digest := dockerImageDigest(t)
+	const name = "podcd-e2e-docker-probe"
+	e := dockerMatrixEngine(t, name, pod(name, digest, `  restartPolicy: Always
+  containers:
+    - name: app
+      image: IMAGE
+      livenessProbe:
+        exec:
+          command: ["sh", "-c", "echo probe says no; exit 1"]
+        periodSeconds: 1
+        failureThreshold: 2
+`))
+	_, _ = e.Reconcile(context.Background(), reconciler.Options{})
+	deadline := time.Now().Add(40 * time.Second)
+	var h model.Health
+	for time.Now().Before(deadline) {
+		hs, err := e.Health(context.Background())
+		if err != nil {
+			t.Fatal(err)
+		}
+		h = hs[0]
+		if strings.Contains(h.Message, "probe says no") {
+			break
+		}
+		time.Sleep(2 * time.Second)
+	}
+	if h.Status == model.HealthHealthy {
+		t.Fatalf("a failing liveness probe must never read as healthy: %+v", h)
+	}
+	for _, want := range []string{"healthcheck failing: " + name + "-app", "check failure", "last check: probe says no"} {
+		if !strings.Contains(h.Message, want) {
+			t.Errorf("message should say %q: %s", want, h.Message)
+		}
+	}
+}
+
+func TestDockerMatrixPassingLivenessProbeBecomesHealthy(t *testing.T) {
+	requireDocker(t)
+	digest := dockerImageDigest(t)
+	const name = "podcd-e2e-docker-probe-ok"
+	e := dockerMatrixEngine(t, name, pod(name, digest, `  containers:
+    - name: app
+      image: IMAGE
+      livenessProbe:
+        exec:
+          command: ["true"]
+        periodSeconds: 1
+`))
+	res, err := e.Reconcile(context.Background(), reconciler.Options{})
+	if err != nil {
+		t.Fatalf("%v %+v", err, res.Health)
+	}
+	if !res.Health[0].OK() {
+		t.Fatalf("got %+v", res.Health[0])
+	}
+	if out := runCmdOut(t, "docker", "inspect", name+"-app", "--format", "{{.State.Health.Status}}"); strings.TrimSpace(out) != "healthy" {
+		t.Fatalf("docker should have run the probe and be satisfied, got %q", out)
+	}
+}
+
+func TestDockerMatrixCompletedInitContainerIsNotReportedMissing(t *testing.T) {
+	requireDocker(t)
+	digest := dockerImageDigest(t)
+	const name = "podcd-e2e-docker-init"
+	e := dockerMatrixEngine(t, name, pod(name, digest, `  initContainers:
+    - name: setup
+      image: IMAGE
+      command: ["sh", "-c", "echo ready > /tmp/marker"]
+  containers:
+    - name: app
+      image: IMAGE
+`))
+	res, err := e.Reconcile(context.Background(), reconciler.Options{})
+	if err != nil {
+		t.Fatalf("%v %+v", err, res.Health)
+	}
+	h := healthOf(t, e, 20*time.Second)
+	if h.Status != model.HealthHealthy {
+		t.Fatalf("a completed init container must not count against the pod: %+v", h)
+	}
+	if strings.Contains(h.Message, "setup") {
+		t.Fatalf("nothing about the finished init container should be in the verdict: %s", h.Message)
+	}
+	// It ran, once, before the workload: compose keeps it around, exited 0.
+	if out := runCmdOut(t, "docker", "inspect", name+"-setup", "--format", "{{.State.Status}} {{.State.ExitCode}}"); strings.TrimSpace(out) != "exited 0" {
+		t.Fatalf("init container should be exited 0, got %q", out)
+	}
+	// A second reconcile changes nothing: an exited init container is not a
+	// dead workload container.
+	again, err := e.Reconcile(context.Background(), reconciler.Options{})
+	if err != nil || len(again.Applied) != 0 {
+		t.Fatalf("second reconcile should change nothing: %v %+v", err, again.Applied)
+	}
+}
+
+func TestDockerMatrixFailedInitContainerIsNamed(t *testing.T) {
+	requireDocker(t)
+	digest := dockerImageDigest(t)
+	const name = "podcd-e2e-docker-init-fail"
+	e := dockerMatrixEngine(t, name, pod(name, digest, `  restartPolicy: Never
+  initContainers:
+    - name: setup
+      image: IMAGE
+      command: ["sh", "-c", "echo setup went wrong >&2; exit 9"]
+  containers:
+    - name: app
+      image: IMAGE
+`))
+	// compose refuses to start the workload behind a failed dependency, so
+	// the apply itself fails and says so, with the init container's output.
+	_, err := e.Reconcile(context.Background(), reconciler.Options{})
+	if err == nil || !strings.Contains(err.Error(), "setup went wrong") {
+		t.Fatalf("the apply should fail and quote the init container: %v", err)
+	}
+	h := healthOf(t, e, 30*time.Second)
+	if h.Status != model.HealthUnhealthy || !strings.Contains(h.Message, "init container failed: "+name+"-setup exited with code 9") {
+		t.Fatalf("got %+v", h)
 	}
 }
