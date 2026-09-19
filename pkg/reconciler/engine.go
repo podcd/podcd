@@ -18,6 +18,7 @@ import (
 	"github.com/podcd/podcd/pkg/planner"
 	"github.com/podcd/podcd/pkg/renderer"
 	"github.com/podcd/podcd/pkg/runtime"
+	"github.com/podcd/podcd/pkg/runtime/docker"
 	"github.com/podcd/podcd/pkg/runtime/podman"
 	"github.com/podcd/podcd/pkg/secrets"
 	"github.com/podcd/podcd/pkg/state"
@@ -56,8 +57,12 @@ func NewEngine(cfg config.AgentConfig, log *slog.Logger) (*Engine, error) {
 	case "podman":
 		p := podman.New(podman.Options{UnitDir: cfg.UnitDir, KubeDir: cfg.KubeDir()})
 		rt, rend = p, p.Renderer()
+	case "docker":
+		// Docker's records must not go where Quadlet would pick them up.
+		d := docker.New(docker.Options{UnitDir: cfg.DockerDir(), KubeDir: cfg.KubeDir()})
+		rt, rend = d, d.Renderer()
 	default:
-		return nil, fmt.Errorf("runtime %q is not implemented; the MVP supports rootless podman", cfg.Runtime)
+		return nil, fmt.Errorf("runtime %q is not implemented; use podman or docker", cfg.Runtime)
 	}
 
 	e := &Engine{

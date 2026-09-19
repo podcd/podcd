@@ -110,3 +110,16 @@ jobs:
         run: sudo apt-get update -qq && sudo apt-get install -y -qq podman uidmap dbus-user-session
       - run: make build
       - run: make test-e2e
+
+  # The docker runtime. Hosted runners have a Docker daemon and Compose v2,
+  # so this runs directly; best-effort like the podman job above.
+  e2e-docker:
+    runs-on: ubuntu-latest
+    needs: build-test
+    continue-on-error: true
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+      - run: make test-e2e-docker

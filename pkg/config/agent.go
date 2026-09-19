@@ -53,7 +53,7 @@ type AgentConfig struct {
 	RetryInterval    time.Duration `yaml:"retryInterval,omitempty" doc:"Wait after a failed reconcile; doubles on each further failure."`
 	MaxRetryInterval time.Duration `yaml:"maxRetryInterval,omitempty" doc:"Cap for the retry backoff."`
 
-	Runtime string `yaml:"runtime,omitempty" doc:"Container runtime. Only podman (rootless, via Quadlet) is implemented."`
+	Runtime string `yaml:"runtime,omitempty" doc:"Container runtime: podman (rootless, via Quadlet) or docker (via Compose)."`
 
 	Repository RepositorySpec `yaml:"repository" doc:"The Git repository this host reconciles against."`
 
@@ -101,6 +101,9 @@ func (c AgentConfig) StatePath() string { return filepath.Join(c.StateDir, "stat
 
 // KubeDir holds the played manifests referenced by .kube units.
 func (c AgentConfig) KubeDir() string { return filepath.Join(c.StateDir, "kube") }
+
+// DockerDir holds the docker runtime's records and Compose projects.
+func (c AgentConfig) DockerDir() string { return filepath.Join(c.StateDir, "docker") }
 
 // LoadAgentConfig reads the agent configuration from path, applying defaults.
 func LoadAgentConfig(path string) (AgentConfig, error) {

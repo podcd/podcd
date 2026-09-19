@@ -35,7 +35,7 @@ host: local
 # Cap for the retry backoff.
 # maxRetryInterval: 10m0s
 
-# Container runtime. Only podman (rootless, via Quadlet) is implemented.
+# Container runtime: podman (rootless, via Quadlet) or docker (via Compose).
 # runtime: podman
 
 # The Git repository this host reconciles against.

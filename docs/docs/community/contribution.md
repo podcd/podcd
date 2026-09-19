@@ -24,6 +24,7 @@ The pull request template asks for:
 
 - tests for the change, with `make test` passing
 - `make test-e2e` if the change touches the runtime, the renderer or the systemd units
+- `make test-e2e-docker` if the change touches the docker runtime or the compose translation
 - the README, the generated `agent.yaml` (`podcd config create`) and the examples updated if the change is visible to a user
 - a check that nothing writes a secret value to Git, a unit file, a log line or `state.json`
 - `make lint` and `gofmt -l .` clean
