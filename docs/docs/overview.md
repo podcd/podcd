@@ -16,7 +16,7 @@ title: Overview
 
 - The checkout is read into one index. A name defined twice will be treated as an error. The index is then compiled for *this* host - the `Host` document matching `agent.yaml`'s `host` (default: the machine's hostname). See the [configuration model](configuration/model.md) and [values templating](configuration/values.md).
 
-- The runtime (currently podman only) is inspected: which units podcd wrote, their content hashes, whether systemd reports them active, which container image is actually running.
+- The runtime (podman, or docker) is inspected: which units podcd wrote, their content hashes, whether systemd reports them active, which container image is actually running.
 
 #### Plan & Reconcile
 
