@@ -26,19 +26,17 @@ func newRemoveCommand(f *configFlags) *cobra.Command {
 			if len(names) == 0 && !all {
 				return fmt.Errorf("name one or more applications, or pass --all")
 			}
-			candidates, _, err := env.engine.RemoveCandidates(ctx, names, all)
+			candidates, networks, _, err := env.engine.RemoveCandidates(ctx, names, all)
 			if err != nil {
 				return err
 			}
-			if len(candidates) == 0 {
+			if len(candidates) == 0 && len(networks) == 0 {
 				fmt.Fprintln(env.out, "nothing to remove")
 				return nil
 			}
 			fmt.Fprintln(env.out, "will stop and remove:")
-			for _, n := range candidates {
-				fmt.Fprintln(env.out, "  "+n)
-			}
-			if !yes && !confirm(cmd, fmt.Sprintf("Remove %d application(s)?", len(candidates))) {
+			printCandidates(env.out, candidates, networks)
+			if !yes && !confirm(cmd, fmt.Sprintf("Remove %s?", countItems(candidates, networks))) {
 				fmt.Fprintln(cmd.ErrOrStderr(), "aborted")
 				return nil
 			}
@@ -67,19 +65,17 @@ func newPruneCommand(f *configFlags) *cobra.Command {
 			"touched. To remove an application regardless of Git, use remove.",
 		Args: cobra.NoArgs,
 		RunE: withEngineArgs(f, func(ctx context.Context, env *environment, cmd *cobra.Command, _ []string) error {
-			candidates, _, err := env.engine.PruneCandidates(ctx)
+			candidates, networks, _, err := env.engine.PruneCandidates(ctx)
 			if err != nil {
 				return err
 			}
-			if len(candidates) == 0 {
+			if len(candidates) == 0 && len(networks) == 0 {
 				fmt.Fprintln(env.out, "nothing to prune: everything podcd manages here is still declared in Git")
 				return nil
 			}
 			fmt.Fprintln(env.out, "no longer declared in Git, will stop and remove:")
-			for _, n := range candidates {
-				fmt.Fprintln(env.out, "  "+n)
-			}
-			if !yes && !confirm(cmd, fmt.Sprintf("Remove %d application(s)?", len(candidates))) {
+			printCandidates(env.out, candidates, networks)
+			if !yes && !confirm(cmd, fmt.Sprintf("Remove %s?", countItems(candidates, networks))) {
 				fmt.Fprintln(cmd.ErrOrStderr(), "aborted")
 				return nil
 			}
@@ -96,9 +92,31 @@ func newPruneCommand(f *configFlags) *cobra.Command {
 	return cmd
 }
 
+// printCandidates lists what a removal would act on, networks marked as such.
+func printCandidates(w io.Writer, apps, networks []string) {
+	for _, n := range apps {
+		fmt.Fprintln(w, "  "+n)
+	}
+	for _, n := range networks {
+		fmt.Fprintln(w, "  network "+n)
+	}
+}
+
+// countItems phrases "3 application(s) and 1 network(s)" for a prompt.
+func countItems(apps, networks []string) string {
+	s := fmt.Sprintf("%d application(s)", len(apps))
+	if len(networks) > 0 {
+		s += fmt.Sprintf(" and %d network(s)", len(networks))
+	}
+	return s
+}
+
 func printRemoveResult(w io.Writer, res reconciler.RemoveResult) {
 	if len(res.Removed) > 0 {
 		fmt.Fprintln(w, "removed: "+strings.Join(res.Removed, ", "))
+	}
+	if len(res.Networks) > 0 {
+		fmt.Fprintln(w, "removed networks: "+strings.Join(res.Networks, ", "))
 	}
 	if len(res.Skipped) > 0 {
 		fmt.Fprintln(w, "not managed by podcd, left alone: "+strings.Join(res.Skipped, ", "))

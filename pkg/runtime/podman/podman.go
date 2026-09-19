@@ -190,6 +190,9 @@ func (r *Runtime) Inspect(ctx context.Context) (model.ActualState, error) {
 	if err := r.fillUnitStates(ctx, state); err != nil {
 		return state, err
 	}
+	if err := r.inspectNetworks(ctx, &state); err != nil {
+		return state, err
+	}
 	return state, nil
 }
 
@@ -311,26 +314,33 @@ func (r *Runtime) fillUnitStates(ctx context.Context, state model.ActualState) e
 			continue
 		}
 		app.SubState = props["SubState"]
-		switch {
-		case props["LoadState"] == "not-found":
-			app.UnitState = model.UnitMissing
-		case props["ActiveState"] == "active":
-			app.UnitState = model.UnitActive
-		case props["ActiveState"] == "activating":
-			app.UnitState = model.UnitActivating
-		case props["ActiveState"] == "failed":
-			app.UnitState = model.UnitFailed
-		case props["ActiveState"] == "inactive":
-			app.UnitState = model.UnitInactive
-		case props["ActiveState"] == "":
-			app.UnitState = model.UnitUnknown
-		default:
-			// deactivating, reloading, or a systemd state podcd does not know.
-			app.UnitState = model.UnitState(props["ActiveState"])
-		}
+		app.UnitState = unitStateOf(props)
 		state.Apps[n] = app
 	}
 	return nil
+}
+
+// unitStateOf maps one `systemctl show` block to podcd's own words for it.
+func unitStateOf(props map[string]string) model.UnitState {
+	switch {
+	case props == nil:
+		return model.UnitMissing
+	case props["LoadState"] == "not-found":
+		return model.UnitMissing
+	case props["ActiveState"] == "active":
+		return model.UnitActive
+	case props["ActiveState"] == "activating":
+		return model.UnitActivating
+	case props["ActiveState"] == "failed":
+		return model.UnitFailed
+	case props["ActiveState"] == "inactive":
+		return model.UnitInactive
+	case props["ActiveState"] == "":
+		return model.UnitUnknown
+	default:
+		// deactivating, reloading, or a systemd state podcd does not know.
+		return model.UnitState(props["ActiveState"])
+	}
 }
 
 // parseShowBlocks splits `systemctl show` output into one property map per unit.
@@ -460,11 +470,9 @@ func (r *Runtime) unitFilesFor(app string) []string {
 // Quadlet derives it.
 func (r *Runtime) stopUnitFile(ctx context.Context, path string) error {
 	service := renderer.ServiceNameOfFile(filepath.Base(path))
-	if _, err := r.systemctlRun(ctx, "stop", service); err != nil {
+	if _, err := r.systemctlRun(ctx, "stop", service); err != nil && !unitUnknown(err) {
 		// A unit that is not loaded is already stopped; anything else matters.
-		if !strings.Contains(err.Error(), "not loaded") && !strings.Contains(err.Error(), "not found") {
-			return fmt.Errorf("stopping %s: %w", service, err)
-		}
+		return fmt.Errorf("stopping %s: %w", service, err)
 	}
 	if content, err := os.ReadFile(path); err == nil {
 		_ = removeIfExists(yamlPathOf(content))

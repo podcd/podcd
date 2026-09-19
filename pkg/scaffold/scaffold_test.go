@@ -126,3 +126,29 @@ func TestCreateRejectsBadInputBeforeWriting(t *testing.T) {
 		}
 	}
 }
+
+func TestCreateNetworkRendersAValidDocument(t *testing.T) {
+	doc, err := Network(NetworkOptions{Name: "backend", Subnet: "10.90.0.0/24", Gateway: "10.90.0.1", Internal: true, DNS: []string{"10.90.0.53"}, Options: []string{"mtu=1400"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, want := range []string{"kind: Network", "name: backend", "subnet: 10.90.0.0/24", "gateway: 10.90.0.1", "internal: true", "- 10.90.0.53", `mtu: "1400"`} {
+		if !strings.Contains(string(doc), want) {
+			t.Errorf("missing %q:\n%s", want, doc)
+		}
+	}
+	empty, err := Network(NetworkOptions{Name: "ai"})
+	if err != nil || !strings.Contains(string(empty), "spec: {}") {
+		t.Fatalf("an empty spec is a valid network: %v\n%s", err, empty)
+	}
+	for _, o := range []NetworkOptions{
+		{Name: ""},
+		{Name: "x", Gateway: "10.0.0.1"},
+		{Name: "x", IPRange: "10.0.0.0/28"},
+		{Name: "x", Options: []string{"nope"}},
+	} {
+		if _, err := Network(o); err == nil {
+			t.Errorf("%+v should be rejected", o)
+		}
+	}
+}

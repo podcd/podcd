@@ -53,22 +53,42 @@ func printStatus(env *environment, st reconciler.Status) {
 	fmt.Fprintln(env.out, "\napplications")
 	if len(st.Actual.Apps) == 0 {
 		fmt.Fprintln(env.out, "  (none)")
+	} else {
+		w = table(env.out)
+		fmt.Fprintln(w, "  APP\tUNIT\tCONTAINERS\tRESTARTS\tIMAGE\tLAST HEALTH\tAPPLIED")
+		for _, name := range st.Actual.Names() {
+			a := st.Actual.Apps[name]
+			rec := st.State.Applications[name]
+			owner := ""
+			if !a.Managed {
+				owner = " (not managed by podcd)"
+			}
+			fmt.Fprintf(w, "  %s\t%s%s\t%s\t%s\t%s\t%s\t%s\n",
+				name, string(a.UnitState), owner, containerSummary(a),
+				restartSummary(a),
+				dash(shortImage(cmp.Or(rec.Image, a.ContainerImage))),
+				dash(rec.Health), dash(rec.AppliedAt))
+		}
+		w.Flush()
+	}
+
+	if len(st.Actual.Networks) == 0 {
 		return
 	}
+	fmt.Fprintln(env.out, "\nnetworks")
 	w = table(env.out)
-	fmt.Fprintln(w, "  APP\tUNIT\tCONTAINERS\tRESTARTS\tIMAGE\tLAST HEALTH\tAPPLIED")
-	for _, name := range st.Actual.Names() {
-		a := st.Actual.Apps[name]
-		rec := st.State.Applications[name]
+	fmt.Fprintln(w, "  NETWORK\tUNIT\tPODMAN")
+	for _, name := range st.Actual.NetworkNames() {
+		n := st.Actual.Networks[name]
 		owner := ""
-		if !a.Managed {
+		if !n.Managed {
 			owner = " (not managed by podcd)"
 		}
-		fmt.Fprintf(w, "  %s\t%s%s\t%s\t%s\t%s\t%s\t%s\n",
-			name, string(a.UnitState), owner, containerSummary(a),
-			restartSummary(a),
-			dash(shortImage(cmp.Or(rec.Image, a.ContainerImage))),
-			dash(rec.Health), dash(rec.AppliedAt))
+		exists := "missing"
+		if n.Exists {
+			exists = "exists"
+		}
+		fmt.Fprintf(w, "  %s\t%s%s\t%s\n", name, string(n.UnitState), owner, exists)
 	}
 	w.Flush()
 }
@@ -80,7 +100,7 @@ func printPlan(w io.Writer, res reconciler.Result) {
 	}
 	changes := res.Plan.Changes()
 	if len(changes) == 0 {
-		fmt.Fprintf(w, "  no changes (%d application(s) already match Git)\n", len(res.Desired.Applications))
+		fmt.Fprintf(w, "  no changes (%d application(s) and %d network(s) already match Git)\n", len(res.Desired.Applications), len(res.Desired.Networks))
 		return
 	}
 	for _, a := range changes {
@@ -88,7 +108,7 @@ func printPlan(w io.Writer, res reconciler.Result) {
 		if a.Destructive {
 			destructive = "  [destructive]"
 		}
-		fmt.Fprintf(w, "  %s %s - %s%s\n", actionSymbol(a.Type), a.App, a.Reason, destructive)
+		fmt.Fprintf(w, "  %s %s - %s%s\n", actionSymbol(a.Type), a.Subject(), a.Reason, destructive)
 		for _, d := range a.Details {
 			fmt.Fprintf(w, "      %s\n", d)
 		}

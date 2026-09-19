@@ -10,21 +10,28 @@
 
 podcd reconciles a Linux host to match what is declared in Git.
 
-- Git defines the desired state.
+- Git defines the desired state: pods, the networks they join, and the secrets they read.
 - A local agent reads that state and identifies the host.
 - The agent compiles the resulting configuration.
-- Quadlet and systemd manage the running containers.
+- Quadlet and systemd manage the running containers and networks.
 
 ## Quick Start
 
 Install the binary.
 
 ```bash
-V=4.1.1; A=$(uname -m | sed 's/x86_64/amd64/; s/aarch64/arm64/')
+V=$(curl -fsSLI https://github.com/podcd/podcd/releases/latest \
+  | sed -n 's/^[Ll]ocation:.*\/tag\/v\([^[:space:]]*\).*/\1/p' \
+  | tr -d '\r')
+
+A=$(uname -m | sed 's/x86_64/amd64/; s/aarch64/arm64/')
+
 curl -fsSLO "https://github.com/podcd/podcd/releases/download/v$V/podcd_${V}_linux_${A}.tar.gz"
 curl -fsSLO "https://github.com/podcd/podcd/releases/download/v$V/podcd_${V}_linux_${A}.tar.gz.sha256"
-sha256sum -c "podcd_${V}_linux_${A}.tar.gz.sha256" && tar -xzf "podcd_${V}_linux_${A}.tar.gz"
-sudo install -m 0755 podcd /usr/local/bin/podcd
+
+sha256sum -c "podcd_${V}_linux_${A}.tar.gz.sha256" &&
+  tar -xzf "podcd_${V}_linux_${A}.tar.gz" &&
+  sudo install -m 0755 podcd /usr/local/bin/podcd
 ```
 
 Create config pointing `podcd` to a git repo.

@@ -44,4 +44,14 @@ type Runtime interface {
 
 	// Logs returns recent log output, for debugging on the host.
 	Logs(ctx context.Context, app string, lines int) (string, error)
+
+	// ApplyNetwork makes one network exist as specified. Like Apply, it is
+	// safe to call when the network already exists and is already correct.
+	// A network whose definition changed is recreated, which stops every
+	// application on it; the planner restarts those afterwards.
+	ApplyNetwork(ctx context.Context, net model.Network) error
+
+	// RemoveNetwork removes a network's definition and the network itself.
+	// It fails, rather than forces, when something still uses the network.
+	RemoveNetwork(ctx context.Context, network string) error
 }

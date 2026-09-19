@@ -25,12 +25,16 @@ import (
 // The mutex matters only for the loop test, where the engine runs on its own
 // goroutine while the test watches what it does.
 type fakeRuntime struct {
-	mu   sync.Mutex
-	apps map[string]model.ActualApp
+	mu       sync.Mutex
+	apps     map[string]model.ActualApp
+	networks map[string]model.ActualNetwork
 
 	applied  []string
 	removed  []string
 	restarts []string
+	// networksApplied and networksRemoved record network actions in order.
+	networksApplied []string
+	networksRemoved []string
 
 	applyErr  error
 	removeErr map[string]error
@@ -39,7 +43,7 @@ type fakeRuntime struct {
 }
 
 func newFakeRuntime() *fakeRuntime {
-	return &fakeRuntime{apps: map[string]model.ActualApp{}, unhealthy: map[string]bool{}}
+	return &fakeRuntime{apps: map[string]model.ActualApp{}, networks: map[string]model.ActualNetwork{}, unhealthy: map[string]bool{}}
 }
 
 func (f *fakeRuntime) Name() string                             { return "fake" }
@@ -52,7 +56,11 @@ func (f *fakeRuntime) Inspect(context.Context) (model.ActualState, error) {
 	for k, v := range f.apps {
 		apps[k] = v
 	}
-	return model.ActualState{Runtime: "fake", Apps: apps}, nil
+	nets := make(map[string]model.ActualNetwork, len(f.networks))
+	for k, v := range f.networks {
+		nets[k] = v
+	}
+	return model.ActualState{Runtime: "fake", Apps: apps, Networks: nets}, nil
 }
 
 func (f *fakeRuntime) Apply(_ context.Context, app model.Application) error {
@@ -108,6 +116,31 @@ func (f *fakeRuntime) Health(_ context.Context, app model.Application) (model.He
 
 func (f *fakeRuntime) Logs(_ context.Context, app string, lines int) (string, error) {
 	return fmt.Sprintf("%s:%d", app, lines), nil
+}
+
+func (f *fakeRuntime) ApplyNetwork(_ context.Context, net model.Network) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.networksApplied = append(f.networksApplied, net.Name)
+	r := &renderer.Renderer{UnitDir: "/units", KubeDir: "/kube"}
+	u, err := r.RenderNetwork(net)
+	if err != nil {
+		return err
+	}
+	f.networks[net.Name] = model.ActualNetwork{
+		Name: net.Name, Managed: true, UnitFile: u.Path,
+		UnitFileHash: model.HashBytes(u.Content), UnitContent: u.Content,
+		SpecHash: u.SpecHash, UnitName: u.ServiceName, UnitState: model.UnitActive, Exists: true,
+	}
+	return nil
+}
+
+func (f *fakeRuntime) RemoveNetwork(_ context.Context, name string) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.networksRemoved = append(f.networksRemoved, name)
+	delete(f.networks, name)
+	return nil
 }
 
 // appliedCount is safe to call while the engine is running on another goroutine.

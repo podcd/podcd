@@ -168,7 +168,7 @@ func TestRemoveCandidatesAllListsOnlyManagedNamesSorted(t *testing.T) {
 	}
 	rt.apps["theirs"] = model.ActualApp{Name: "theirs", Managed: false}
 
-	got, _, err := e.RemoveCandidates(context.Background(), nil, true)
+	got, _, _, err := e.RemoveCandidates(context.Background(), nil, true)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -189,7 +189,7 @@ func TestPruneRemovesOnlyWhatGitNoLongerDeclares(t *testing.T) {
 	// Git drops web; api stays.
 	writeRepo(t, repoDir, oneApp)
 
-	names, _, err := e.PruneCandidates(context.Background())
+	names, _, _, err := e.PruneCandidates(context.Background())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -241,7 +241,7 @@ func TestPruneNeverTouchesAnUnmanagedUnit(t *testing.T) {
 	e, _ := newTestEngine(t, rt, twoApps)
 	rt.apps["theirs"] = model.ActualApp{Name: "theirs", Managed: false, UnitState: model.UnitActive}
 
-	names, _, err := e.PruneCandidates(context.Background())
+	names, _, _, err := e.PruneCandidates(context.Background())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -259,7 +259,7 @@ func TestPruneFailsWhenGitIsUnreachable(t *testing.T) {
 	e, _ := newTestEngine(t, rt, twoApps)
 	e.source.Repos[0].URL = "/nonexistent/repo"
 
-	if _, _, err := e.PruneCandidates(context.Background()); err == nil {
+	if _, _, _, err := e.PruneCandidates(context.Background()); err == nil {
 		t.Fatal("prune must fail when the repository cannot be read")
 	}
 	if len(rt.removed) != 0 {

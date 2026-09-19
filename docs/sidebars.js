@@ -26,6 +26,7 @@ const sidebars = {
       items: [
         'configuration/agent',
         'configuration/model',
+        'configuration/networks',
         'configuration/values',
         'configuration/secrets',
       ],

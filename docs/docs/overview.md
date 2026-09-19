@@ -27,7 +27,9 @@ Desired and actual are compared per application:
 - present and unchanged, but the unit is not active -> **restart**
 - present in the runtime but no longer declared in Git -> **delete** (only when `prune` is on, the default; otherwise reported as a no-op)
 
-Deletes are ordered before creates, so a renamed application frees its host port before its successor binds it.
+Networks a `Network` document declares go through the same comparison, as `.network` units. A changed network is recreated and the applications on it restarted; one no pod on the host names any more is deleted.
+
+Deletes are ordered before creates, so a renamed application frees its host port before its successor binds it; networks sit in between, after the applications that leave them and before the ones that join them.
 
 Reconciles run one at a time under a file lock, so a human running `podcd reconcile` and the agent's own loop cannot fight over the same unit files. A destructive action is logged before it happens. The first failure stops the run and is recorded.
 

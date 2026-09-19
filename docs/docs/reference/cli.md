@@ -24,7 +24,7 @@ podcd validate    # fetch, compile the configuration for this host, and check fo
 podcd lint        # check repository files, for every host they define, without fetching
 podcd get         # what a repository defines (agent.yaml's, or --repo NAME|DIR|URL)
 podcd init        # scaffold a minimal repository: one host, one nginx
-podcd create      # prints a document from a kind.
+podcd create      # prints a document from a kind: pod, network, host, group, environment
 ```
 
 `lint` and `get` need no agent configuration when given a path - they are the two commands meant to run on a laptop against a checkout:
@@ -37,6 +37,7 @@ podcd lint --values values/common.yaml .    # the agent.yaml fallback layer for 
 
 podcd get                                   # every document, with its file and line
 podcd get hosts                             # NAME  ENVIRONMENT  GROUPS  APPLICATIONS  SOURCE
+podcd get networks                          # NAME  DRIVER  SUBNET  SOURCE
 podcd get application api -o yaml           # one document, as written
 podcd get all --repo ./gitops               # a checkout you are editing
 podcd get pods --repo https://github.com/podcd/podcd-gitops.git

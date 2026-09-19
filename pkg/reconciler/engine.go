@@ -257,6 +257,14 @@ func (e *Engine) apply(ctx context.Context, plan model.Plan, desired model.Desir
 			return applied, err
 		}
 
+		if action.Kind == model.KindNetwork {
+			if err := e.applyNetwork(ctx, action); err != nil {
+				return applied, err
+			}
+			applied = append(applied, action)
+			continue
+		}
+
 		switch action.Type {
 		case model.ActionDelete:
 			// Say it before doing it, a destructive change must never be a surprise found later in a journal.
@@ -288,11 +296,35 @@ func (e *Engine) apply(ctx context.Context, plan model.Plan, desired model.Desir
 	return applied, nil
 }
 
+// applyNetwork executes one network action. Networks keep no per-item
+// record in the state file: the unit on disk and podman are the whole truth
+// about one, and Inspect reads both.
+func (e *Engine) applyNetwork(ctx context.Context, action model.Action) error {
+	switch action.Type {
+	case model.ActionDelete:
+		e.log.Warn("removing network", "network", action.App, "reason", action.Reason)
+		if err := e.rt.RemoveNetwork(ctx, action.App); err != nil {
+			return fmt.Errorf("removing network %s: %w", action.App, err)
+		}
+	case model.ActionCreate, model.ActionUpdate, model.ActionRestart:
+		e.log.Info(string(action.Type)+" network", "network", action.App, "reason", action.Reason)
+		for _, d := range action.Details {
+			e.log.Debug("change", "network", action.App, "detail", d)
+		}
+		if err := e.rt.ApplyNetwork(ctx, *action.Network); err != nil {
+			return fmt.Errorf("applying network %s: %w", action.App, err)
+		}
+	}
+	return nil
+}
+
 // checkHealth probes every desired application, waiting only on the ones that just changed.
 func (e *Engine) checkHealth(ctx context.Context, desired model.DesiredState, applied []model.Action, st *state.State) ([]model.Health, error) {
 	changed := map[string]bool{}
 	for _, a := range applied {
-		changed[a.App] = true
+		if a.Kind == model.KindApplication {
+			changed[a.App] = true
+		}
 	}
 	waiter, canWait := e.rt.(healthWaiter)
 
@@ -431,7 +463,7 @@ func (e *Engine) save(st *state.State) {
 func describeActions(actions []model.Action) []string {
 	out := make([]string, 0, len(actions))
 	for _, a := range actions {
-		out = append(out, string(a.Type)+" "+a.App)
+		out = append(out, string(a.Type)+" "+a.Subject())
 	}
 	return out
 }

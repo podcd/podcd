@@ -32,6 +32,7 @@ type documents struct {
 	Groups       map[string]Doc[SelectionSpec]
 	Environments map[string]Doc[SelectionSpec]
 	Hosts        map[string]Doc[HostSpec]
+	Networks     map[string]Doc[NetworkSpec]
 
 	Pods       map[string]Doc[corev1.Pod]
 	ConfigMaps map[string]Doc[corev1.ConfigMap]
@@ -46,6 +47,7 @@ func newDocuments() documents {
 		Groups:          map[string]Doc[SelectionSpec]{},
 		Environments:    map[string]Doc[SelectionSpec]{},
 		Hosts:           map[string]Doc[HostSpec]{},
+		Networks:        map[string]Doc[NetworkSpec]{},
 		Pods:            map[string]Doc[corev1.Pod]{},
 		ConfigMaps:      map[string]Doc[corev1.ConfigMap]{},
 		Secrets:         map[string]Doc[corev1.Secret]{},
@@ -233,7 +235,7 @@ func (d *documents) addDocuments(repo, path string, data []byte, rendered bool) 
 			return fmt.Errorf("%s: kind %s has no metadata.name", src, env.Kind)
 		}
 		if rendered && !deployable(env.Kind) {
-			return fmt.Errorf("%s: a template may only render an Application, Pod, ConfigMap or Secret, not a %s: those decide which values a host gets, so they cannot depend on them", src, env.Kind)
+			return fmt.Errorf("%s: a template may only render a Pod, ConfigMap, Secret, ExternalSecret or Network, not a %s: a Host, Group or Environment decides which values a host gets, so it cannot depend on them", src, env.Kind)
 		}
 		if err := d.add(env, src); err != nil {
 			return err
@@ -242,11 +244,12 @@ func (d *documents) addDocuments(repo, path string, data []byte, rendered bool) 
 	return nil
 }
 
-// deployable reports whether a kind is something a host runs, as opposed
-// to something that decides what a host runs.
+// deployable reports whether a kind is something a host runs or provides,
+// as opposed to something that decides what a host runs. Only the latter
+// are barred from templates.
 func deployable(kind string) bool {
 	switch kind {
-	case KindPod, KindConfigMap, KindSecret:
+	case KindPod, KindConfigMap, KindSecret, KindExternalSecret, KindNetwork:
 		return true
 	}
 	return false
@@ -263,6 +266,8 @@ func (d *documents) add(env document, src Source) error {
 			return addSpec(d.Environments, env.Kind, name, src)
 		case KindHost:
 			return addSpec(d.Hosts, env.Kind, name, src)
+		case KindNetwork:
+			return addSpec(d.Networks, env.Kind, name, src)
 		}
 		return fmt.Errorf("%s: unknown kind %q in %s", src, env.Kind, APIVersion)
 	case CoreAPIVersion:
