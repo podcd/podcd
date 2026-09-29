@@ -227,6 +227,12 @@ func (r *Renderer) renderKube(app model.Application, u Unit) (Unit, error) {
 	writeHeader(&b, u)
 	fmt.Fprintf(&b, "[Unit]\nDescription=podcd pod %s\n\n", app.Name)
 	fmt.Fprintf(&b, "[Kube]\nYaml=%s\n", u.ManifestPath)
+	if app.UserNS != "" {
+		if err := checkUnitValue("pod "+app.Name+" userns", app.UserNS); err != nil {
+			return Unit{}, err
+		}
+		fmt.Fprintf(&b, "UserNS=%s\n", app.UserNS)
+	}
 	// A network podcd manages is named by its unit file, which Quadlet
 	// resolves to the network's name and turns into a Requires=/After= on
 	// the network's service. Any other network is named as it is.

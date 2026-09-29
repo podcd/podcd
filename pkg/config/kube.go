@@ -44,6 +44,33 @@ func podNetworks(pod corev1.Pod) []string {
 	return slices.Sorted(maps.Keys(seen))
 }
 
+// AnnotationUserNS sets the user namespace mode the pod is played with.
+// Unset keeps podman's default.
+const AnnotationUserNS = "io.podcd.userns"
+
+// userNSModes are the modes podman's --userns accepts, before any ":options".
+var userNSModes = []string{"auto", "host", "keep-id", "nomap", "ns", "private"}
+
+// podUserNS reads AnnotationUserNS, trimmed.
+func podUserNS(pod corev1.Pod) string {
+	return strings.TrimSpace(pod.Annotations[AnnotationUserNS])
+}
+
+// checkUserNS reports what is wrong with a userns value, or "" when nothing is wrong.
+func checkUserNS(v string) string {
+	if v == "" {
+		return ""
+	}
+	if strings.ContainsAny(v, " \t\n\r") {
+		return fmt.Sprintf("annotation %s must not contain whitespace", AnnotationUserNS)
+	}
+	mode, _, _ := strings.Cut(v, ":")
+	if !slices.Contains(userNSModes, mode) {
+		return fmt.Sprintf("annotation %s: unknown mode %q (one of %s)", AnnotationUserNS, mode, strings.Join(userNSModes, ", "))
+	}
+	return ""
+}
+
 func patchPod(pod corev1.Pod, override Override) (corev1.Pod, error) {
 	if len(bytes.TrimSpace(override)) == 0 {
 		return pod, nil
@@ -78,6 +105,10 @@ func (h hostDocuments) podToApplication(ctx context.Context, name string, pod co
 		RestartPolicy: kubeRestartPolicy(pod.Spec.RestartPolicy),
 		Labels:        maps.Clone(pod.Labels),
 		Networks:      podNetworks(pod),
+		UserNS:        podUserNS(pod),
+	}
+	if msg := checkUserNS(app.UserNS); msg != "" {
+		p.add("%s", msg)
 	}
 	for _, c := range pod.Spec.InitContainers {
 		if c.Name != "" {

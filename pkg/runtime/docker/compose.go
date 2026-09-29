@@ -202,6 +202,10 @@ func projectName(app string) string { return "podcd-" + app }
 // back with the project.
 func compose(app string, m manifest, dir, pauseImage string) (composeFile, []file, error) {
 	pod := m.pod
+	// Docker has one user namespace setting per daemon, not per container.
+	if ns := strings.TrimSpace(pod.Annotations[config.AnnotationUserNS]); ns != "" && ns != "host" {
+		return composeFile{}, nil, fmt.Errorf("annotation %s: %q needs podman; docker only runs pods in the host user namespace", config.AnnotationUserNS, ns)
+	}
 	cf := composeFile{Name: projectName(app), Services: map[string]*service{}}
 	labels := maps.Clone(pod.Labels)
 	if labels == nil {

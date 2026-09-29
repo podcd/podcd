@@ -155,6 +155,9 @@ type Application struct {
 	Networks        []string          `json:"networks,omitempty"`
 	ManagedNetworks []string          `json:"managedNetworks,omitempty"`
 	Labels          map[string]string `json:"labels,omitempty"`
+	// UserNS is the user namespace mode the pod is played with (podman --userns),
+	// or "" for podman's default.
+	UserNS string `json:"userns,omitempty"`
 
 	RestartPolicy string `json:"restartPolicy,omitempty"` // always (default), on-failure, no
 	User          string `json:"user,omitempty"`          // user[:group] inside the container

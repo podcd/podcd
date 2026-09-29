@@ -100,3 +100,30 @@ func TestQuadletAcceptsAKubeUnit(t *testing.T) {
 		t.Fatalf("expected a kube play command for the manifest:\n%s", text)
 	}
 }
+
+// Quadlet passes it to `podman kube play --userns`.
+func TestKubeUnitCarriesTheUserNamespace(t *testing.T) {
+	r := &Renderer{UnitDir: "/units", KubeDir: "/kube"}
+	plain, err := r.Render(kubeApp())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(string(plain.Content), "UserNS=") {
+		t.Fatalf("no userns asked for, none written:\n%s", plain.Content)
+	}
+
+	app := kubeApp()
+	app.UserNS = "keep-id:uid=1002,gid=1002"
+	u, err := r.Render(app)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(u.Content), "[Kube]\nYaml=/kube/web.yaml\nUserNS=keep-id:uid=1002,gid=1002\n") {
+		t.Fatalf("want UserNS= in [Kube]:\n%s", u.Content)
+	}
+
+	app.UserNS = "keep-id\nExecStartPre=/bin/true"
+	if _, err := r.Render(app); err == nil {
+		t.Fatal("a newline must not reach the unit file")
+	}
+}
