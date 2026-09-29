@@ -62,6 +62,16 @@ metadata:
 
 A name here is either a network a [`Network` document](#network) declares, which podcd then creates and removes, or one that already exists on the host - podman's own `podman`, or one made by hand - which podcd leaves alone.
 
+Kubernetes has no field for it, so podcd takes it as an annotation and writes it into the unit's `UserNS=` line, which Quadlet passes to `podman kube play --userns`:
+
+```yaml
+metadata:
+  annotations:
+    io.podcd.userns: "keep-id"
+```
+
+The value is anything `--userns` accepts and applies to every container in the pod.
+
 Pods are validated before anything is written:
 
 - referenced ConfigMaps and Secrets must exist, or be marked optional

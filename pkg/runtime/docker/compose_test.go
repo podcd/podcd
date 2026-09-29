@@ -283,3 +283,24 @@ func TestNestedMountInsideWrittenDirectoryGetsAMountPoint(t *testing.T) {
 		t.Fatalf("want %s\ngot  %s", want, strings.Join(got, ", "))
 	}
 }
+
+// Docker cannot give one pod its own user namespace; only "host".
+func TestComposeRefusesAUserNamespaceOtherThanTheHosts(t *testing.T) {
+	pod := func(userns string) string {
+		return "apiVersion: v1\nkind: Pod\nmetadata:\n  name: p\n  annotations:\n    io.podcd.userns: " + userns + "\nspec:\n  containers:\n  - name: c\n    image: i\n"
+	}
+	m, err := parseManifest([]byte(pod("keep-id")))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err := compose("p", m, "/d", "pause"); err == nil || !strings.Contains(err.Error(), "needs podman") {
+		t.Fatalf("want keep-id refused, got %v", err)
+	}
+	m, err = parseManifest([]byte(pod("host")))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err := compose("p", m, "/d", "pause"); err != nil {
+		t.Fatalf("host is docker's own behaviour, got %v", err)
+	}
+}
