@@ -26,6 +26,8 @@ Reconciles run one at a time under a file lock, so `podcd reconcile` and the age
 
 A failed reconcile is retried after `retryInterval`, doubling up to `maxRetryInterval`; after a success the regular `interval` resumes. `jitter` adds a random delay to `interval` so a fleet does not hit Git in lockstep.
 
+Every `imagePrune` (default 24h, `0s` disables), after a successful reconcile, images no container uses are removed (`podman image prune --all`). With every desired application running, podcd's own images are in use and kept.
+
 ## State
 
 `~/.local/state/podcd/state.json` records the host identity, last revisions, last success and failure, and per-application history. `podcd status` reads it, so it works offline. It is metadata only and safe to delete.
