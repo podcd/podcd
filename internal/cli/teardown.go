@@ -17,7 +17,8 @@ func newTeardownCommand(f *configFlags) *cobra.Command {
 		Short: "stop and remove everything podcd runs on this host, and uninstall the agent",
 		Long: "Composes `podcd prune --all` and `podcd uninstall`: every application podcd manages is\n" +
 			"stopped and removed, then the agent's own systemd unit is stopped, disabled and removed.\n" +
-			"--purge-state additionally deletes stateDir (checkouts, played manifests, state.json).\n" +
+			"--purge-state additionally deletes what podcd keeps in stateDir (checkouts, played manifests,\n" +
+			"state.json); the directory itself and anything else in it are left alone.\n" +
 			"--purge-config additionally deletes agent.yaml and its envFile - the repository URL and any\n" +
 			"secrets resolved through env: references live there.",
 		Args: cobra.NoArgs,
@@ -31,6 +32,8 @@ func newTeardownCommand(f *configFlags) *cobra.Command {
 				return err
 			}
 			stateDir := env.cfg.StateDir
+			// Only what podcd writes there: stateDir is configurable and may be shared.
+			stateFiles := []string{env.cfg.ReposDir(), env.cfg.KubeDir(), env.cfg.DockerDir(), env.cfg.StatePath(), env.cfg.LockPath()}
 
 			fmt.Fprintln(env.out, "this will:")
 			if len(candidates) > 0 {
@@ -43,7 +46,7 @@ func newTeardownCommand(f *configFlags) *cobra.Command {
 			}
 			fmt.Fprintln(env.out, "  stop, disable and remove "+serviceUnitName+" ("+serviceFile+")")
 			if purgeState {
-				fmt.Fprintln(env.out, "  delete "+stateDir+" (checkouts, played manifests, state.json)")
+				fmt.Fprintln(env.out, "  delete podcd's checkouts, played manifests and state.json in "+stateDir)
 			}
 			if purgeConfig {
 				fmt.Fprintln(env.out, "  delete "+env.cfg.Path+" and "+env.cfg.EnvFile+" (secrets)")
@@ -60,10 +63,12 @@ func newTeardownCommand(f *configFlags) *cobra.Command {
 			fmt.Fprintln(env.out, "removed "+serviceFile)
 
 			if purgeState {
-				if err := os.RemoveAll(stateDir); err != nil {
-					return fmt.Errorf("removing %s: %w", stateDir, err)
+				for _, p := range stateFiles {
+					if err := os.RemoveAll(p); err != nil {
+						return fmt.Errorf("removing %s: %w", p, err)
+					}
 				}
-				fmt.Fprintln(env.out, "removed "+stateDir)
+				fmt.Fprintln(env.out, "removed podcd's state in "+stateDir)
 			}
 			if purgeConfig {
 				// Only the files podcd owns: --config may point into $HOME, /etc or anywhere else.
@@ -80,7 +85,7 @@ func newTeardownCommand(f *configFlags) *cobra.Command {
 			return res.Err()
 		}),
 	}
-	cmd.Flags().BoolVar(&purgeState, "purge-state", false, "also delete stateDir (checkouts, played manifests, state.json)")
+	cmd.Flags().BoolVar(&purgeState, "purge-state", false, "also delete podcd's checkouts, played manifests and state.json from stateDir")
 	cmd.Flags().BoolVar(&purgeConfig, "purge-config", false, "also delete agent.yaml and its envFile (secrets)")
 	cmd.Flags().BoolVarP(&yes, "yes", "y", false, "tear down without asking")
 	return cmd
