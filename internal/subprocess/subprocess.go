@@ -1,6 +1,4 @@
-// Package subprocess runs the external tools the agent shells out to (git,
-// podman, systemctl, journalctl) with one set of rules: a deadline, captured
-// output, and an error that says which command failed and what it printed.
+// Package subprocess runs external tools with a deadline and errors that include the command and its output.
 package subprocess
 
 import (
@@ -24,8 +22,7 @@ type Command struct {
 	Timeout time.Duration
 }
 
-// Run executes the command and returns its stdout. On failure the error
-// carries the command line and the tool's own message (stderr, else stdout).
+// Run returns stdout; errors carry the command line and stderr (else stdout).
 func Run(ctx context.Context, c Command) (string, error) {
 	if c.Timeout > 0 {
 		var cancel context.CancelFunc

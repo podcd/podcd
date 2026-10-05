@@ -10,9 +10,7 @@ import (
 	"github.com/spf13/cobra"
 )
 
-// Stop and remove every application podcd manages, then stop, disable and remove the agent's own systemd unit.
-// It gives this host back, the way it was before `podcd install` and the first reconcile.
-// State and config are left alone by default - state.json is metadata a human might still want to look at
+// newTeardownCommand removes every managed application, then the agent unit. State and config are kept unless purged.
 func newTeardownCommand(f *configFlags) *cobra.Command {
 	var purgeState, purgeConfig, yes bool
 	cmd := &cobra.Command{
@@ -70,8 +68,6 @@ func newTeardownCommand(f *configFlags) *cobra.Command {
 				fmt.Fprintln(env.out, "removed "+stateDir)
 			}
 			if purgeConfig {
-				// The secrets file is wherever the config said, not
-				// necessarily in the config's directory.
 				if err := os.Remove(env.cfg.EnvFile); err != nil && !os.IsNotExist(err) {
 					return fmt.Errorf("removing %s: %w", env.cfg.EnvFile, err)
 				}

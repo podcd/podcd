@@ -23,10 +23,7 @@ const (
 	LabelApp     = "io.podcd.app"
 )
 
-// AnnotationNetworks names the podman networks to attach the pod to, comma
-// separated. It is an annotation rather than a spec field because Kubernetes
-// has no equivalent - podman takes networks on the command line, which for a
-// Quadlet unit is the Network= key podcd writes.
+// AnnotationNetworks lists the networks the pod joins, comma separated.
 const AnnotationNetworks = "io.podcd.networks"
 
 // podNetworks reads AnnotationNetworks, sorted and deduplicated.
@@ -44,8 +41,7 @@ func podNetworks(pod corev1.Pod) []string {
 	return slices.Sorted(maps.Keys(seen))
 }
 
-// AnnotationUserNS sets the user namespace mode the pod is played with.
-// Unset keeps podman's default.
+// AnnotationUserNS sets podman's --userns for the pod.
 const AnnotationUserNS = "io.podcd.userns"
 
 // userNSModes are the modes podman's --userns accepts, before any ":options".
@@ -145,8 +141,7 @@ func (h hostDocuments) podToApplication(ctx context.Context, name string, pod co
 	}
 	slices.SortFunc(app.Ports, comparePorts)
 
-	// Populate Env and Volumes from the first container so callers can inspect the
-	// effective config without parsing the manifest YAML.
+	// Env and Volumes from the first container, for reporting.
 	if len(pod.Spec.Containers) > 0 {
 		c := pod.Spec.Containers[0]
 		for _, e := range c.Env {
@@ -175,9 +170,7 @@ func (h hostDocuments) podToApplication(ctx context.Context, name string, pod co
 		}
 	}
 
-	// ConfigMaps and Secrets the pod refers to must exist in Git, unless the
-	// reference is marked optional.
-	// Missing ones would only fail inside podman, later, with a worse message.
+	// Referenced ConfigMaps and Secrets must exist unless optional.
 	refs := collectRefs(pod)
 	var configMaps []corev1.ConfigMap
 	for _, cmName := range slices.Sorted(maps.Keys(refs.configMaps)) {
@@ -190,9 +183,7 @@ func (h hostDocuments) podToApplication(ctx context.Context, name string, pod co
 		}
 		configMaps = append(configMaps, doc.Spec)
 	}
-	// An ExternalSecret wins over a Git Secret of the same name, and is fetched
-	// here rather than up front: only the secrets this pod names are worth a
-	// round trip to a store.
+	// An ExternalSecret wins over a Git Secret of the same name; fetched only when referenced.
 	var secretDocs []corev1.Secret
 	for _, secName := range slices.Sorted(maps.Keys(refs.secrets)) {
 		if provisioner != nil {
@@ -220,8 +211,7 @@ func (h hostDocuments) podToApplication(ctx context.Context, name string, pod co
 		return model.Application{}, err
 	}
 
-	// Stamp the pod so Inspect can tell it is ours. Labels on the pod are
-	// inherited by its containers in podman.
+	// Label the pod (inherited by its containers) so Inspect knows it is ours.
 	if pod.Labels == nil {
 		pod.Labels = map[string]string{}
 	}
@@ -236,8 +226,7 @@ func (h hostDocuments) podToApplication(ctx context.Context, name string, pod co
 	return app, nil
 }
 
-// SecretProvisionError identifies a failed ExternalSecret fetch, so Resolve
-// can keep compiling unrelated applications and let the reconciler retry it.
+// SecretProvisionError is a failed ExternalSecret fetch; other applications still compile.
 type SecretProvisionError struct {
 	Secret string
 	Err    error
@@ -251,8 +240,7 @@ func allContainers(pod corev1.Pod) []corev1.Container {
 	return slices.Concat(pod.Spec.InitContainers, pod.Spec.Containers)
 }
 
-// renderManifest writes the documents podman will play, in a fixed order, so
-// the same inputs always yield the same bytes.
+// renderManifest writes the played documents in a fixed order.
 func renderManifest(pod corev1.Pod, configMaps []corev1.ConfigMap, secretDocs []corev1.Secret) ([]byte, error) {
 	var b bytes.Buffer
 	b.WriteString("# Managed by podcd - do not edit. Generated from Git; secrets resolved on this host.\n")
@@ -284,8 +272,7 @@ func renderManifest(pod corev1.Pod, configMaps []corev1.ConfigMap, secretDocs []
 	return b.Bytes(), nil
 }
 
-// refSet collects referenced names; the bool is "optional". A name that is
-// referenced both optionally and not stays required.
+// refSet maps referenced names to "optional"; required wins.
 type refSet struct {
 	configMaps map[string]bool
 	secrets    map[string]bool

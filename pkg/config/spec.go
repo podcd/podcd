@@ -31,8 +31,7 @@ func RenderAgentConfig(cfg AgentConfig) string {
 	return b.String()
 }
 
-// renderStruct writes the fields of v, using def for "is this the default?"
-// and for the commented value. top-level fields get a blank line before them.
+// renderStruct writes v's fields; defaults (from def) are commented out.
 func renderStruct(b *strings.Builder, v, def reflect.Value, indent string, top bool) {
 	t := v.Type()
 	for i := 0; i < t.NumField(); i++ {
@@ -74,9 +73,7 @@ func renderStruct(b *strings.Builder, v, def reflect.Value, indent string, top b
 	}
 }
 
-// renderScalarSlice writes a list of plain values (strings, numbers): active
-// with its items when set, a single commented placeholder when empty, the
-// same "shown either way" rule scalar fields follow.
+// renderScalarSlice writes a scalar list, or a commented placeholder when empty.
 func renderScalarSlice(b *strings.Builder, key string, v reflect.Value, indent string) {
 	if v.Len() == 0 {
 		fmt.Fprintf(b, "%s# %s: []\n", indent, key)
@@ -88,8 +85,7 @@ func renderScalarSlice(b *strings.Builder, key string, v reflect.Value, indent s
 	}
 }
 
-// renderExample writes an optional section that is not set, as a commented
-// block of the fields that have an example tag.
+// renderExample writes an unset optional section as a commented block of its example tags.
 func renderExample(b *strings.Builder, key string, t reflect.Type, indent string) {
 	fmt.Fprintf(b, "%s# %s:\n", indent, key)
 	for i := 0; i < t.NumField(); i++ {
@@ -122,9 +118,8 @@ func writeComment(b *strings.Builder, indent, doc string) {
 	fmt.Fprintf(b, "%s# %s\n", indent, line)
 }
 
-// Setting is one "path=value" change for EditAgentConfig. Paths are yaml
-// paths: "host", "interval", "repository.url", "vault.address". A few
-// short aliases exist for the repository's most-edited fields.
+// Setting is one "path=value" change for EditAgentConfig, by yaml path
+// ("host", "repository.url") or a repository alias.
 type Setting struct {
 	Path  string
 	Value string
@@ -225,8 +220,7 @@ func fieldKeys(t reflect.Type) []string {
 	return keys
 }
 
-// scalar renders a field value for comparison and output: durations as
-// "1m0s", pointers dereferenced, nil as "".
+// scalar renders a field value: durations as "1m0s", pointers dereferenced, nil as "".
 func scalar(v reflect.Value) string {
 	if v.Kind() == reflect.Pointer {
 		if v.IsNil() {
@@ -240,9 +234,7 @@ func scalar(v reflect.Value) string {
 	return fmt.Sprint(v.Interface())
 }
 
-// yamlScalar renders a string the way yaml.v3 would inside a document, so a
-// value that needs quoting gets it. Numbers, booleans and durations are
-// passed as their text and come out bare.
+// yamlScalar renders a string as yaml.v3 would, quoting only when needed.
 func yamlScalar(s string) string {
 	switch s {
 	case "":

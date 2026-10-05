@@ -29,8 +29,7 @@ type healthWaiter interface {
 	WaitHealthy(ctx context.Context, app model.Application) model.Health
 }
 
-// Engine wires the pieces together and is shared by the agent and the CLI, so
-// `podcd plan` and the loop can never disagree about what would happen.
+// Engine is shared by the agent loop and the CLI, so plan and reconcile agree.
 type Engine struct {
 	cfg    config.AgentConfig
 	ident  identity.Identity
@@ -119,11 +118,8 @@ type Result struct {
 	Elapsed time.Duration
 }
 
-// desiredState fetches Git and compiles it for this host.
-//
-// Secrets are fetched through a Provisioner while compiling, so only the ones
-// this host's own workloads name are ever read from a store. Revisions come
-// back even on failure, because a failed reconcile still records where it was.
+// desiredState fetches Git and compiles it for this host. Revisions are
+// returned even on failure, for the failure record.
 func (e *Engine) desiredState(ctx context.Context) (model.DesiredState, []string, map[string]string, map[string]bool, error) {
 	index, values, revisions, offline, err := e.source.LoadIndex(ctx)
 	if err != nil {
@@ -149,8 +145,7 @@ func (e *Engine) desiredState(ctx context.Context) (model.DesiredState, []string
 	return desired, offline, revisions, protected, provisioningErr
 }
 
-// Plan loads Git, observes the host and returns what would change.
-// It makes no changes of its own.
+// Plan returns what would change, changing nothing.
 func (e *Engine) Plan(ctx context.Context) (Result, error) {
 	var res Result
 	res.Started = time.Now()
@@ -177,9 +172,7 @@ func (e *Engine) Plan(ctx context.Context) (Result, error) {
 	return res, nil
 }
 
-// Reconcile makes the host match Git, then checks that the result works.
-//
-// The lock is held for the whole apply, so a human running `podcd reconcile` and the agent's own loop cannot fight over the same unit files.
+// Reconcile makes the host match Git and checks health, under the reconcile lock.
 func (e *Engine) Reconcile(ctx context.Context, opts Options) (Result, error) {
 	started := time.Now()
 	res := Result{Started: started}
@@ -272,7 +265,6 @@ func (e *Engine) apply(ctx context.Context, plan model.Plan, desired model.Desir
 
 		switch action.Type {
 		case model.ActionDelete:
-			// Say it before doing it, a destructive change must never be a surprise found later in a journal.
 			e.log.Warn("removing application", "app", action.App, "reason", action.Reason)
 			if err := e.rt.Remove(ctx, action.App); err != nil {
 				return applied, fmt.Errorf("removing %s: %w", action.App, err)
@@ -301,9 +293,7 @@ func (e *Engine) apply(ctx context.Context, plan model.Plan, desired model.Desir
 	return applied, nil
 }
 
-// applyNetwork executes one network action. Networks keep no per-item
-// record in the state file: the unit on disk and podman are the whole truth
-// about one, and Inspect reads both.
+// applyNetwork executes one network action; networks have no state.json record.
 func (e *Engine) applyNetwork(ctx context.Context, action model.Action) error {
 	switch action.Type {
 	case model.ActionDelete:
@@ -362,8 +352,7 @@ func (e *Engine) checkHealth(ctx context.Context, desired model.DesiredState, ap
 	return results, nil
 }
 
-// Index fetches the configured repository and returns everything it
-// defines, without resolving for a host or touching the runtime.
+// Index fetches the repository and returns its documents, unresolved.
 func (e *Engine) Index(ctx context.Context, only ...string) (*config.Index, config.Values, map[string]string, []string, error) {
 	return e.source.LoadIndex(ctx, only...)
 }

@@ -1,9 +1,7 @@
 package config
 
-// ExternalSecretsAPIVersion is the API version used for ExternalSecret and
-// SecretStore documents. Field names are compatible with external-secrets.io/v1beta1
-// so existing YAML written for that operator decodes here without modification.
-// We use our own Go structs to avoid pulling in controller-runtime.
+// ExternalSecretsAPIVersion: field-compatible with the external-secrets.io operator,
+// with local structs to avoid depending on controller-runtime.
 const ExternalSecretsAPIVersion = "external-secrets.io/v1beta1"
 
 const (
@@ -23,9 +21,7 @@ type SecretStoreProvider struct {
 	File  *FileStoreProvider  `json:"file,omitempty"`
 }
 
-// VaultStoreProvider configures a HashiCorp Vault KV backend.
-// Vault credentials are secret references (env:NAME, file:path) resolved from
-// agent.env at reconcile time - never stored as plaintext in Git.
+// VaultStoreProvider configures a Vault KV backend; credentials are env:/file: references.
 type VaultStoreProvider struct {
 	// Server is the Vault address, e.g. https://vault.example.com
 	Server string `json:"server"`
@@ -46,8 +42,7 @@ type VaultAuth struct {
 	TokenSecretRef *SecretKeySelector `json:"tokenSecretRef,omitempty"`
 }
 
-// VaultAppRoleAuth carries AppRole credentials.
-// Both values are secret references resolved from agent.env.
+// VaultAppRoleAuth carries AppRole credentials as secret references.
 type VaultAppRoleAuth struct {
 	// RoleID is a secret reference to the AppRole role ID (e.g. env:VAULT_ROLE_ID).
 	RoleID string `json:"roleId"`
@@ -57,15 +52,13 @@ type VaultAppRoleAuth struct {
 
 // SecretKeySelector names a key within a secret source.
 type SecretKeySelector struct {
-	// Name is a secret reference (env:NAME or file:path) or the name of a
-	// previously provisioned Kubernetes Secret.
+	// Name is a secret reference (env:NAME, file:path) or a provisioned Secret's name.
 	Name string `json:"name"`
 	// Key selects one key within a named Secret (unused for inline references).
 	Key string `json:"key,omitempty"`
 }
 
-// EnvStoreProvider resolves values from the agent's environment (agent.env).
-// No configuration is required.
+// EnvStoreProvider resolves values from the agent's environment and envFile.
 type EnvStoreProvider struct{}
 
 // FileStoreProvider resolves values from files under secretsDir.

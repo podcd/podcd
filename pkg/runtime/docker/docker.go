@@ -1,12 +1,8 @@
 // Package docker runs applications as Compose projects on a Docker daemon.
 //
-// Docker has no Quadlet and no `kube play`, so the podman shape is kept where
-// it matters and translated where it does not. The renderer's unit for an
-// application is still written to disk, as the record of what was applied:
-// the planner compares those bytes to what it would render, the same as for
-// podman, and this runtime never has to be asked "is this current?". What
-// runs is a Compose project built from the played manifest (see compose.go),
-// and Docker itself is what the containers are read back from.
+// The renderer's unit is still written, as the record of what was applied, so
+// the planner diffs it exactly as for podman. What runs is a Compose project
+// built from the played manifest (see compose.go).
 package docker
 
 import (
@@ -37,15 +33,12 @@ var (
 	waitInterval = 2 * time.Second
 )
 
-// labelNetwork is the label a podcd-created network carries, the same one
-// the podman runtime uses.
+// labelNetwork marks podcd-created networks, as in the podman runtime.
 const labelNetwork = "io.podcd.network"
 
 // Options configures a Runtime.
 type Options struct {
-	// UnitDir holds the rendered units this runtime keeps as its record of
-	// what was applied, and one project directory per application. It must
-	// not be a directory Quadlet reads.
+	// UnitDir holds the applied-unit records and project directories; never a Quadlet directory.
 	UnitDir string
 	// KubeDir holds the played manifests. It can contain resolved secrets.
 	KubeDir string
@@ -87,8 +80,7 @@ func New(opts Options) *Runtime {
 	}
 }
 
-// Renderer exposes the renderer this runtime records with, so the planner
-// compares against the bytes the runtime would write.
+// Renderer is what this runtime records with, so the planner compares the same bytes.
 func (r *Runtime) Renderer() *renderer.Renderer { return r.rend }
 
 // Name implements runtime.Runtime.
@@ -186,9 +178,7 @@ func (r *Runtime) Inspect(ctx context.Context) (model.ActualState, error) {
 		}
 	}
 
-	// Containers labelled as ours, with or without a record: a record whose
-	// project was taken down by hand, or a project whose record is gone, are
-	// both still ours.
+	// Labelled containers are ours with or without a record.
 	containers, err := r.listContainers(ctx, "")
 	if err != nil {
 		return state, err
@@ -229,9 +219,7 @@ func (r *Runtime) Inspect(ctx context.Context) (model.ActualState, error) {
 	return state, nil
 }
 
-// unitStateOf stands in for what systemd would say: there is no unit, so the
-// containers speak for the project. Running is active; present but stopped is
-// inactive, and the planner restarts it.
+// unitStateOf derives a systemd-like state from the containers: running is active, stopped inactive.
 func unitStateOf(containers []containerInfo) (model.UnitState, string) {
 	var states []string
 	for _, c := range workload(containers) {
@@ -257,12 +245,10 @@ type containerInfo struct {
 	infra    bool
 }
 
-// exitedStatus reads the exit code out of docker's status column:
-// "Exited (1) 3 minutes ago".
+// exitedStatus matches "Exited (1) 3 minutes ago".
 var exitedStatus = regexp.MustCompile(`^Exited \((\d+)\)`)
 
-// healthFromStatus pulls the healthcheck verdict out of the status column:
-// "Up 2 minutes (healthy)" -> "healthy". Docker says "health: starting".
+// healthFromStatus: "Up 2 minutes (healthy)" -> "healthy"; docker says "health: starting".
 func healthFromStatus(status string) string {
 	switch {
 	case strings.Contains(status, "(healthy)"):
@@ -275,8 +261,7 @@ func healthFromStatus(status string) string {
 	return ""
 }
 
-// listContainers asks Docker for everything labelled as ours, grouped by
-// app and sorted by name. Passing an app narrows it to that one.
+// listContainers returns podcd-labelled containers grouped by app, sorted by name; app narrows it to one.
 func (r *Runtime) listContainers(ctx context.Context, app string) (map[string][]containerInfo, error) {
 	args := []string{"ps", "--all", "--no-trunc", "--filter", "label=" + config.LabelManaged + "=true"}
 	if app != "" {
@@ -346,9 +331,7 @@ func workload(containers []containerInfo) []containerInfo {
 	return out
 }
 
-// Apply writes the record and manifest for one application, builds its
-// Compose project and brings it up. Every container is recreated, as podman
-// replays a pod: init containers run again, in order, before the rest.
+// Apply writes the record and manifest, builds the Compose project and recreates every container, init containers first.
 func (r *Runtime) Apply(ctx context.Context, app model.Application) error {
 	unit, err := r.rend.Render(app)
 	if err != nil {
@@ -363,9 +346,7 @@ func (r *Runtime) Apply(ctx context.Context, app model.Application) error {
 	return r.play(ctx, app.Name, app.Manifest)
 }
 
-// play builds the Compose project for an application from its manifest and
-// brings it up. The manifest is the whole input: the pod carries its restart
-// policy, its ports and, as an annotation, its networks.
+// play builds the Compose project from the manifest alone and brings it up.
 func (r *Runtime) play(ctx context.Context, app string, manifest []byte) error {
 	m, err := parseManifest(manifest)
 	if err != nil {
@@ -380,15 +361,13 @@ func (r *Runtime) play(ctx context.Context, app string, manifest []byte) error {
 	if err != nil {
 		return fmt.Errorf("%s: rendering compose file: %w", app, err)
 	}
-	// Mounted ConfigMaps and Secrets are laid out fresh: a key removed in
-	// Git must not linger as a file.
+	// Laid out fresh, so a key removed in Git does not linger as a file.
 	for _, sub := range []string{"configmaps", "secrets"} {
 		if err := os.RemoveAll(filepath.Join(dir, sub)); err != nil {
 			return fmt.Errorf("%s: clearing %s: %w", app, filepath.Join(dir, sub), err)
 		}
 	}
-	// The directory is traversable by the containers' own users; what must
-	// stay private (the compose file) is private by its own mode.
+	// Traversable by container users; the compose file is private by its own mode.
 	if err := os.MkdirAll(dir, 0o755); err != nil {
 		return fmt.Errorf("%s: creating %s: %w", app, dir, err)
 	}
@@ -407,8 +386,7 @@ func (r *Runtime) play(ctx context.Context, app string, manifest []byte) error {
 	return nil
 }
 
-// writeFile lays out one file of a project: a key's content, or a mount
-// point (a directory, or an empty file) docker must find already there.
+// writeFile writes a key's content, or a mount point docker expects to exist.
 func writeFile(f file) error {
 	if f.dir {
 		return os.MkdirAll(f.path, 0o755)
@@ -421,17 +399,14 @@ func writeFile(f file) error {
 	return atomicfile.Write(f.path, f.data, f.mode)
 }
 
-// Remove takes the project down and deletes its record, manifest and files.
-//
-// Volumes are deliberately left alone: `down` is run without --volumes.
+// Remove takes the project down and deletes its record, manifest and files. Volumes are kept.
 func (r *Runtime) Remove(ctx context.Context, app string) error {
 	if _, err := os.Stat(r.composePath(app)); err == nil {
 		if _, err := r.composeRun(ctx, app, "down", "--remove-orphans"); err != nil {
 			return fmt.Errorf("stopping %s: %w", projectName(app), err)
 		}
 	}
-	// A project without its compose file, or one `down` left behind: the
-	// containers are found by label so the names are free next time.
+	// Remove leftovers by label so the names are free next time.
 	containers, err := r.listContainers(ctx, app)
 	if err != nil {
 		return err
@@ -467,9 +442,7 @@ func removeIfExists(path string) error {
 	return nil
 }
 
-// Restart replays an application whose record is already correct, from the
-// manifest on disk. The project is rebuilt rather than reused, so a compose
-// file that was edited or deleted by hand does not matter.
+// Restart replays an application from its manifest, rebuilding the project (hand edits are discarded).
 func (r *Runtime) Restart(ctx context.Context, app string) error {
 	manifest, err := os.ReadFile(r.rend.ManifestPath(app))
 	if err != nil {
@@ -478,8 +451,7 @@ func (r *Runtime) Restart(ctx context.Context, app string) error {
 	return r.play(ctx, app, manifest)
 }
 
-// Health reports whether the init containers completed and every regular
-// workload container is running, the same verdict the podman runtime gives.
+// Health gives the same verdict as the podman runtime.
 func (r *Runtime) Health(ctx context.Context, app model.Application) (model.Health, error) {
 	containers, err := r.listContainers(ctx, app.Name)
 	if err != nil {
@@ -570,8 +542,7 @@ func troubled(containers []containerInfo, initNames []string) []string {
 	return out
 }
 
-// explain asks docker why the named containers are in the state they are
-// in, in one call, and returns a short human line per container.
+// explain returns one short reason per container from a single docker inspect.
 func (r *Runtime) explain(ctx context.Context, names []string) string {
 	if len(names) == 0 {
 		return ""
@@ -646,8 +617,7 @@ func plural(n int) string {
 	return "s"
 }
 
-// WaitHealthy asks again until the application is healthy or the retries run
-// out; the reconciler uses it right after applying a change.
+// WaitHealthy polls Health until healthy or out of retries.
 func (r *Runtime) WaitHealthy(ctx context.Context, app model.Application) model.Health {
 	var last model.Health
 	for attempt := 0; attempt <= waitRetries; attempt++ {
@@ -689,8 +659,7 @@ func (r *Runtime) diagnose(ctx context.Context, app string) string {
 	return "\nlast log lines for " + projectName(app) + ":\n" + strings.TrimRight(logs, "\n")
 }
 
-// listNetworks asks docker for every network, and reports for each whether
-// it carries podcd's label.
+// listNetworks maps every docker network to whether it carries podcd's label.
 func (r *Runtime) listNetworks(ctx context.Context) (map[string]bool, error) {
 	out, err := r.dockerRun(ctx, "network", "ls", "--format", "{{json .}}")
 	if err != nil {
@@ -713,13 +682,9 @@ func (r *Runtime) listNetworks(ctx context.Context) (map[string]bool, error) {
 	return result, nil
 }
 
-// ApplyNetwork writes the record for one network and makes docker have it.
-//
-// Docker cannot change a network in place either. A network podcd already
-// recorded is being changed: the containers on it are stopped - the planner
-// restarts their applications afterwards - and it is removed and created
-// again. One with no record yet is only created; if docker already has one
-// of that name it is adopted as it is.
+// ApplyNetwork writes a network's record and makes docker have it. A recorded
+// network is recreated (its containers stopped; the planner restarts their
+// apps); an unrecorded one is created, or adopted if docker already has it.
 func (r *Runtime) ApplyNetwork(ctx context.Context, net model.Network) error {
 	if net.DisableDNS || len(net.DNS) > 0 {
 		return fmt.Errorf("network %s: disableDNS and dns are podman options docker does not have", net.Name)
@@ -784,8 +749,7 @@ func (r *Runtime) ApplyNetwork(ctx context.Context, net model.Network) error {
 	return nil
 }
 
-// RemoveNetwork deletes a network's record and the network itself. It never
-// forces: docker refuses to remove a network something is still on.
+// RemoveNetwork deletes a network and its record, never forcing.
 func (r *Runtime) RemoveNetwork(ctx context.Context, network string) error {
 	if err := removeIfExists(filepath.Join(r.unitDir, renderer.NetworkFileName(network))); err != nil {
 		return fmt.Errorf("removing unit for network %s: %w", network, err)

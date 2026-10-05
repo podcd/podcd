@@ -14,13 +14,7 @@ import (
 	"github.com/podcd/podcd/pkg/secrets"
 )
 
-// Provisioner fetches ExternalSecret targets from their stores, on demand.
-//
-// Resolve asks it only for the Secret names a workload on this host references,
-// so a host with no Vault-backed workload never opens a connection to Vault,
-// and a broken store somewhere else in the repository is not this host's
-// problem. Results are cached for the life of one reconcile: two pods sharing a
-// secret cost one fetch.
+// Provisioner fetches ExternalSecret targets on demand, cached for one reconcile.
 type Provisioner struct {
 	index   *config.Index
 	agent   *secrets.Resolver
@@ -28,17 +22,14 @@ type Provisioner struct {
 	cache   map[string]corev1.Secret
 }
 
-// NewProvisioner indexes the ExternalSecrets by the Secret name each produces.
-// agent resolves the env:/file: references inside a SecretStore's own credentials.
+// NewProvisioner indexes ExternalSecrets by target name; agent resolves store credentials.
 func NewProvisioner(index *config.Index, agent *secrets.Resolver) *Provisioner {
 	p := &Provisioner{index: index, agent: agent, targets: map[string]config.Doc[config.ExternalSecretSpec]{}, cache: map[string]corev1.Secret{}}
 	p.AddExternalSecrets(index.ExternalSecrets)
 	return p
 }
 
-// AddExternalSecrets implements config.SecretProvisioner: the ExternalSecrets
-// a host's templates rendered to join the plain ones. A rendered one cannot
-// share a name with a plain one - Resolve refuses that before getting here.
+// AddExternalSecrets implements config.SecretProvisioner.
 func (p *Provisioner) AddExternalSecrets(docs map[string]config.Doc[config.ExternalSecretSpec]) {
 	for name, doc := range docs {
 		target := doc.Spec.Target.Name
@@ -147,9 +138,7 @@ func newVaultSecretFetcher(spec *config.VaultStoreProvider, resolver *secrets.Re
 	return &vaultSecretFetcher{p: vp}, nil
 }
 
-// fetch returns a single field from a Vault KV secret.
-// key is the KV path including mount (e.g. "secret/prod/db"),
-// property is the field name within that secret (e.g. "password").
+// fetch returns one field (property) of the KV secret at key ("secret/prod/db").
 func (v *vaultSecretFetcher) fetch(ctx context.Context, key, property string) (string, error) {
 	if property == "" {
 		return "", fmt.Errorf("vault: remoteRef for key %q must set property (the field within the KV secret)", key)

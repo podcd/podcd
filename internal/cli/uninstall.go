@@ -8,9 +8,7 @@ import (
 	"github.com/spf13/cobra"
 )
 
-// serviceUnitName is the systemd unit `install` writes and `uninstall`
-// removes. It is fixed regardless of --output: it is the name systemd loads
-// the file under from its search path, not the path on disk.
+// serviceUnitName is the agent's systemd unit name, whatever --output is.
 const serviceUnitName = "podcd-agent.service"
 
 func newUninstallCommand() *cobra.Command {
@@ -53,10 +51,7 @@ func newUninstallCommand() *cobra.Command {
 	return cmd
 }
 
-// uninstallAgentService stops and disables the unit and removes dest. Every
-// step is best-effort: a unit that was never loaded, or a file already gone,
-// is not an error here - the point is that afterward none of it is present,
-// however it got that way.
+// uninstallAgentService stops and disables the unit and removes dest, best-effort.
 func uninstallAgentService(dest string) {
 	userSystemctl("stop", serviceUnitName)
 	userSystemctl("disable", serviceUnitName)
@@ -64,8 +59,7 @@ func uninstallAgentService(dest string) {
 	userSystemctl("daemon-reload")
 }
 
-// userSystemctl runs `systemctl --user <args>`, discarding any error: every
-// caller here treats failure (unit not loaded, already stopped) as fine.
+// userSystemctl runs `systemctl --user <args>`, ignoring errors.
 func userSystemctl(args ...string) {
 	_ = exec.Command("systemctl", append([]string{"--user"}, args...)...).Run()
 }

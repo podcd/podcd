@@ -7,9 +7,7 @@ import (
 	"fmt"
 )
 
-// SpecHash is the fingerprint of an application's desired state.
-// Provenance fields are excluded: moving a YAML document between repositories
-// is not a change to the running app.
+// SpecHash fingerprints an application's desired state, excluding provenance.
 func (a Application) SpecHash() string {
 	payload := a
 	payload.SourceRepo = ""

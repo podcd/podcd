@@ -1,5 +1,4 @@
-// Package identity answers "which VM am I?" - the question that decides what
-// this machine should run.
+// Package identity resolves which Host document this machine is.
 package identity
 
 import (
@@ -12,8 +11,7 @@ import (
 type Identity struct {
 	// Host is the name matched against Host documents.
 	Host string `json:"host"`
-	// Source records how the name was found, for debugging a host that picked
-	// up the wrong configuration.
+	// Source records how the name was found.
 	Source string `json:"source"`
 	// MachineID is the systemd machine id when readable. Informational only.
 	MachineID string `json:"machineId,omitempty"`
@@ -21,12 +19,7 @@ type Identity struct {
 	Hostname string `json:"hostname"`
 }
 
-// Resolve determines the identity of this host.
-//
-// Precedence: the PODCD_HOST environment variable, then the agent config's
-// host field, then the system hostname with any domain stripped. There is no
-// fourth guess: if all three are empty, that is an error, because quietly
-// reconciling against the wrong host's configuration is worse than stopping.
+// Resolve picks PODCD_HOST, then the configured host, then the short hostname; none is an error.
 func Resolve(configured string) (Identity, error) {
 	id := Identity{}
 	id.Hostname = systemHostname()
@@ -53,8 +46,6 @@ func systemHostname() string {
 	if err != nil {
 		return ""
 	}
-	// A short name is what people put in Git; prod-web-01.example.com and
-	// prod-web-01 should not be two different hosts.
 	if i := strings.Index(h, "."); i > 0 {
 		h = h[:i]
 	}

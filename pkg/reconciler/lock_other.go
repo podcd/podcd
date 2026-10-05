@@ -4,8 +4,7 @@ package reconciler
 
 import "errors"
 
-// Lock is unavailable outside unix. podcd targets Linux hosts; this file exists
-// only so the packages still build elsewhere for development.
+// Lock is a no-op stub so non-unix builds compile.
 type Lock struct{}
 
 // Acquire always fails on unsupported platforms.

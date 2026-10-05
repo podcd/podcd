@@ -1,7 +1,5 @@
-// Package git keeps a local checkout of a repository pinned to an exact commit.
-//
-// It shells out to the git binary on purpose.
-// That way every auth method the host already has works: ssh keys, credential helpers, https tokens, local file:// remotes.
+// Package git keeps a local checkout pinned to an exact commit, via the git
+// binary so the host's existing auth (ssh, credential helpers) works.
 package git
 
 import (
@@ -20,8 +18,7 @@ import (
 	"github.com/podcd/podcd/internal/subprocess"
 )
 
-// ErrOffline means the remote could not be reached.
-// The caller may carry on with the checkout it already has.
+// ErrOffline: remote unreachable; the existing checkout may still be used.
 var ErrOffline = errors.New("git remote unreachable")
 
 var shaRE = regexp.MustCompile(`^[0-9a-f]{7,40}$`)
@@ -51,10 +48,8 @@ type Auth struct {
 	SSHKnownHostsPath string
 }
 
-// DefaultUsername picks the username to pair with a token when none is set.
-// GitHub takes any username for a token, its docs use x-access-token.
-// GitLab and most others take oauth2 for personal and project access tokens.
-// GitLab deploy tokens have their own username, set Auth.Username for those.
+// DefaultUsername pairs with a token when none is set: x-access-token on
+// GitHub, oauth2 elsewhere. GitLab deploy tokens need an explicit username.
 func DefaultUsername(url string) string {
 	if strings.Contains(url, "github.com") {
 		return "x-access-token"
@@ -91,8 +86,7 @@ func (r *Repository) Exists() bool {
 	return err == nil
 }
 
-// Fetch makes sure the local checkout exists and has the remote's current refs.
-// A network failure is wrapped in ErrOffline so the caller can fall back to the commit it already has.
+// Fetch clones or fetches the remote's refs; network failures wrap ErrOffline.
 func (r *Repository) Fetch(ctx context.Context) error {
 	if !r.Exists() {
 		return r.clone(ctx)
@@ -125,8 +119,7 @@ func (r *Repository) clone(ctx context.Context) error {
 	return nil
 }
 
-// Resolve turns the configured revision into an exact commit sha.
-// It only reads the local checkout, so it still works after a failed fetch.
+// Resolve turns the revision into a commit sha, from the local checkout only.
 func (r *Repository) Resolve(ctx context.Context) (string, error) {
 	candidates := []string{
 		"refs/remotes/origin/" + r.Revision,
@@ -156,8 +149,7 @@ func (r *Repository) Head(ctx context.Context) (string, error) {
 	return strings.TrimSpace(out), nil
 }
 
-// Checkout puts the working tree at an exact commit.
-// It also removes anything not in that commit, so a half-finished previous run cannot leak in.
+// Checkout puts the working tree at a commit and removes untracked files.
 func (r *Repository) Checkout(ctx context.Context, sha string) error {
 	if _, err := r.run(ctx, "-c", "advice.detachedHead=false", "checkout", "--force", "--detach", sha); err != nil {
 		return fmt.Errorf("repository %s: checking out %s: %w", r.Name, sha, err)
@@ -168,11 +160,8 @@ func (r *Repository) Checkout(ctx context.Context, sha string) error {
 	return nil
 }
 
-// Sync fetches, resolves the pinned revision, and checks it out.
-// It returns the commit now in the working tree.
-//
-// If the remote is unreachable but a checkout already exists, Sync returns the commit it has plus ErrOffline.
-// A broken network must not take running applications down, but it must not look like silent success either.
+// Sync fetches, resolves and checks out the revision, returning the commit.
+// Offline with an existing checkout, it returns that commit plus ErrOffline.
 func (r *Repository) Sync(ctx context.Context) (string, error) {
 	fetchErr := r.Fetch(ctx)
 	if fetchErr != nil {
@@ -217,8 +206,7 @@ func (r *Repository) runIn(ctx context.Context, dir string, args ...string) (str
 	})
 }
 
-// env builds the environment for git, never interactive, never prompting.
-// A missing credential fails the reconcile instead of hanging the agent forever.
+// env builds a non-interactive environment for git, so a missing credential fails instead of hanging.
 func (r *Repository) env() []string {
 	base := os.Environ()
 	env := make([]string, 0, len(base)+8)
@@ -226,8 +214,7 @@ func (r *Repository) env() []string {
 	for _, kv := range base {
 		key, _, _ := strings.Cut(kv, "=")
 
-		// Git authentication must never become interactive through an
-		// inherited askpass helper or credential UI.
+		// drop inherited askpass helpers and credential UIs
 		switch key {
 		case "GIT_ASKPASS",
 			"GIT_TERMINAL_PROMPT",
@@ -262,11 +249,8 @@ func (r *Repository) env() []string {
 	return r.authConfig(env)
 }
 
-// authConfig adds the token as git config in the environment.
-// It is an Authorization header scoped to this repository's URL, so it is never sent to another host git gets redirected to.
-//
-// The environment may already carry GIT_CONFIG_COUNT entries from whoever started the agent.
-// Ours is appended after them, not replacing them.
+// authConfig appends (after any inherited GIT_CONFIG_COUNT entries) an
+// Authorization header scoped to this repository's URL, never sent elsewhere.
 func (r *Repository) authConfig(env []string) []string {
 	if r.Auth.Token == "" {
 		return env

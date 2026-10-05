@@ -13,10 +13,7 @@ import (
 	"github.com/podcd/podcd/pkg/secrets"
 )
 
-// Source turns "some Git repositories" into "what should run on this host".
-//
-// It is the compiler half of the agent: pull, parse, validate, resolve. It
-// never touches the container runtime.
+// Source fetches and loads the repository; it never touches the runtime.
 type Source struct {
 	Repos   []*git.Repository
 	Host    string
@@ -24,16 +21,12 @@ type Source struct {
 	Log     *slog.Logger
 	// TokenRefs holds each repository's auth.token reference by repo name.
 	TokenRefs map[string]string
-	// ValuesFiles holds each repository's values file paths (relative to its
-	// tree) by repo name, for {{ .Values }} templating.
+	// ValuesFiles are agent.yaml values files, by repo name.
 	ValuesFiles map[string][]string
 }
 
-// LoadIndex fetches every repository and loads its documents, without
-// resolving them for a host. It returns the index, the agent.yaml values
-// fallback (the lowest-precedence input to templating - see
-// config.ResolveOptions.Values), the commits loaded, and the repositories
-// that could not be refreshed.
+// LoadIndex fetches and loads every repository, returning the index, the
+// agent.yaml values, the commits, and the repositories that were offline.
 func (s *Source) LoadIndex(ctx context.Context, only ...string) (*config.Index, config.Values, map[string]string, []string, error) {
 	index := config.NewIndex()
 	revisions := map[string]string{}
@@ -73,10 +66,7 @@ func (s *Source) LoadIndex(ctx context.Context, only ...string) (*config.Index, 
 	return index, values, revisions, offline, nil
 }
 
-// resolveAuth turns a repository's token reference into a value, on every
-// load, so a rotated deploy token is picked up without a restart. The
-// reference itself lives on the Repository in TokenRef so the resolved value
-// can be replaced each time.
+// resolveAuth resolves the token reference on every load, so rotation needs no restart.
 func (s *Source) resolveAuth(ctx context.Context, repo *git.Repository) error {
 	ref := s.TokenRefs[repo.Name]
 	if ref == "" {
@@ -99,9 +89,7 @@ func (s *Source) logWarn(msg string, args ...any) {
 	}
 }
 
-// ReposFromConfig builds the repository list from the agent configuration,
-// and returns the token references to resolve before each fetch and the
-// repository's configured values files, both keyed by repository name.
+// ReposFromConfig returns the repositories, token references and values files, keyed by repo name.
 func ReposFromConfig(cfg config.AgentConfig) ([]*git.Repository, map[string]string, map[string][]string) {
 	r := cfg.Repository
 	tokenRefs := map[string]string{}

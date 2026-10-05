@@ -16,23 +16,16 @@ import (
 	"github.com/podcd/podcd/pkg/model"
 )
 
-// SecretProvisioner fetches a Secret that an ExternalSecret declares but Git
-// does not contain.
-//
-// It is asked only for the names a workload on this host actually references,
-// so a host never reaches out to a secret store on behalf of somebody else's
-// machine. ok is false when no ExternalSecret targets that name.
+// SecretProvisioner fetches Secrets that ExternalSecrets declare, only for
+// names this host's workloads reference. ok is false when none targets the name.
 type SecretProvisioner interface {
 	ProvisionSecret(ctx context.Context, name string) (sec corev1.Secret, ok bool, err error)
-	// AddExternalSecrets makes the ExternalSecrets a host's templates rendered
-	// to known alongside the plain ones. Templates render per host, inside
-	// Resolve, so these cannot be handed over any earlier.
+	// AddExternalSecrets registers ExternalSecrets rendered from this host's templates.
 	AddExternalSecrets(docs map[string]Doc[ExternalSecretSpec])
 }
 
-// ProvisioningError means one application's ExternalSecret could not be
-// materialized. Unlike an invalid document, this is transient: callers can
-// safely reconcile the other applications and retry this one later.
+// ProvisioningError: an application's ExternalSecret could not be fetched.
+// Transient; the other applications can still reconcile.
 type ProvisioningError struct {
 	Applications map[string]error
 }
@@ -49,9 +42,7 @@ func (e *ProvisioningError) Error() string {
 type ResolveOptions struct {
 	// Host is the identity of this host. It must match a Host document.
 	Host string
-	// Secrets resolves ExternalSecret targets on demand. May be nil, in which
-	// case only Secrets defined in Git are available - that is what `podcd lint`
-	// does, since linting must not talk to Vault.
+	// Secrets resolves ExternalSecret targets; nil (as in lint) means Git Secrets only.
 	Secrets SecretProvisioner
 	// Revisions is repo name -> commit, carried into the desired state for reporting.
 	Revisions map[string]string
@@ -60,9 +51,8 @@ type ResolveOptions struct {
 }
 
 // Resolve compiles the index into the desired state for one host.
-//
-// Precedence, lowest to highest: the Application document, the Environment's override for it, each Group's override (in the order the Host lists its groups), then the Host's own override.
-// The output is sorted, so the same commit always compiles to the same bytes.
+// Precedence, lowest first: Pod, Environment, each Group in Host order, Host.
+// Output is sorted, so a commit always compiles to the same bytes.
 func (ix *Index) Resolve(ctx context.Context, opts ResolveOptions) (model.DesiredState, error) {
 	var zero model.DesiredState
 	if opts.Host == "" {
@@ -77,9 +67,7 @@ func (ix *Index) Resolve(ctx context.Context, opts ResolveOptions) (model.Desire
 		return zero, fmt.Errorf("no Host document matches %q (known hosts: %s)", opts.Host, strings.Join(known, ", "))
 	}
 
-	// Layers, lowest precedence first. selected is the union of what the
-	// layers name; the output is sorted, so nothing downstream depends on
-	// the order documents happened to be written in.
+	// Layers, lowest precedence first; selected is the union of what they name.
 	var layers []layer
 	selected := map[string]bool{}
 	addLayer := func(label, repo string, spec SelectionSpec) error {
@@ -119,8 +107,7 @@ func (ix *Index) Resolve(ctx context.Context, opts ResolveOptions) (model.Desire
 		return zero, err
 	}
 
-	// Values apply in the same precedence as overrides, plus one layer below
-	// all of them: agent.yaml's own fallback.
+	// Values: same precedence, with agent.yaml's values below all layers.
 	values := opts.Values
 	for _, l := range layers {
 		values = MergeValues(values, l.values)
@@ -134,9 +121,7 @@ func (ix *Index) Resolve(ctx context.Context, opts ResolveOptions) (model.Desire
 		delete(selected, ex)
 	}
 
-	// Templates render for this host's values, into a second set of
-	// documents that sits on top of the plain ones. Only now: a template's
-	// kind and name are whatever it renders to.
+	// Templates render only now: their kind and name depend on this host's values.
 	rendered, err := ix.renderTemplates(values)
 	if err != nil {
 		return zero, err
@@ -150,8 +135,6 @@ func (ix *Index) Resolve(ctx context.Context, opts ResolveOptions) (model.Desire
 	var apps []model.Application
 	provisioningFailures := map[string]error{}
 	for _, name := range slices.Sorted(maps.Keys(selected)) {
-		// A pod manifest and a podcd Application are compiled by different
-		// code, but they land in the same canonical type and the same plan.
 		var (
 			app     model.Application
 			src     Source
@@ -185,11 +168,8 @@ func (ix *Index) Resolve(ctx context.Context, opts ResolveOptions) (model.Desire
 		apps = append(apps, app)
 	}
 
-	// A network is wanted here exactly when an application here joins it.
-	// One with a Network document is podcd's to create, and the application
-	// records that so its unit can depend on the network's unit. One without
-	// is expected to exist already - created by hand, or podman's own - and
-	// podcd neither creates nor removes it.
+	// A network is wanted when an application here joins it. With a Network
+	// document podcd manages it; without, it must already exist and is left alone.
 	var networks []model.Network
 	seenNet := map[string]bool{}
 	for i := range apps {
@@ -213,9 +193,7 @@ func (ix *Index) Resolve(ctx context.Context, opts ResolveOptions) (model.Desire
 	}
 	slices.SortFunc(networks, func(a, b model.Network) int { return cmp.Compare(a.Name, b.Name) })
 
-	// The same rule as for applications: an override for a network no
-	// document defines is a mistake, and a host may only override a network
-	// it actually uses.
+	// Network overrides: same rules as application overrides below.
 	for _, l := range layers {
 		for name := range l.networkOverrides {
 			switch {
@@ -230,10 +208,7 @@ func (ix *Index) Resolve(ctx context.Context, opts ResolveOptions) (model.Desire
 		}
 	}
 
-	// An override for an application nobody defines is a mistake;
-	// An environment or group may override an application only some of its members run\
-	// A host will have an list of its own applications.
-	// so a host override for something it does not run is a mistake.
+	// Environment/group overrides need a defining Pod; host overrides need the host to run it.
 	for _, l := range layers {
 		for name := range l.overrides {
 			switch {
@@ -283,9 +258,7 @@ func isProvisioningFailure(err error) bool {
 	return errors.As(err, &provisioningErr)
 }
 
-// layer is one source of overrides and values, lowest precedence first: the
-// environment, then each group in the order the host lists them, then the
-// host itself.
+// layer is one source of overrides and values: environment, groups, host.
 type layer struct {
 	label            string
 	overrides        map[string]Override
@@ -293,14 +266,11 @@ type layer struct {
 	values           Values
 }
 
-// podOverrides and networkOverrides pick which of a layer's override maps
-// overlay walks.
+// podOverrides and networkOverrides pick a layer's override map for overlay.
 func podOverrides(l layer) map[string]Override     { return l.overrides }
 func networkOverrides(l layer) map[string]Override { return l.networkOverrides }
 
-// layerValues loads and merges a layer's own values files, in list order,
-// resolved against the repository the document naming them came from - the
-// only repository a bare path in that document could sensibly mean.
+// layerValues merges a layer's values files in order, relative to the document's repository.
 func (ix *Index) layerValues(repo string, files []string) (Values, error) {
 	values := Values{}
 	for _, f := range files {
@@ -313,12 +283,8 @@ func (ix *Index) layerValues(repo string, files []string) (Values, error) {
 	return values, nil
 }
 
-// renderTemplates renders every template for one host's values and decodes
-// the result through the same path plain documents take, into a second set
-// of documents. Everything about a template is decided here and nowhere
-// earlier: its kind, its name, whether it is valid. A rendered document
-// may not reuse the name of a plain one (or of another rendered one) - the
-// same rule as two files defining the same thing.
+// renderTemplates renders every template with one host's values and decodes
+// the results like plain documents. Rendered names must not collide with any other.
 func (ix *Index) renderTemplates(values Values) (*documents, error) {
 	rendered := newDocuments()
 	for _, tpl := range ix.templates {
@@ -366,11 +332,8 @@ func (ix *Index) checkNoOverlap(rendered *documents) error {
 	return nil
 }
 
-// hostDocuments is every document one particular host can see: the plain
-// ones every host shares (the Index), plus the ones this host's templates
-// rendered to with its own values. Two hosts get two different sets from the
-// same templates - that is the point of templating. Lookups try the plain
-// set first; checkNoOverlap has already made sure a name cannot be in both.
+// hostDocuments is what one host sees: the shared plain documents plus its
+// rendered templates. checkNoOverlap guarantees a name is in at most one.
 type hostDocuments struct {
 	*Index
 	rendered *documents
@@ -400,10 +363,7 @@ func (h hostDocuments) network(name string) (Doc[NetworkSpec], bool) {
 	return d, ok
 }
 
-// networkFromDoc turns a Network document, with every layer's override for
-// it applied in precedence order, into the canonical network. The spec is
-// already the model's shape; what is checked here is the name, which becomes
-// a unit file name and a podman network name.
+// networkFromDoc applies every layer's override and validates the name (a unit file and podman network name).
 func networkFromDoc(doc Doc[NetworkSpec], layers []layer) (model.Network, error) {
 	if !validName(doc.Name) {
 		return model.Network{}, fmt.Errorf("%s: network %q: name must be lowercase letters, digits and dashes", doc.Source, doc.Name)
@@ -431,10 +391,7 @@ func networkFromDoc(doc Doc[NetworkSpec], layers []layer) (model.Network, error)
 	}, nil
 }
 
-// patchNetwork merges one override into a network spec. Decoding into the
-// existing value is the merge: a field the override names is set, one it
-// does not name is kept, and options gains and replaces keys rather than
-// starting over. Strict, so a misspelled field is refused like anywhere else.
+// patchNetwork merges an override by strictly decoding it into the existing spec.
 func patchNetwork(sp *NetworkSpec, o Override) error {
 	if len(bytes.TrimSpace(o)) == 0 {
 		return nil
@@ -453,13 +410,8 @@ func (h hostDocuments) secret(name string) (Doc[corev1.Secret], bool) {
 	return d, ok
 }
 
-// externalSecretDeclares reports whether some ExternalSecret promises to produce
-// a Secret of this name at reconcile time.
-//
-// It answers from Git alone, without fetching anything, which is what `podcd
-// lint` needs: linting runs with no provisioner so that validating a repository
-// never reaches out to Vault, and without this every ExternalSecret-backed
-// Secret would look undefined.
+// externalSecretDeclares reports, from Git alone, whether an ExternalSecret
+// targets this Secret name, so lint does not flag it as undefined.
 func (h hostDocuments) externalSecretDeclares(name string) bool {
 	declares := func(docs map[string]Doc[ExternalSecretSpec]) bool {
 		for esName, es := range docs {
@@ -476,9 +428,7 @@ func (h hostDocuments) externalSecretDeclares(name string) bool {
 	return declares(h.ExternalSecrets) || declares(h.rendered.ExternalSecrets)
 }
 
-// overlay applies every layer's override for name, in order, and returns the
-// provenance trail: the document's source, then each layer that touched it.
-// pick says which of a layer's override maps is meant.
+// overlay applies every layer's override for name in order and returns the provenance trail.
 func overlay(layers []layer, pick func(layer) map[string]Override, name, kind string, src Source, apply func(Override) error) ([]string, error) {
 	origins := []string{src.String()}
 	for _, l := range layers {
@@ -494,8 +444,7 @@ func overlay(layers []layer, pick func(layer) map[string]Override, name, kind st
 	return origins, nil
 }
 
-// checkHostPortConflicts catches two applications publishing the same host port,
-// which would otherwise show up as a container that starts and immediately dies.
+// checkHostPortConflicts catches two applications publishing the same host port.
 func checkHostPortConflicts(apps []model.Application) []error {
 	type key struct {
 		ip    string

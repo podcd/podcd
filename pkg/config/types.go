@@ -1,8 +1,6 @@
-// Package config parses the documents that live in Git and compiles them, deterministically, into a canonical desired state for one host.
-//
-// Two families of document are understood.
-// podcd's own kinds (gitops.podcd.io/v1: Application, Group, Environment, Host).
-// A thin slice of Kubernetes core/v1 (Pod, ConfigMap, Secret), so a pod manifest people already have can be run here through `podman kube play`.
+// Package config parses the documents in Git and compiles them into the desired
+// state for one host: podcd's kinds (gitops.podcd.io/v1: Host, Group,
+// Environment, Network), core/v1 (Pod, ConfigMap, Secret), and ExternalSecret/SecretStore.
 package config
 
 import (
@@ -30,8 +28,7 @@ const (
 	KindSecret    = "Secret"
 )
 
-// document is the envelope every file is first decoded into.
-// It is the Kubernetes envelope, so both families share one header and one decoder.
+// document is the Kubernetes envelope every document is first decoded into.
 type document struct {
 	metav1.TypeMeta   `json:",inline"`
 	metav1.ObjectMeta `json:"metadata"`
@@ -54,8 +51,7 @@ func (s Source) String() string {
 	return fmt.Sprintf("%s/%s:%d", s.Repo, s.Path, s.Line)
 }
 
-// Override is a partial change to one workload, kept raw until resolution.
-// It is applied to the Pod it targets as a strategic merge patch.
+// Override is a raw strategic merge patch for one Pod (or merge for a Network).
 type Override json.RawMessage
 
 // UnmarshalJSON keeps the raw bytes.
@@ -72,20 +68,15 @@ func (o Override) MarshalJSON() ([]byte, error) {
 	return json.RawMessage(o), nil
 }
 
-// Doc is one loaded document: its name, where it came from, and its body.
-// For podcd's kinds the body is the spec.
-// For core/v1 kinds it is the whole object, decoded strictly against the real Kubernetes type.
-// A misspelled field fails here rather than being silently ignored by podman.
+// Doc is one loaded document: name, source, and body (the spec for podcd's
+// kinds, the whole strictly-decoded object for core/v1).
 type Doc[T any] struct {
 	Name   string
 	Spec   T
 	Source Source
 }
 
-// SelectionSpec is the body of a Group or an Environment: the applications
-// every member runs, and overrides for any application a member runs. A
-// network override is keyed by network name and merged into that Network's
-// spec the same way, layer by layer.
+// SelectionSpec is a Group or Environment body: applications, overrides and network overrides.
 type SelectionSpec struct {
 	Applications     []string            `json:"applications,omitempty"`
 	Overrides        map[string]Override `json:"overrides,omitempty"`
@@ -93,13 +84,7 @@ type SelectionSpec struct {
 	Values           []string            `json:"values,omitempty"`
 }
 
-// NetworkSpec is a kind: Network document body: how podman should create the
-// network of that name. Every field is optional; an empty spec is a plain
-// bridge network. The names follow `podman network create`.
-//
-// A Network is not selected by a Host, Group or Environment. It exists on a
-// host because a Pod there names it in its io.podcd.networks annotation, and
-// goes away when no Pod does.
+// NetworkSpec is a Network body, following `podman network create`; empty is a bridge network.
 type NetworkSpec struct {
 	Driver     string            `json:"driver,omitempty"`
 	Subnet     string            `json:"subnet,omitempty"`

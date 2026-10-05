@@ -1,18 +1,12 @@
 package docker
 
-// Docker has no `kube play`. The manifest podcd compiles for a pod is turned
-// into a Compose project here, with the same shape podman gives a pod: one
-// infra container owns the network namespace and the published ports, and
-// every workload container joins it, so containers reach each other on
-// localhost and the pod has one address on its networks. Init containers
-// become services the rest depend on having completed.
+// A pod manifest becomes a Compose project shaped like a podman pod: an infra
+// container owns the network namespace and ports, workload containers join it,
+// and init containers are services the rest depend on completing.
 //
-// ConfigMaps and Secrets have no Docker object to become. Ones a container
-// reads as environment are resolved into the compose file, which only the
-// agent user can read. Ones it mounts are written as files next to it, with
-// the mode Kubernetes gives them (defaultMode, 0644 unless the volume says
-// otherwise): the container's own user has to be able to read them, and
-// docker runs containers as real host uids.
+// ConfigMaps and Secrets read as env go into the compose file (agent-only
+// readable); mounted ones are written as files with Kubernetes' modes
+// (defaultMode, else 0644), since docker runs containers as real host uids.
 
 import (
 	"cmp"
@@ -32,8 +26,7 @@ import (
 	"github.com/podcd/podcd/pkg/config"
 )
 
-// labelInfra marks the pause container, the way podman flags its infra
-// container, so it does not count as workload.
+// labelInfra marks the pause container so it does not count as workload.
 const labelInfra = "io.podcd.infra"
 
 // infraService is the compose service that stands for the pod.
@@ -109,8 +102,7 @@ func splitDocuments(data []byte) [][]byte {
 	return docs
 }
 
-// The subset of the Compose specification podcd writes. Maps marshal with
-// sorted keys, so the same manifest always yields the same file.
+// composeFile is the Compose subset podcd writes; sorted map keys keep output deterministic.
 type composeFile struct {
 	Name     string                    `json:"name"`
 	Services map[string]*service       `json:"services"`
@@ -155,9 +147,7 @@ type dependency struct {
 	Condition string `json:"condition"`
 }
 
-// attachment is how the infra container joins one network. The pod's name
-// is an alias, so other pods on the network reach it the way they do on
-// podman, where the pod's name is what the network's DNS answers for.
+// attachment joins the infra container to a network, aliased as the pod name as on podman.
 type attachment struct {
 	Aliases []string `json:"aliases,omitempty"`
 }
@@ -189,17 +179,14 @@ type file struct {
 	path string
 	data []byte
 	mode os.FileMode
-	// dir marks an empty directory to create rather than a file to write:
-	// a mount point docker needs to find already there.
+	// dir: create an empty directory (a mount point) instead of a file.
 	dir bool
 }
 
 // projectName is the Compose project an application runs as.
 func projectName(app string) string { return "podcd-" + app }
 
-// compose translates one application's manifest into a Compose project
-// rooted at dir. It is pure: nothing is written, the files to write come
-// back with the project.
+// compose translates a manifest into a Compose project rooted at dir; pure, returns the files to write.
 func compose(app string, m manifest, dir, pauseImage string) (composeFile, []file, error) {
 	pod := m.pod
 	// Docker has one user namespace setting per daemon, not per container.
@@ -287,8 +274,7 @@ func compose(app string, m manifest, dir, pauseImage string) (composeFile, []fil
 			mountpoints = append(mountpoints, mp)
 		}
 		files = append(files, nestedMountpoints(mountpoints)...)
-		// The pod's own runAsUser/runAsGroup apply to every container that
-		// does not set its own, as in Kubernetes.
+		// Pod-level runAsUser/runAsGroup are the default, as in Kubernetes.
 		var uid, gid *int64
 		if psc := pod.Spec.SecurityContext; psc != nil {
 			uid, gid = psc.RunAsUser, psc.RunAsGroup
@@ -338,8 +324,7 @@ func compose(app string, m manifest, dir, pauseImage string) (composeFile, []fil
 	return cf, files, nil
 }
 
-// publishedPorts lists every hostPort in the pod, sorted, for the infra
-// container to publish on behalf of the pod.
+// publishedPorts lists every hostPort in the pod, sorted, for the infra container.
 func publishedPorts(pod corev1.Pod) []port {
 	var ports []port
 	for _, c := range slices.Concat(pod.Spec.InitContainers, pod.Spec.Containers) {
@@ -359,8 +344,7 @@ func publishedPorts(pod corev1.Pod) []port {
 	return ports
 }
 
-// podNetworks reads the networks annotation the compiler put on the pod,
-// sorted and deduplicated.
+// podNetworks reads the networks annotation, sorted and deduplicated.
 func podNetworks(pod corev1.Pod) []string {
 	seen := map[string]bool{}
 	for _, n := range strings.Split(pod.Annotations[config.AnnotationNetworks], ",") {
@@ -395,29 +379,23 @@ func pullPolicy(p corev1.PullPolicy) string {
 	}
 }
 
-// source is where a pod volume comes from on the host: a path to bind, or a
-// named volume.
+// source is a pod volume on the host: a bind path or a named volume.
 type source struct {
 	path   string // bind mount, when set
 	volume string // named volume otherwise
-	// written marks a directory podcd lays out itself (a ConfigMap or a
-	// Secret), where it may also create mount points for nested mounts.
+	// written: a ConfigMap/Secret directory podcd lays out itself.
 	written bool
 }
 
-// mountpoint is one bind mount of a container, kept to find mounts nested
-// inside a directory podcd writes.
+// mountpoint is one bind mount, kept to find mounts nested in podcd-written directories.
 type mountpoint struct {
 	src, dst string
 	written  bool
 	file     bool // a single key mounted with subPath
 }
 
-// nestedMountpoints returns the directories to create inside podcd-written
-// mount sources so docker finds every nested mount point already there.
-// Docker mounts a read-only ConfigMap directory and then cannot create the
-// mount point of a Secret mounted below it; podman and Kubernetes can. The
-// host directory is podcd's own, so the mount point is created there.
+// nestedMountpoints pre-creates mount points inside podcd-written sources:
+// docker cannot create one below a read-only ConfigMap mount; podman can.
 func nestedMountpoints(mounts []mountpoint) []file {
 	var out []file
 	for _, child := range mounts {
@@ -451,9 +429,8 @@ func (s source) mount(vm corev1.VolumeMount) (string, mountpoint, error) {
 	return spec, mp, nil
 }
 
-// volumeSources resolves every pod volume. ConfigMaps and Secrets become
-// directories of files under dir; emptyDir and persistentVolumeClaim become
-// named volumes, which `down` leaves alone.
+// volumeSources resolves pod volumes: ConfigMaps/Secrets to files under dir,
+// emptyDir and persistentVolumeClaim to named volumes (kept by `down`).
 func volumeSources(m manifest, dir string, cf *composeFile) (map[string]source, []file, error) {
 	sources := map[string]source{}
 	var files []file
@@ -507,8 +484,7 @@ func volumeSources(m manifest, dir string, cf *composeFile) (map[string]source, 
 	return sources, files, nil
 }
 
-// keyFiles lays a ConfigMap or Secret out as one file per key, or as the
-// items list says, with the volume's defaultMode or Kubernetes' own default.
+// keyFiles lays out one file per key (or per items), with defaultMode or Kubernetes' default.
 func keyFiles(base string, data map[string][]byte, items []corev1.KeyToPath, defaultMode *int32) []file {
 	mode := os.FileMode(0o644)
 	if defaultMode != nil {
@@ -547,8 +523,7 @@ func secretData(s corev1.Secret) map[string][]byte {
 	return out
 }
 
-// environment resolves a container's env and envFrom against the manifest.
-// Explicit env entries win over envFrom, as in Kubernetes.
+// environment resolves env and envFrom; env wins, as in Kubernetes.
 func environment(c corev1.Container, m manifest) (map[string]string, error) {
 	env := map[string]string{}
 	for _, from := range c.EnvFrom {
@@ -605,9 +580,7 @@ func environment(c corev1.Container, m manifest) (map[string]string, error) {
 	return env, nil
 }
 
-// probe turns the liveness probe into a Compose healthcheck, the way podman
-// does for kube play: exec runs as is, httpGet needs curl in the image and
-// tcpSocket needs nc.
+// probe turns the liveness probe into a healthcheck: exec as is, httpGet needs curl, tcpSocket nc.
 func probe(c corev1.Container) (*healthcheck, error) {
 	p := c.LivenessProbe
 	if p == nil {

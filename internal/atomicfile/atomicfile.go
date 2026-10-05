@@ -1,8 +1,4 @@
-// Package atomicfile writes files without ever leaving a half-written one behind.
-//
-// The agent writes unit files and state files while systemd and Podman may be
-// reading them. A torn write there is a broken host, so every write lands as a
-// rename over the target.
+// Package atomicfile writes files via rename, so readers never see a partial write.
 package atomicfile
 
 import (
@@ -42,8 +38,7 @@ func Write(path string, data []byte, mode os.FileMode) error {
 	if err := os.Rename(tmpName, path); err != nil {
 		return err
 	}
-	// Persist the rename itself, so a power cut cannot lose a unit file that
-	// the agent has already reported as applied.
+	// fsync the directory so the rename survives a power cut.
 	if d, err := os.Open(dir); err == nil {
 		_ = d.Sync()
 		_ = d.Close()

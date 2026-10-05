@@ -9,10 +9,7 @@ import (
 	"syscall"
 )
 
-// Lock is an advisory lock held while a reconcile is applying changes.
-//
-// Two reconciles at once would race on the same unit files. The lock is held on
-// an open file descriptor, so it is released by the kernel if the agent is killed.
+// Lock is an advisory flock held while reconciling; released by the kernel if the agent dies.
 type Lock struct{ f *os.File }
 
 // Acquire takes the reconcile lock without waiting.

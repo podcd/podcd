@@ -1,7 +1,5 @@
-// Package model holds the canonical desired/actual/plan types.
-// Everything the agent reasons about lives here.
-// Raw Podman output and raw user YAML both get translated into these types before anything is compared.
-// The planner never diffs a string from `podman inspect` against a string a human typed into Git.
+// Package model holds the desired, actual and plan types. Runtime output and
+// user YAML are both translated into these before anything is compared.
 package model
 
 import (
@@ -14,8 +12,7 @@ import (
 	"time"
 )
 
-// Port is a published port mapping.
-// In YAML it is an object or the shorthand "[hostIP:]host:container[/proto]".
+// Port is a published port mapping; JSON accepts an object or "[hostIP:]host:container[/proto]".
 type Port struct {
 	Host      int    `json:"host"`
 	Container int    `json:"container"`
@@ -68,8 +65,7 @@ func (p Port) String() string {
 	return sb.String()
 }
 
-// Volume is a bind mount or named volume.
-// In YAML it is an object or the shorthand "source:destination[:options]".
+// Volume is a bind mount or named volume; JSON accepts an object or "source:destination[:options]".
 type Volume struct {
 	Source      string `json:"source"`
 	Destination string `json:"destination"`
@@ -119,24 +115,17 @@ type Resources struct {
 	CPU    string `json:"cpu,omitempty"`    // e.g. 150% -> CPUQuota
 }
 
-// Application is a fully resolved application.
-// It is the result of compiling environment + group + host + application definitions for one host.
-// Nothing here is inherited or templated any more, it is what should exist on this host.
+// Application is one workload fully resolved for one host: no inheritance or templating left.
 type Application struct {
 	Name string `json:"name"`
 
-	// Manifest is the multi-document YAML played by podman.
-	// It holds the Pod, its ConfigMaps, and its Secrets with values resolved.
-	// It may contain secrets, so it never appears in JSON output.
-	// ManifestHash stands in for it everywhere, including in the spec hash.
+	// Manifest is the played YAML (Pod, ConfigMaps, resolved Secrets). It may hold
+	// secrets, so it never reaches JSON; ManifestHash stands in for it.
 	Manifest     []byte `json:"-"`
 	ManifestHash string `json:"manifestHash,omitempty"`
-	// Images lists every image a kube workload runs, for reporting.
-	// Image holds the first one, so the common code paths have something to show.
+	// Images lists every image, for reporting; Image is the first.
 	Images []string `json:"images,omitempty"`
-	// InitContainers identifies containers that are expected to exit successfully
-	// before the regular workload starts. It is runtime-only metadata derived from
-	// the Pod manifest, never rendered or persisted.
+	// InitContainers names the pod's init containers; runtime-only, never persisted.
 	InitContainers []string `json:"-"`
 
 	Image      string   `json:"image"`
@@ -147,16 +136,12 @@ type Application struct {
 
 	Ports   []Port   `json:"ports,omitempty"`
 	Volumes []Volume `json:"volumes,omitempty"`
-	// Networks are the podman networks the pod joins, by name. Ones a Network
-	// document in Git defines are listed again in ManagedNetworks: the unit
-	// refers to those through their own Quadlet unit, so systemd creates the
-	// network first and stops the pod when the network goes away. A name
-	// with no document is expected to exist already and is left alone.
+	// Networks the pod joins. Those with a Network document are also in
+	// ManagedNetworks and referenced through their Quadlet unit; others must already exist.
 	Networks        []string          `json:"networks,omitempty"`
 	ManagedNetworks []string          `json:"managedNetworks,omitempty"`
 	Labels          map[string]string `json:"labels,omitempty"`
-	// UserNS is the user namespace mode the pod is played with (podman --userns),
-	// or "" for podman's default.
+	// UserNS is podman's --userns value; "" for the default.
 	UserNS string `json:"userns,omitempty"`
 
 	RestartPolicy string `json:"restartPolicy,omitempty"` // always (default), on-failure, no
@@ -188,11 +173,8 @@ func (a *Application) SetManifest(manifest []byte) {
 	a.ManifestHash = HashBytes(manifest)
 }
 
-// Network is a podman network a Network document declares, resolved for one
-// host. It exists on a host only while a desired application names it: a
-// network nobody joins is not created, and one nobody joins any more is
-// removed. The fields are the subset of `podman network create` that Quadlet
-// takes in a .network unit.
+// Network is a Network document resolved for one host; it exists there only
+// while a desired application joins it.
 type Network struct {
 	Name string `json:"name"`
 
@@ -280,11 +262,8 @@ type ActualApp struct {
 
 	UnitFile     string `json:"unitFile,omitempty"`
 	UnitFileHash string `json:"unitFileHash,omitempty"` // sha256 of the on-disk unit
-	// UnitContent is the raw unit as read from disk.
-	// It stays out of the state file, but lets the planner explain a change without re-reading disk.
+	// UnitContent and ManifestContent are read from disk to explain changes; never stored.
 	UnitContent []byte `json:"-"`
-	// ManifestContent is the played manifest of a kube workload as read from disk.
-	// Same rules as UnitContent: used for explaining changes, never stored.
 	ManifestContent []byte `json:"-"`
 	SpecHash        string `json:"specHash,omitempty"` // marker written by the renderer
 
@@ -296,9 +275,7 @@ type ActualApp struct {
 	ContainerImage string `json:"containerImage,omitempty"`
 	ContainerState string `json:"containerState,omitempty"`
 
-	// Containers is every workload container the runtime has for this
-	// application (infra excluded), so the planner can see one that died
-	// inside a unit systemd still considers active.
+	// Containers excludes infra; lets the planner see one that died inside an active unit.
 	Containers []ContainerStatus `json:"containers,omitempty"`
 }
 
@@ -306,18 +283,13 @@ type ActualApp struct {
 type ContainerStatus struct {
 	Name  string `json:"name"`
 	State string `json:"state"` // running, exited, created, paused
-	// Health is the verdict of the container's own healthcheck, when the
-	// workload declares one: healthy, unhealthy or starting. Empty otherwise.
+	// Health is the healthcheck verdict (healthy, unhealthy, starting), empty without one.
 	Health string `json:"health,omitempty"`
-	// Restarts counts how many times the runtime has restarted this container.
-	// A container that keeps showing "starting" with a climbing count is not
-	// starting, it is crash-looping.
+	// Restarts > 0 while "starting" means crash-looping.
 	Restarts int `json:"restarts,omitempty"`
 }
 
-// IsInitContainer reports whether a runtime container name is one of the
-// pod's init containers. podman kube play prefixes container names with the
-// pod name, so the final "-<name>" segment is matched as well as the bare name.
+// IsInitContainer matches the bare name or a "-<name>" suffix (kube play prefixes the pod name).
 func IsInitContainer(initNames []string, containerName string) bool {
 	for _, n := range initNames {
 		if containerName == n || strings.HasSuffix(containerName, "-"+n) {
@@ -327,9 +299,7 @@ func IsInitContainer(initNames []string, containerName string) bool {
 	return false
 }
 
-// ActualNetwork is what really exists on the host for one network: the unit
-// podcd wrote for it, what systemd says about that unit, and whether podman
-// has the network at all.
+// ActualNetwork is one network's unit, its systemd state, and whether the runtime has it.
 type ActualNetwork struct {
 	Name string `json:"name"`
 
@@ -372,8 +342,7 @@ const (
 	ActionNoOp    ActionType = "noop"
 )
 
-// ActionKind says what an action is about. Empty means an application, the
-// original and common case, so older state and callers read unchanged.
+// ActionKind says what an action is about; empty means an application.
 type ActionKind string
 
 const (
@@ -385,9 +354,7 @@ const (
 type Action struct {
 	Type ActionType `json:"type"`
 	Kind ActionKind `json:"kind,omitempty"`
-	// App is the name of what changes: an application, or with Kind set, a
-	// network. The field keeps its name so the JSON people already parse
-	// does not move.
+	// App names the application, or the network when Kind is set (name kept for JSON compatibility).
 	App     string   `json:"app"`
 	Reason  string   `json:"reason"`
 	Details []string `json:"details,omitempty"`
