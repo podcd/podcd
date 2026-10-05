@@ -254,3 +254,18 @@ func TestPodMissingSecretFailsTheReconcile(t *testing.T) {
 		t.Fatalf("a missing Secret must be reported, got: %v", err)
 	}
 }
+
+func TestPodRejectsPathsEscapingAVolume(t *testing.T) {
+	const volume = "  volumes:\n    - name: cfg\n      configMap:\n        name: web-config\n        items: [{key: GREETING, path: ../../x}]\n  containers:"
+	for _, tc := range []struct{ old, new, want string }{
+		{"GREETING: hello", "../../.bashrc: x", `key "../../.bashrc"`},
+		{"  containers:", volume, `item path "../../x"`},
+		{"name: web\nspec:", "name: web\n  annotations:\n    io.podcd.networks: \"a\\n[Service]\"\nspec:", "not a valid network name"},
+	} {
+		src := strings.Replace(podFiles, tc.old, tc.new, 1)
+		_, err := resolvePod(t, map[string]string{"web.yaml": src}, "vm-1")
+		if err == nil || !strings.Contains(err.Error(), tc.want) {
+			t.Errorf("want an error containing %q, got %v", tc.want, err)
+		}
+	}
+}

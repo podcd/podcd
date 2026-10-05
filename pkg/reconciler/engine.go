@@ -49,6 +49,14 @@ func NewEngine(cfg config.AgentConfig, log *slog.Logger) (*Engine, error) {
 	if err != nil {
 		return nil, err
 	}
+	// stateDir holds resolved secrets (played manifests, docker's mounted
+	// secret files, which must stay readable by container users): agent user only.
+	if err := os.MkdirAll(cfg.StateDir, 0o700); err != nil {
+		return nil, fmt.Errorf("creating %s: %w", cfg.StateDir, err)
+	}
+	if err := os.Chmod(cfg.StateDir, 0o700); err != nil {
+		log.Warn("could not restrict the state directory to the agent user", "path", cfg.StateDir, "error", err)
+	}
 
 	var rt runtime.Runtime
 	var rend *renderer.Renderer

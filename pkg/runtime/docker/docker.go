@@ -367,7 +367,7 @@ func (r *Runtime) play(ctx context.Context, app string, manifest []byte) error {
 			return fmt.Errorf("%s: clearing %s: %w", app, filepath.Join(dir, sub), err)
 		}
 	}
-	// Traversable by container users; the compose file is private by its own mode.
+	// Traversable by container users; the 0700 stateDir above keeps other host users out.
 	if err := os.MkdirAll(dir, 0o755); err != nil {
 		return fmt.Errorf("%s: creating %s: %w", app, dir, err)
 	}
@@ -707,7 +707,10 @@ func (r *Runtime) ApplyNetwork(ctx context.Context, net model.Network) error {
 		if !recreate {
 			return nil
 		}
-		out, err := r.dockerRun(ctx, "ps", "--quiet", "--filter", "network="+net.Name)
+		// Only podcd's containers: the planner restarts those; others would stay down. A
+		// foreign container still on the network makes the rm below fail instead.
+		out, err := r.dockerRun(ctx, "ps", "--quiet", "--filter", "network="+net.Name,
+			"--filter", "label="+config.LabelManaged+"=true")
 		if err != nil {
 			return fmt.Errorf("listing containers on network %s: %w", net.Name, err)
 		}
@@ -749,10 +752,18 @@ func (r *Runtime) ApplyNetwork(ctx context.Context, net model.Network) error {
 	return nil
 }
 
-// RemoveNetwork deletes a network and its record, never forcing.
+// RemoveNetwork deletes a network's record, and the network if podcd created
+// it (an adopted one is left alone), never forcing.
 func (r *Runtime) RemoveNetwork(ctx context.Context, network string) error {
 	if err := removeIfExists(filepath.Join(r.unitDir, renderer.NetworkFileName(network))); err != nil {
 		return fmt.Errorf("removing unit for network %s: %w", network, err)
+	}
+	existing, err := r.listNetworks(ctx)
+	if err != nil {
+		return err
+	}
+	if !existing[network] {
+		return nil
 	}
 	if _, err := r.dockerRun(ctx, "network", "rm", network); err != nil && !networkMissing(err) {
 		return fmt.Errorf("removing network %s: %w", network, err)

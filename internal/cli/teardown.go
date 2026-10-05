@@ -19,8 +19,9 @@ func newTeardownCommand(f *configFlags) *cobra.Command {
 		Long: "Composes `podcd prune --all` and `podcd uninstall`: every application podcd manages is\n" +
 			"stopped and removed, then the agent's own systemd unit is stopped, disabled and removed.\n" +
 			"--purge-state additionally deletes stateDir (checkouts, played manifests, state.json).\n" +
-			"--purge-config additionally deletes the directory holding agent.yaml, and its envFile - the\n" +
-			"repository URL and any secrets resolved through env: references live there.",
+			"--purge-config additionally deletes agent.yaml and its envFile - the repository URL and any\n" +
+			"secrets resolved through env: references live there - and the directory holding agent.yaml\n" +
+			"if that leaves it empty.",
 		Args: cobra.NoArgs,
 		RunE: withEngineArgs(f, func(ctx context.Context, env *environment, cmd *cobra.Command, _ []string) error {
 			candidates, networks, _, err := env.engine.RemoveCandidates(ctx, nil, true)
@@ -48,7 +49,7 @@ func newTeardownCommand(f *configFlags) *cobra.Command {
 				fmt.Fprintln(env.out, "  delete "+stateDir+" (checkouts, played manifests, state.json)")
 			}
 			if purgeConfig {
-				fmt.Fprintln(env.out, "  delete "+configDir+" and "+env.cfg.EnvFile+" (secrets)")
+				fmt.Fprintln(env.out, "  delete "+env.cfg.Path+" and "+env.cfg.EnvFile+" (secrets), and "+configDir+" if then empty")
 			}
 			if !yes && !confirm(cmd, "Proceed?") {
 				fmt.Fprintln(cmd.ErrOrStderr(), "aborted")
@@ -68,13 +69,16 @@ func newTeardownCommand(f *configFlags) *cobra.Command {
 				fmt.Fprintln(env.out, "removed "+stateDir)
 			}
 			if purgeConfig {
-				if err := os.Remove(env.cfg.EnvFile); err != nil && !os.IsNotExist(err) {
-					return fmt.Errorf("removing %s: %w", env.cfg.EnvFile, err)
+				// Only the files podcd owns: --config may point into $HOME, /etc or anywhere else.
+				for _, p := range []string{env.cfg.Path, env.cfg.EnvFile} {
+					if err := os.Remove(p); err != nil && !os.IsNotExist(err) {
+						return fmt.Errorf("removing %s: %w", p, err)
+					}
 				}
-				if err := os.RemoveAll(configDir); err != nil {
-					return fmt.Errorf("removing %s: %w", configDir, err)
+				fmt.Fprintln(env.out, "removed "+env.cfg.Path+" and "+env.cfg.EnvFile)
+				if os.Remove(configDir) == nil { // fails, harmlessly, unless empty
+					fmt.Fprintln(env.out, "removed "+configDir)
 				}
-				fmt.Fprintln(env.out, "removed "+configDir+" and "+env.cfg.EnvFile)
 			}
 			if removeErr != nil {
 				return removeErr

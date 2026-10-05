@@ -170,7 +170,12 @@ func TestApplyNetworkReportsANetworkStillInUse(t *testing.T) {
 }
 
 func TestRemoveNetworkStopsDeletesTheUnitAndTheNetwork(t *testing.T) {
-	r, f := newRuntime(t, nil)
+	r, f := newRuntime(t, func(bin string, args []string) (string, error) {
+		if bin == "podman" && args[1] == "ls" {
+			return `[{"name":"backend","labels":{"io.podcd.network":"backend"}}]`, nil
+		}
+		return "", nil
+	})
 	u := writeNetworkUnit(t, r, model.Network{Name: "backend"})
 	if err := r.RemoveNetwork(context.Background(), "backend"); err != nil {
 		t.Fatal(err)
@@ -181,6 +186,7 @@ func TestRemoveNetworkStopsDeletesTheUnitAndTheNetwork(t *testing.T) {
 	want := []string{
 		"systemctl --user stop podcd-backend-network.service",
 		"systemctl --user daemon-reload",
+		"podman network ls --format json",
 		"podman network rm backend",
 	}
 	if got := calls(f); strings.Join(got, "|") != strings.Join(want, "|") {
@@ -201,11 +207,35 @@ func TestRemoveNetworkToleratesWhatIsAlreadyGone(t *testing.T) {
 				return "", errors.New("Failed to stop podcd-backend-network.service: Unit podcd-backend-network.service not loaded.")
 			}
 		case "podman":
+			if args[1] == "ls" {
+				return "[]", nil
+			}
 			return "", errors.New("Error: unable to find network with name or ID backend: network not found")
 		}
 		return "", nil
 	})
 	if err := r.RemoveNetwork(context.Background(), "backend"); err != nil {
 		t.Fatalf("nothing to stop and nothing to remove is success: %v", err)
+	}
+}
+
+func TestRemoveNetworkLeavesAnAdoptedNetwork(t *testing.T) {
+	r, f := newRuntime(t, func(bin string, args []string) (string, error) {
+		if bin == "podman" && args[1] == "ls" {
+			return `[{"name":"backend","labels":{}}]`, nil
+		}
+		return "", nil
+	})
+	u := writeNetworkUnit(t, r, model.Network{Name: "backend"})
+	if err := r.RemoveNetwork(context.Background(), "backend"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(u.Path); !os.IsNotExist(err) {
+		t.Fatal("the unit should be gone")
+	}
+	for _, c := range calls(f) {
+		if strings.Contains(c, "network rm") {
+			t.Fatal("a network podcd did not create must not be removed")
+		}
 	}
 }

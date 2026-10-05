@@ -156,7 +156,8 @@ func (r *Runtime) ApplyNetwork(ctx context.Context, net model.Network) error {
 	return nil
 }
 
-// RemoveNetwork stops and deletes the unit and removes the network, never forcing.
+// RemoveNetwork stops and deletes the unit, and removes the network if podcd
+// created it (an adopted one is left alone), never forcing.
 func (r *Runtime) RemoveNetwork(ctx context.Context, network string) error {
 	service := renderer.NetworkServiceName(network)
 	if _, err := r.systemctlRun(ctx, "stop", service); err != nil && !unitUnknown(err) {
@@ -167,6 +168,13 @@ func (r *Runtime) RemoveNetwork(ctx context.Context, network string) error {
 	}
 	if err := r.daemonReload(ctx); err != nil {
 		return err
+	}
+	existing, err := r.listNetworks(ctx)
+	if err != nil {
+		return err
+	}
+	if !existing[network] {
+		return nil
 	}
 	if _, err := r.podmanRun(ctx, "network", "rm", network); err != nil && !networkMissing(err) {
 		return fmt.Errorf("removing network %s: %w", network, err)

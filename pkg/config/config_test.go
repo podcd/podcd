@@ -492,10 +492,10 @@ func TestEnvFileIsRequiredAndNeverDefaulted(t *testing.T) {
 	}
 }
 
-func TestImagePruneDefaultsOnAndZeroDisables(t *testing.T) {
+func TestImagePruneDefaultsOff(t *testing.T) {
 	base := "envFile: /e\nrepository: {url: https://example.com/r.git}\n"
 	for src, want := range map[string]time.Duration{
-		base:                    24 * time.Hour,
+		base:                    0,
 		base + "imagePrune: 0s": 0,
 		base + "imagePrune: 6h": 6 * time.Hour,
 	} {

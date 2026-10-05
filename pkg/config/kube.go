@@ -7,11 +7,14 @@ import (
 	"encoding/json"
 	"fmt"
 	"maps"
+	"path/filepath"
+	"regexp"
 	"slices"
 	"strings"
 
 	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/util/strategicpatch"
+	"k8s.io/apimachinery/pkg/util/validation"
 	sigyaml "sigs.k8s.io/yaml"
 
 	"github.com/podcd/podcd/pkg/model"
@@ -105,6 +108,12 @@ func (h hostDocuments) podToApplication(ctx context.Context, name string, pod co
 	}
 	if msg := checkUserNS(app.UserNS); msg != "" {
 		p.add("%s", msg)
+	}
+	// Written into the unit as Network=; a newline would inject directives.
+	for _, n := range app.Networks {
+		if !networkNameRE.MatchString(n) {
+			p.add("annotation %s: %q is not a valid network name", AnnotationNetworks, n)
+		}
 	}
 	for _, c := range pod.Spec.InitContainers {
 		if c.Name != "" {
@@ -207,6 +216,8 @@ func (h hostDocuments) podToApplication(ctx context.Context, name string, pod co
 		secretDocs = append(secretDocs, doc.Spec)
 	}
 
+	checkFiles(&p, pod, configMaps, secretDocs)
+
 	if err := p.err(); err != nil {
 		return model.Application{}, err
 	}
@@ -224,6 +235,64 @@ func (h hostDocuments) podToApplication(ctx context.Context, name string, pod co
 	}
 	app.SetManifest(manifest)
 	return app, nil
+}
+
+// networkNameRE is what podman and docker accept as a network name.
+var networkNameRE = regexp.MustCompile(`^[a-zA-Z0-9][a-zA-Z0-9_.-]*$`)
+
+// checkFiles rejects keys, item paths, subPaths and volume names that would
+// escape a volume's directory: the docker runtime lays them out as host files.
+func checkFiles(p *problems, pod corev1.Pod, configMaps []corev1.ConfigMap, secretDocs []corev1.Secret) {
+	key := func(kind, name, k string) {
+		if errs := CheckKey(k); errs != "" {
+			p.add("%s %q: key %q: %s", kind, name, k, errs)
+		}
+	}
+	for _, cm := range configMaps {
+		for k := range cm.Data {
+			key(KindConfigMap, cm.Name, k)
+		}
+		for k := range cm.BinaryData {
+			key(KindConfigMap, cm.Name, k)
+		}
+	}
+	for _, s := range secretDocs {
+		for k := range s.Data {
+			key(KindSecret, s.Name, k)
+		}
+		for k := range s.StringData {
+			key(KindSecret, s.Name, k)
+		}
+	}
+	for _, v := range pod.Spec.Volumes {
+		if v.Name == "." || v.Name == ".." || strings.ContainsAny(v.Name, `/\`) {
+			p.add("volume %q: name must not contain a path", v.Name)
+		}
+		var items []corev1.KeyToPath
+		switch {
+		case v.ConfigMap != nil:
+			items = v.ConfigMap.Items
+		case v.Secret != nil:
+			items = v.Secret.Items
+		}
+		for _, it := range items {
+			if !filepath.IsLocal(it.Path) {
+				p.add("volume %q: item path %q must be relative and stay inside the volume", v.Name, it.Path)
+			}
+		}
+	}
+	for _, c := range allContainers(pod) {
+		for _, m := range c.VolumeMounts {
+			if m.SubPath != "" && !filepath.IsLocal(m.SubPath) {
+				p.add("container %q: subPath %q must be relative and stay inside the volume", c.Name, m.SubPath)
+			}
+		}
+	}
+}
+
+// CheckKey returns why k is not a valid ConfigMap or Secret key, or "".
+func CheckKey(k string) string {
+	return strings.Join(validation.IsConfigMapKey(k), "; ")
 }
 
 // SecretProvisionError is a failed ExternalSecret fetch; other applications still compile.
