@@ -7,23 +7,21 @@ title: Secrets
 
 ![An ExternalSecret in Git references a value in Vault; podcd fetches it on the host and bundles the resulting Secret into the pod manifest podman plays](../../static/img/secrets.svg)
 
-Secrets should not be in Git as plaintext. Instead, you declare **where** a secret comes from, and the agent fetches and resolves it on the host at reconcile time before building the workload manifest.
-
-The mechanism is a pair of documents in your gitops repository:
+Git declares **where** a secret comes from; the agent fetches it on the host at reconcile time and bundles it into the pod manifest. Two documents:
 
 | Document | What it does |
 |---|---|
 | `SecretStore` | Configures a backend: the agent's environment, a files directory, or HashiCorp Vault |
 | `ExternalSecret` | Names one or more keys to fetch from a store and assemble into a `v1/Secret` |
 
-A host fetches only the secrets its own workloads reference, so a store nobody on this machine uses is never contacted, and a value shared by two pods costs one fetch. Rotating a value in the backend changes the manifest, and the next reconcile restarts the pod.
+A host fetches only the secrets its own workloads reference, once each. Rotating a value in the backend changes the manifest, and the next reconcile restarts the pod.
 
-If a secret cannot be provisioned, only the workloads that reference it are held back. Unrelated workloads still reconcile; the failed reconcile is recorded and retried, and the held-back workload is never pruned while its secret is unavailable.
+If a secret cannot be fetched, only the workloads that reference it are held back (never pruned); the rest still reconcile, and the reconcile is recorded as failed and retried.
 
 
 ## `env` store - secrets from agent.env
 
-The `env` store reads named variables from the agent's environment and from `envFile` defined in `agent.yaml`.
+Reads variables from the agent's environment and its `envFile`.
 
 ```yaml
 # In Git: declare the store and what to fetch
@@ -63,9 +61,7 @@ DB_USER=app
 EOF
 ```
 
-The agent re-reads the file on every reconcile, so rotating a value needs no restart.
-
-Reference the secret from a Pod or Application:
+The file is re-read on every reconcile; rotation needs no restart. Reference the secret from a Pod:
 
 ```yaml
 # envFrom injects every key as an environment variable
@@ -92,7 +88,7 @@ spec:
 
 ## `file` store - secrets delivered by another tool
 
-The `file` store reads one file per key from a directory. Use it when a secrets agent (like `agent` from HashiCorp, or a sidecar) writes individual files.
+Reads one file per key from a directory, for when another tool (Vault Agent, a sidecar) writes the files.
 
 ```yaml
 apiVersion: external-secrets.io/v1beta1
@@ -132,7 +128,7 @@ spec:
 
 ## `vault` store - HashiCorp Vault KV
 
-The server, the KV version and the auth method are declared in the `SecretStore`. Vault's own credentials are references resolved from `agent.env` on the host, so they stay out of Git like everything else.
+Server, KV version and auth method live in the `SecretStore`; Vault's own credentials are references resolved from `agent.env`.
 
 ```yaml
 apiVersion: external-secrets.io/v1beta1
@@ -164,7 +160,7 @@ VAULT_SECRET_ID=yyyyyyyy-yyyy-yyyy-yyyy-yyyyyyyyyyyy
 EOF
 ```
 
-Fetch individual keys - `remoteRef.key` is the full KV path including mount, `property` selects the field within that secret:
+`remoteRef.key` is the full KV path including mount; `property` selects the field:
 
 ```yaml
 apiVersion: external-secrets.io/v1beta1
@@ -191,13 +187,13 @@ spec:
         key: secret/prod/db     # all fields become Secret keys
 ```
 
-The agent logs in when first needed, re-logs in on token expiry or rejection, and caches reads so a reconcile with many keys from one path costs one round trip.
+The agent logs in on first use, again on token expiry or rejection, and caches reads for 30s, so many keys from one path cost one round trip.
 
 ---
 
 ## Mounting secrets as files
 
-Because all workloads use the kube manifest path, you can mount a secret as a file using standard Kubernetes volume syntax:
+Standard Kubernetes volume syntax:
 
 ```yaml
 apiVersion: v1
@@ -222,20 +218,8 @@ spec:
 
 ## Git-defined Secrets
 
-A plain `v1/Secret` document can live in Git. It is bundled into the manifest as written and becomes a podman secret.
-
+A plain `v1/Secret` in Git is bundled into the manifest as written.
 
 ## Repository credentials
 
-A private repository's read credential is a `env:` or `file:` reference in `agent.yaml`, resolved on every fetch:
-
-```yaml
-repository:
-  name: gitops
-  url: https://github.com/you/gitops.git
-  revision: main
-  auth:
-    token: env:GITOPS_TOKEN   # in agent.env, not a literal
-```
-
-See [installation](../installation.md#private-repositories).
+See [private repositories](../installation.md#private-repositories).

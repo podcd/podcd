@@ -3,18 +3,11 @@ id: agent
 title: The agent configuration
 ---
 
-`podcd` requires two things:
+`agent.yaml` lives on the host and says which `Host` document this machine is and which Git repository to reconcile. Set it once per host; everything else lives in Git (the [configuration model](model.md)).
 
-- **`agent.yaml`**, on the host, which will tell `podcd` which host this machine is, which Git repository to reconcile, and where the agent keeps its files. It is meant to be fire-and-forget: set up once per host, then left alone.
-- **IaC in Git** (local repos also supported) - the [configuration model](model.md). What should run, on which hosts, with which configuration. Everything that is part of the fleet's declared intent lives here, where it is reviewed and versioned.
+Lookup order: `$PODCD_CONFIG`, `~/.config/podcd/agent.yaml`, `/etc/podcd/agent.yaml`. Elsewhere: `podcd config create --path <file>`, then `podcd install --config <file>` / `podcd run --config <file>`.
 
-## agent.yaml
-
-`podcd config create` writes this file with every field documented and its default shown commented out; the reference below is that output.
-It lives at `~/.config/podcd/agent.yaml` (or `$PODCD_CONFIG`, or `/etc/podcd/agent.yaml`, looked up in that order).
-
-- You can alternatively point `podcd config create --path <>` to generate it elsewhere.
-- `podcd run --config <>` needs to be pointed to this path if you decide to put the agent-config elsewhere.
+`podcd config create` writes it with every field documented and defaults commented out:
 
 ```yaml
 # podcd agent configuration.
@@ -88,7 +81,7 @@ repository:
 
 ## Editing it
 
-`podcd config set` edits the file in place. Fields are addressed by their yaml path:
+`podcd config set` edits the file in place, by yaml path:
 
 ```bash
 podcd config set revision v1.4.0                 # alias for repository.revision
@@ -96,7 +89,7 @@ podcd config set interval 30s
 podcd config set repository.auth.token env:GITOPS_TOKEN
 podcd config set repository.values.0 values/common.yaml   # a list grows one item at a time
 # fields that only make sense together are set together and validated once:
-podcd config set vault.address=https://vault.example.com vault.roleId=env:VAULT_ROLE_ID vault.secretId=env:VAULT_SECRET_ID
+podcd config set repository.auth.sshKeyPath=~/.ssh/deploy_key repository.auth.sshKnownHostsPath=~/.ssh/known_hosts
 podcd config view
 ```
 

@@ -3,11 +3,11 @@ id: values
 title: Values templating
 ---
 
-Overrides parametrize one application at a time, by name, and only work when every host in the layer runs that application. Values templating parametrizes the documents themselves - several hosts can share one `Pod` and each fill in the parts that differ.
+Overrides patch one application by name. Values templating parametrizes the documents themselves: hosts share one `Pod` and each fills in what differs.
 
 ## Templates
 
-A template is a file named `*.tpl` (e.g. `edge-api.yaml.tpl`). A template is rendered for each host against that host's values.
+A `*.tpl` file (e.g. `edge-api.yaml.tpl`) is rendered for each host against that host's values.
 
 ```yaml
 # apps/edge-api.yaml.tpl
@@ -31,13 +31,13 @@ spec:
           memory: '{{ default "256Mi" .Values.resources.memory }}'
 ```
 
-A template may render any deployable kind - `Pod`, `ConfigMap`, `Secret`, `ExternalSecret`, `Network` - but not a `Host`, `Group` or `Environment`, since those are what decide a host's values in the first place. A `SecretStore` is not templated either: it is shared by every host, and its credentials are already references resolved on the host.
+A template may render `Pod`, `ConfigMap`, `Secret`, `ExternalSecret` or `Network`. `Host`, `Group` and `Environment` cannot be templated (they decide the values), nor can `SecretStore` (shared by every host; its credentials are already host-resolved references).
 
-One consequence of the whole file being a template: inside a `.tpl`, a YAML `#` comment is still template text, so a comment that quotes template syntax literally (a bare `{{ if }}`) fails to parse. Write it as a Go template comment, `{{/* like this */}}`, which renders to nothing.
+A YAML `#` comment in a `.tpl` is still template text, so one quoting template syntax (`{{ if }}`) fails to parse. Use `{{/* ... */}}`.
 
 ## Where values come from
 
-A `Host`, `Group` or `Environment` document can provide a list of values files. The precedence is in bottom to top order.
+`Host`, `Group` and `Environment` documents list values files. Precedence follows [overrides](model.md#overrides-inheritance-and-merge-rules): environment, then groups, then host.
 
 ```yaml
 # environments/prod.yaml
@@ -51,7 +51,7 @@ spec:
     - values/prod.yaml   # repeatable; later files in the list win per key
 ```
 
-A values file is plain YAML with no `apiVersion`/`kind`, relative to its own document's repository, so the loader ignores it as a document - it exists only to be read as `.Values`:
+A values file is plain YAML with no `apiVersion`/`kind`, so the loader does not treat it as a document:
 
 ```yaml
 # values/prod.yaml
@@ -62,8 +62,7 @@ resources:
   memory: 512M
 ```
 
-You can also pass value paths from the hosts `agent.yaml`.
-The agent config however is meant to stay a fire-and-forget pointer, values directly on the agent is not a recommended pattern.
+`agent.yaml` can also list values files, as the lowest-precedence layer. Prefer keeping values in Git documents.
 
 ```yaml
 repository:
@@ -82,16 +81,14 @@ Go's own `text/template`, plus a small helper set:
 |---|---|
 | `default DEF VAL` | `VAL` if set, else `DEF`. For anything genuinely optional. |
 | `required MSG VAL` | `VAL` if set, else fails the render with `MSG`. Per host: a host that never selects the application never renders its template, so only hosts that actually need the value have to supply it. |
-| `upper`, `lower`, `trim` | The obvious string transforms. |
+| `upper`, `lower`, `trim` | String transforms. |
 | `trimPrefix P S`, `trimSuffix SUF S` | Strip a fixed prefix/suffix from `S`. |
 | `replace OLD NEW S` | `strings.ReplaceAll`. |
 | `quote V` | Go-quote a value, for embedding it as a JSON/YAML string literal. |
 
-Use `required` for anything the resource cannot do without, and `default` for anything optional.
-
 ## Secrets and values
 
-Secret names are safe to use in values - a template can emit an `ExternalSecret` or reference one by name in a Pod spec:
+Values may carry secret *names*, never values: a template can emit an `ExternalSecret` or reference one by name:
 
 ```yaml
 # apps/api.yaml.tpl
@@ -108,4 +105,4 @@ spec:
             name: "{{ .Values.secretName }}"   # values: secretName: db-creds
 ```
 
-The actual secret values never enter the template - only the name does. See [Secrets](secrets.md).
+See [Secrets](secrets.md).

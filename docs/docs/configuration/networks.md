@@ -3,7 +3,7 @@ id: networks
 title: Networks
 ---
 
-Pods that should reach each other by name need a podman network to share. A `Network` document declares one, and podcd creates it on every host that needs it, changes it when the document changes, and removes it when nothing on the host uses it any more. Nothing is created by hand, and nothing is left behind.
+Pods reach each other by name over a shared podman network. A `Network` document declares one; podcd creates it on hosts that need it, recreates it when the document changes, and removes it when nothing on the host uses it.
 
 ## Declaring one
 
@@ -24,18 +24,18 @@ spec:
   options: {mtu: "1400"}  # driver options, --opt key=value
 ```
 
-Every field is optional. `spec: {}` is a plain bridge network with podman's defaults, which is what most repositories want:
+Every field is optional; `spec: {}` is a bridge network with podman's defaults.
 
 ```bash
 podcd create network backend >> networks.yaml
 podcd create network backend --subnet 10.90.0.0/24 --gateway 10.90.0.1 --internal
 ```
 
-The name must be lowercase letters, digits and dashes: it becomes both the podman network's name and a unit file's.
+Names are lowercase letters, digits and dashes (it names both the podman network and the unit file).
 
 ## Which hosts get it
 
-A `Network` is not selected by a `Host`, `Group` or `Environment`, and has no `applications:` list of its own. A host needs the network exactly when a `Pod` that host runs names it:
+Not `Host`, `Group` or `Environment`: a host needs the network exactly when a `Pod` it runs names it:
 
 ```yaml
 apiVersion: v1
@@ -46,13 +46,13 @@ metadata:
     io.podcd.networks: "backend"
 ```
 
-Two consequences follow. A `Network` that no pod on a host names is not created there, and declaring one nobody joins is not an error. And when the last pod on a host that named it leaves - removed from Git, or moved off the network - the network is removed from that host in the same reconcile.
+A `Network` nobody joins is not created (and not an error). When the last pod on a host leaves it, it is removed in the same reconcile.
 
-A name in `io.podcd.networks` that no `Network` document defines keeps its old meaning: a network that already exists on the host, podman's own `podman` or one made by hand, which podcd joins and otherwise leaves alone.
+A name with no `Network` document refers to a network already on the host (podman's `podman`, or one made by hand), which podcd joins and otherwise leaves alone.
 
 ## What podcd writes
 
-For a network the host needs, podcd writes a Quadlet `.network` unit next to the pods' `.kube` units:
+A Quadlet `.network` unit next to the pods' `.kube` units:
 
 ```text
 ~/.config/containers/systemd/podcd-backend.network
@@ -78,7 +78,7 @@ Gateway=10.90.0.1
 WantedBy=default.target
 ```
 
-Quadlet turns that into `podcd-backend-network.service`, a oneshot that runs `podman network create --ignore ... backend` and stays active. The pod's own unit refers to the network through its unit file rather than by name:
+Quadlet turns it into `podcd-backend-network.service`, a oneshot running `podman network create --ignore ... backend`. The pod's unit refers to the network by unit file:
 
 ```ini
 [Kube]
@@ -86,9 +86,7 @@ Yaml=/home/podcd/.local/state/podcd/kube/api.yaml
 Network=podcd-backend.network
 ```
 
-which Quadlet resolves to `--network=backend` on the `kube play` command and, more importantly, to `Requires=` and `After=` on the network's service, systemd creates the network before it starts the pod, and stopping the network's service stops every pod on it.
-
-`podcd status` lists what it found:
+which Quadlet resolves to `--network=backend` plus `Requires=`/`After=` on the network's service: the network exists before the pod starts, and stopping it stops every pod on it. `podcd status` shows them:
 
 ```text
 networks
@@ -98,18 +96,18 @@ networks
 
 ## Lifecycle
 
-podcd compares the rendered `.network` unit with the one on disk, the same way it compares pods, and plans one of:
+The rendered `.network` unit is compared with the one on disk, as for pods:
 
 - no unit for it -> **create**: write the unit, start its service
 - the unit differs from what Git renders -> **update**: the network is recreated, see below
 - the unit is right but podman has no such network, or the service is not active -> **restart**: run the service again
 - a managed network no pod on this host names any more -> **delete**: stop the service, remove the unit, `podman network rm`
 
-Within one reconcile the order is: application deletes, network deletes, network creates and updates, application updates, creates and restarts. A pod always leaves a network before the network is removed, and a network always exists before a pod joins it.
+Order within a reconcile: application deletes, network deletes, network creates and updates, then application updates, creates and restarts.
 
 ### Changing a network
 
-Podman cannot change an existing network, and `podman network create --ignore` keeps whatever is there. So podcd does what the Quadlet documentation asks a human to do: stop the network's service, which stops every pod that requires it, `podman network rm` it, and start the service again so it is created fresh. Every pod on this host that joins the network is then restarted, in the same reconcile, even though its own unit did not change. The plan says so:
+Podman cannot change a network in place. podcd stops the network's service (stopping every pod on it), runs `podman network rm`, starts the service to create it fresh, and restarts every pod on it in the same reconcile:
 
 ```text
   ~ update network backend - configuration in Git changed; the network is recreated and every application on it restarted
@@ -119,19 +117,19 @@ Podman cannot change an existing network, and `podman network create --ignore` k
   > restart worker - network backend is recreated
 ```
 
-A change to a `Network` document is therefore a brief outage for everything on it on every host that has it. Plan for that the way you would for a pod's image change.
+So a `Network` change is a brief outage for everything on it, on every host that has it.
 
 ### Adoption
 
-When a `Network` document first appears for a name the host already has - typically a network created by hand before podcd managed networks, or by an earlier `bootstrap` script - podcd writes the unit and starts the service, and `--ignore` leaves the existing network as it is. It is adopted, not replaced: podcd will not tear a network out from under containers it did not start. From then on it is podcd's, and the next change to the document recreates it with the declared settings. Adoption is the only time the network on the host may differ from the document.
+When a `Network` document first appears for a name the host already has, podcd writes the unit and `--ignore` keeps the existing network: adopted, not replaced, so containers podcd did not start keep their network. The next change to the document recreates it with the declared settings.
 
 ### Removal
 
-A network is removed only after every pod on it is gone, and `podman network rm` is never forced. If something podcd does not manage is still attached, the removal fails with podman's own error (`network is being used`) and the reconcile is retried; detach or remove that container by hand. `podcd remove --all`, `podcd prune` and `podcd teardown` remove managed networks after the applications, and say so before doing it. `podcd remove NAME` removes applications only.
+Removal comes after every pod on it is gone and is never forced: if an unmanaged container is still attached, podman's `network is being used` fails the reconcile until you detach it. `podcd remove --all`, `prune` and `teardown` remove managed networks after the applications; `podcd remove NAME` removes applications only.
 
 ## Overrides and templates
 
-Like a pod, a network can differ per environment, group or host. `networkOverrides` on an `Environment`, `Group` or `Host` merges into the spec, in the same precedence as application overrides and under its own key so a network and an application may share a name:
+`networkOverrides` on an `Environment`, `Group` or `Host` merges into the spec, with the same precedence as application overrides (a separate key, so a network and an application may share a name):
 
 ```yaml
 apiVersion: gitops.podcd.io/v1
@@ -146,9 +144,9 @@ spec:
       options: {mtu: "1500"}
 ```
 
-The merge is plain: a field the override names is set, one it does not name is kept, `options` gains and replaces keys, and a list such as `dns` is replaced whole. An override for a network no document defines is an error; a host's override for a network none of its pods join is a stale entry and is refused, exactly as for applications.
+Named fields are set, others kept; `options` merges per key; lists such as `dns` are replaced whole. Stale-entry rules are the same as for applications.
 
-A `Network` may also be a `*.tpl` template rendered with each host's [values](values.md), for the case where the whole spec is per host:
+A `Network` may also be a `*.tpl` [template](values.md):
 
 ```yaml
 # networks/backend.yaml.tpl
@@ -162,6 +160,6 @@ spec:
 
 ## What podcd will not touch
 
-A `podcd-*.network` file in the unit directory without podcd's header is somebody else's. If Git declares a `Network` of that name, the reconcile refuses with `unit ... exists but is not managed by podcd` rather than guess; remove the file or restore the header. A podman network with neither a podcd unit nor podcd's label is never listed, removed or recreated, whatever Git says - it can only be joined.
+A `podcd-*.network` file without podcd's header is somebody else's; if Git declares that name, the reconcile refuses with `unit ... exists but is not managed by podcd`. A podman network with neither a podcd unit nor podcd's label is never removed or recreated, only joined.
 
-A network podcd created whose unit file was deleted by hand is still recognised by its `io.podcd.network` label, reported as missing its unit, and gets the unit written again on the next reconcile if Git still needs it, or removed if not.
+A podcd network whose unit was deleted by hand is still recognised by its `io.podcd.network` label; the next reconcile rewrites the unit, or removes the network if Git no longer needs it.
