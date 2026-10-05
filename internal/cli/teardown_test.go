@@ -57,6 +57,7 @@ func TestTeardownPurgesStateAndConfigWhenAsked(t *testing.T) {
 	home := agentConfig(t)
 	requirePodman(t)
 	configDir := filepath.Join(home, ".config", "podcd")
+	configPath := filepath.Join(configDir, "agent.yaml")
 	stateDir := filepath.Join(home, ".local", "state", "podcd")
 	if err := os.MkdirAll(stateDir, 0o755); err != nil {
 		t.Fatal(err)
@@ -66,10 +67,33 @@ func TestTeardownPurgesStateAndConfigWhenAsked(t *testing.T) {
 	if code != 0 {
 		t.Fatalf("teardown exit code = %d: %s", code, out)
 	}
-	if _, err := os.Stat(configDir); !os.IsNotExist(err) {
-		t.Fatal("--purge-config did not remove the config directory")
+	if _, err := os.Stat(configPath); !os.IsNotExist(err) {
+		t.Fatal("--purge-config did not remove agent.yaml")
 	}
 	if _, err := os.Stat(stateDir); !os.IsNotExist(err) {
 		t.Fatal("--purge-state did not remove the state directory")
+	}
+}
+
+func TestTeardownPurgeConfigLeavesTheConfigsNeighboursAlone(t *testing.T) {
+	home := agentConfig(t)
+	requirePodman(t)
+	configPath := filepath.Join(home, "agent.yaml") // as with --config ~/agent.yaml
+	if err := os.Rename(filepath.Join(home, ".config", "podcd", "agent.yaml"), configPath); err != nil {
+		t.Fatal(err)
+	}
+	neighbour := filepath.Join(home, "notes.txt")
+	if err := os.WriteFile(neighbour, []byte("mine"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	if out, code := run(t, "teardown", "-y", "--purge-config", "--config", configPath); code != 0 {
+		t.Fatalf("teardown exit code = %d: %s", code, out)
+	}
+	if _, err := os.Stat(configPath); !os.IsNotExist(err) {
+		t.Fatal("--purge-config did not remove agent.yaml")
+	}
+	if _, err := os.Stat(neighbour); err != nil {
+		t.Fatalf("--purge-config removed a file it does not own: %v", err)
 	}
 }

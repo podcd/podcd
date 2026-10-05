@@ -4,7 +4,6 @@ import (
 	"context"
 	"fmt"
 	"os"
-	"path/filepath"
 	"strings"
 
 	"github.com/spf13/cobra"
@@ -20,8 +19,7 @@ func newTeardownCommand(f *configFlags) *cobra.Command {
 			"stopped and removed, then the agent's own systemd unit is stopped, disabled and removed.\n" +
 			"--purge-state additionally deletes stateDir (checkouts, played manifests, state.json).\n" +
 			"--purge-config additionally deletes agent.yaml and its envFile - the repository URL and any\n" +
-			"secrets resolved through env: references live there - and the directory holding agent.yaml\n" +
-			"if that leaves it empty.",
+			"secrets resolved through env: references live there.",
 		Args: cobra.NoArgs,
 		RunE: withEngineArgs(f, func(ctx context.Context, env *environment, cmd *cobra.Command, _ []string) error {
 			candidates, networks, _, err := env.engine.RemoveCandidates(ctx, nil, true)
@@ -33,7 +31,6 @@ func newTeardownCommand(f *configFlags) *cobra.Command {
 				return err
 			}
 			stateDir := env.cfg.StateDir
-			configDir := filepath.Dir(env.cfg.Path)
 
 			fmt.Fprintln(env.out, "this will:")
 			if len(candidates) > 0 {
@@ -49,7 +46,7 @@ func newTeardownCommand(f *configFlags) *cobra.Command {
 				fmt.Fprintln(env.out, "  delete "+stateDir+" (checkouts, played manifests, state.json)")
 			}
 			if purgeConfig {
-				fmt.Fprintln(env.out, "  delete "+env.cfg.Path+" and "+env.cfg.EnvFile+" (secrets), and "+configDir+" if then empty")
+				fmt.Fprintln(env.out, "  delete "+env.cfg.Path+" and "+env.cfg.EnvFile+" (secrets)")
 			}
 			if !yes && !confirm(cmd, "Proceed?") {
 				fmt.Fprintln(cmd.ErrOrStderr(), "aborted")
@@ -76,9 +73,6 @@ func newTeardownCommand(f *configFlags) *cobra.Command {
 					}
 				}
 				fmt.Fprintln(env.out, "removed "+env.cfg.Path+" and "+env.cfg.EnvFile)
-				if os.Remove(configDir) == nil { // fails, harmlessly, unless empty
-					fmt.Fprintln(env.out, "removed "+configDir)
-				}
 			}
 			if removeErr != nil {
 				return removeErr
