@@ -232,6 +232,59 @@ func TestRunLoopReconcilesAndStopsWhenAsked(t *testing.T) {
 	}
 }
 
+func TestRunLoopPrunesImagesOncePerInterval(t *testing.T) {
+	rt := newFakeRuntime()
+	e, _ := newTestEngine(t, rt, twoApps)
+	e.cfg.Interval = 5 * time.Millisecond
+	e.cfg.Jitter = 0
+	e.cfg.ImagePrune = time.Hour
+
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan error, 1)
+	go func() { done <- e.Run(ctx) }()
+
+	deadline := time.After(5 * time.Second)
+	for rt.prunes() == 0 {
+		select {
+		case <-deadline:
+			t.Fatal("no image prune after a successful reconcile")
+		case <-time.After(5 * time.Millisecond):
+		}
+	}
+	time.Sleep(50 * time.Millisecond) // several more reconciles
+	cancel()
+	<-done
+	if n := rt.prunes(); n != 1 {
+		t.Fatalf("pruned %d times within one imagePrune interval, want 1", n)
+	}
+}
+
+func TestRunLoopSkipsImagePruneWhenDisabled(t *testing.T) {
+	rt := newFakeRuntime()
+	e, _ := newTestEngine(t, rt, twoApps)
+	e.cfg.Interval = 5 * time.Millisecond
+	e.cfg.ImagePrune = 0
+
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan error, 1)
+	go func() { done <- e.Run(ctx) }()
+
+	deadline := time.After(5 * time.Second)
+	for rt.appliedCount() < 2 {
+		select {
+		case <-deadline:
+			t.Fatal("the loop did not converge the host")
+		case <-time.After(5 * time.Millisecond):
+		}
+	}
+	time.Sleep(50 * time.Millisecond)
+	cancel()
+	<-done
+	if n := rt.prunes(); n != 0 {
+		t.Fatalf("imagePrune 0 must disable pruning, pruned %d times", n)
+	}
+}
+
 func TestRetryBackoffIsBoundedAndJitterStaysInRange(t *testing.T) {
 	b := 5 * time.Second
 	for _, want := range []time.Duration{10 * time.Second, 20 * time.Second, 30 * time.Second, 30 * time.Second} {

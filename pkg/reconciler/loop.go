@@ -23,6 +23,7 @@ func (e *Engine) Run(ctx context.Context) error {
 	}
 
 	backoff := e.cfg.RetryInterval
+	var lastImagePrune time.Time
 	for {
 		res, err := e.Reconcile(ctx, Options{})
 		if err != nil {
@@ -40,6 +41,15 @@ func (e *Engine) Run(ctx context.Context) error {
 		backoff = e.cfg.RetryInterval
 		logReconciled(e, res)
 
+		// Only after success: every desired app is running, so its image is in use.
+		if e.cfg.ImagePrune > 0 && time.Since(lastImagePrune) >= e.cfg.ImagePrune {
+			if err := e.pruneImages(ctx); err != nil {
+				e.log.Warn("image prune failed", "error", err)
+			} else {
+				lastImagePrune = time.Now()
+			}
+		}
+
 		if !sleepCtx(ctx, withJitter(e.cfg.Interval, e.cfg.Jitter)) {
 			break
 		}
@@ -49,6 +59,21 @@ func (e *Engine) Run(ctx context.Context) error {
 	if err := ctx.Err(); err != nil && !errors.Is(err, context.Canceled) {
 		return err
 	}
+	return nil
+}
+
+// pruneImages holds the reconcile lock so it cannot race a pull.
+func (e *Engine) pruneImages(ctx context.Context) error {
+	lock, err := Acquire(e.cfg.LockPath())
+	if err != nil {
+		return err
+	}
+	defer lock.Release()
+	n, err := e.rt.PruneImages(ctx)
+	if err != nil {
+		return err
+	}
+	e.log.Info("pruned unused images", "removed", n)
 	return nil
 }
 
