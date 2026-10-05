@@ -263,7 +263,7 @@ type ActualApp struct {
 	UnitFile     string `json:"unitFile,omitempty"`
 	UnitFileHash string `json:"unitFileHash,omitempty"` // sha256 of the on-disk unit
 	// UnitContent and ManifestContent are read from disk to explain changes; never stored.
-	UnitContent []byte `json:"-"`
+	UnitContent     []byte `json:"-"`
 	ManifestContent []byte `json:"-"`
 	SpecHash        string `json:"specHash,omitempty"` // marker written by the renderer
 
