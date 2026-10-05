@@ -14,12 +14,9 @@ import (
 
 // Options tunes planning decisions that are policy rather than fact.
 type Options struct {
-	// Prune removes managed applications Git no longer declares.
-	// When false, orphans are still reported as no-ops with a reason, never hidden.
+	// Prune removes managed applications Git no longer declares; otherwise they are reported as no-ops.
 	Prune bool
-	// Protected applications could not be compiled because a transient
-	// dependency failed (such as ExternalSecret provisioning). They must not
-	// be removed merely because they are absent from this partial desired state.
+	// Protected applications failed to compile transiently (e.g. ExternalSecret); never pruned.
 	Protected map[string]bool
 }
 
@@ -28,9 +25,7 @@ func Build(desired model.DesiredState, actual model.ActualState, rend *renderer.
 	var plan model.Plan
 	seen := map[string]bool{}
 
-	// Networks first: a pod's unit Requires= its network's unit, so a network
-	// that is recreated takes its pods down with it, and those must come
-	// back. recreated remembers which, for the application loop below.
+	// Networks first: recreating one takes its pods down, so they get restarted below.
 	recreated, err := planNetworks(desired, actual, rend, opts, &plan)
 	if err != nil {
 		return model.Plan{}, err
@@ -66,9 +61,7 @@ func Build(desired model.DesiredState, actual model.ActualState, rend *renderer.
 		case cur.UnitState != model.UnitActive:
 			act(model.ActionRestart, fmt.Sprintf("unit is %s, should be running", cmp.Or(cur.UnitState, model.UnitUnknown)))
 		case len(deadContainers(cur, *app)) > 0:
-			// systemd only watches the pod's service container, so a workload
-			// container that died - or was killed - leaves the unit active and
-			// the application broken. Restarting the unit replays the pod.
+			// systemd only watches the service container; a dead workload container leaves the unit active.
 			act(model.ActionRestart, "container "+strings.Join(deadContainers(cur, *app), ", ")+", should be running")
 		case len(changedNetworks(*app, recreated)) > 0:
 			act(model.ActionRestart, "network "+strings.Join(changedNetworks(*app, recreated), ", ")+" is recreated")
@@ -100,8 +93,7 @@ func Build(desired model.DesiredState, actual model.ActualState, rend *renderer.
 	return plan, nil
 }
 
-// planNetworks adds the actions for networks and returns the names of the
-// ones being created or recreated - the ones whose pods need a restart.
+// planNetworks adds network actions and returns those (re)created, whose pods need a restart.
 func planNetworks(desired model.DesiredState, actual model.ActualState, rend *renderer.Renderer, opts Options, plan *model.Plan) (map[string]bool, error) {
 	seen := map[string]bool{}
 	recreated := map[string]bool{}
@@ -123,8 +115,7 @@ func planNetworks(desired model.DesiredState, actual model.ActualState, rend *re
 		cur, exists := actual.Networks[net.Name]
 		switch {
 		case !exists:
-			// No unit and no label. podman may still have a network of this
-			// name, made by hand; the runtime adopts it rather than replacing it.
+			// An existing hand-made network of this name is adopted by the runtime.
 			act(model.ActionCreate, "not present on this host")
 		case !cur.Managed:
 			return nil, fmt.Errorf("network %q: unit %s exists but is not managed by podcd; "+
@@ -137,17 +128,13 @@ func planNetworks(desired model.DesiredState, actual model.ActualState, rend *re
 			act(model.ActionUpdate, "configuration in Git changed; the network is recreated and every application on it restarted",
 				unitDiff(contentLines(string(cur.UnitContent)), contentLines(string(unit.Content)))...)
 		case !cur.Exists, cur.UnitState != model.UnitActive:
-			// The unit is right but the network is not there, or its oneshot
-			// never ran: running it is all that is needed.
 			act(model.ActionRestart, "network should exist")
 		default:
 			act(model.ActionNoOp, "up to date")
 		}
 	}
 
-	// A managed network Git no longer needs here. An application that could
-	// not be compiled this round keeps its network, since nobody can say yet
-	// whether it still joins it.
+	// Managed networks no longer needed, unless a protected application still uses one.
 	for _, name := range actual.NetworkNames() {
 		cur := actual.Networks[name]
 		if seen[name] || !cur.Managed || usedByProtected(name, actual, opts.Protected) {
@@ -169,9 +156,7 @@ func planNetworks(desired model.DesiredState, actual model.ActualState, rend *re
 	return recreated, nil
 }
 
-// usedByProtected reports whether a protected application's unit on disk
-// names this network. Protected applications were not compiled, so their
-// desired networks are unknown; what they currently use is on disk.
+// usedByProtected reports whether a protected application's on-disk unit names this network.
 func usedByProtected(network string, actual model.ActualState, protected map[string]bool) bool {
 	ref := "Network=" + renderer.NetworkFileName(network)
 	for app := range protected {
@@ -184,8 +169,7 @@ func usedByProtected(network string, actual model.ActualState, protected map[str
 	return false
 }
 
-// changedNetworks lists the managed networks of an application that this
-// plan recreates, sorted.
+// changedNetworks lists an application's networks this plan recreates, sorted.
 func changedNetworks(app model.Application, recreated map[string]bool) []string {
 	var out []string
 	for _, n := range app.ManagedNetworks {
@@ -197,11 +181,8 @@ func changedNetworks(app model.Application, recreated map[string]bool) []string 
 	return out
 }
 
-// rank orders the plan so removals happen before creations, and networks
-// are dealt with between the applications that leave them and the ones that
-// join them: freeing a host port before something else binds it is the
-// difference between a clean rename and a crash loop, and a network cannot
-// be removed while a pod is on it, nor joined before it exists.
+// rank orders removals before creations (freeing host ports), with networks
+// between the applications leaving them and those joining them.
 func rank(a model.Action) int {
 	if a.Kind == model.KindNetwork {
 		switch a.Type {
@@ -236,9 +217,7 @@ func imageDetails(app model.Application) []string {
 	return append([]string{"pod with " + strconv.Itoa(len(images)) + " container(s), played by podman"}, out...)
 }
 
-// deadContainers lists the workload containers the runtime shows in a state
-// other than running. Init containers are excluded: they exit by design, and
-// kube play removes them once they have.
+// deadContainers lists non-running workload containers, init containers excluded.
 func deadContainers(cur model.ActualApp, app model.Application) []string {
 	var out []string
 	for _, c := range cur.Containers {
@@ -257,15 +236,13 @@ func updateReason(cur model.ActualApp, unit renderer.Unit) string {
 	return "unit file differs from the rendered unit (edited by hand, or written by an older podcd)"
 }
 
-// changeDetails explains an update: the unit lines that change, and the
-// manifest lines that change with them.
+// changeDetails lists the unit and manifest lines an update changes.
 func changeDetails(cur model.ActualApp, unit renderer.Unit) []string {
 	details := unitDiff(contentLines(string(cur.UnitContent)), contentLines(string(unit.Content)))
 	return append(details, unitDiff(manifestLines(cur.ManifestContent), manifestLines(unit.Manifest))...)
 }
 
-// manifestLines prepares a played manifest for diffing.
-// Secret documents are replaced by a one-line placeholder: their values are a plan printed to a terminal must never show.
+// manifestLines prepares a manifest for diffing, replacing Secret documents with a placeholder.
 func manifestLines(manifest []byte) []string {
 	if len(manifest) == 0 {
 		return nil
@@ -288,7 +265,7 @@ func manifestLines(manifest []byte) []string {
 	return out
 }
 
-// unitDiff reports the lines that would change, so a destructive or surprising edit is visible before it is applied rather than after.
+// unitDiff reports the lines that would change.
 func unitDiff(oldLines, newLines []string) []string {
 	if len(oldLines) == 0 {
 		return nil
@@ -324,8 +301,7 @@ func unitDiff(oldLines, newLines []string) []string {
 	return details
 }
 
-// contentLines drops blank lines, podcd's marker comments, and the derived spec-hash label.
-// A changed hash is a consequence of the change, not an explanation of it, and it would bury the line a human actually needs to see.
+// contentLines drops blank lines, podcd's markers and the spec-hash label (noise in a diff).
 func contentLines(s string) []string {
 	var out []string
 	for _, l := range strings.Split(s, "\n") {

@@ -1,7 +1,5 @@
-// Package renderer compiles a canonical Application into the Quadlet unit that systemd will run.
-//
-// Rendering is pure and deterministic, the same Application always produces the same bytes.
-// That is what makes reconciliation idempotent: "has this changed?" is answered by comparing rendered bytes to the file on disk, not by asking Podman.
+// Package renderer turns an Application into its Quadlet unit. Rendering is
+// deterministic, so "has this changed?" is a byte comparison with disk.
 package renderer
 
 import (
@@ -19,22 +17,19 @@ import (
 // Prefix marks every unit podcd owns. Units without it are left strictly alone.
 const Prefix = "podcd-"
 
-// Marker comments written at the top of every generated unit.
-// They are how the agent recognises its own work on the next run.
+// Header markers that identify podcd's units.
 const (
 	markerManaged = "# Managed by podcd - do not edit. Change Git instead."
 	markerApp     = "# podcd-app: "
 	markerSpec    = "# podcd-spec-hash: "
 	markerVersion = "# podcd-renderer: "
-	// markerManifest records the hash of the played manifest.
-	// The unit bytes alone say whether a kube workload changed.
+	// markerManifest records the played manifest's hash, so unit bytes cover manifest changes.
 	markerManifest = "# podcd-manifest-hash: "
 	// markerNetwork names the network a .network unit creates.
 	markerNetwork = "# podcd-network: "
 )
 
-// Version is bumped when the rendered output format changes.
-// That way existing units get rewritten even when the application spec did not change.
+// Version is bumped when the output format changes, forcing a rewrite of existing units.
 const Version = "1"
 
 // Renderer turns applications into unit files under UnitDir.
@@ -67,24 +62,18 @@ func ServiceName(app string) string { return Prefix + app + ".service" }
 // KubeFileName returns the Quadlet file name for an application.
 func KubeFileName(app string) string { return Prefix + app + ".kube" }
 
-// ServiceNameOfFile returns the systemd service Quadlet generates for a
-// .kube file: the file name with its suffix swapped. It is the name to stop
-// or restart, whatever the application inside the file is called.
+// ServiceNameOfFile returns the service Quadlet generates for a .kube file.
 func ServiceNameOfFile(fileName string) string {
 	return strings.TrimSuffix(fileName, ".kube") + ".service"
 }
 
-// NetworkFileName returns the Quadlet file name for a network. A .kube unit
-// refers to the network by this name, which is what makes systemd create the
-// network before the pod and stop the pod when the network goes away.
+// NetworkFileName returns the Quadlet file name for a network, which .kube units reference.
 func NetworkFileName(network string) string { return Prefix + network + ".network" }
 
-// NetworkServiceName returns the oneshot service Quadlet generates for a
-// .network file: the file's base name with "-network.service" appended.
+// NetworkServiceName returns the oneshot service Quadlet generates for a .network file.
 func NetworkServiceName(network string) string { return Prefix + network + "-network.service" }
 
-// NetworkFromFileName returns the network name for a managed .network file,
-// and whether it is one of ours by name.
+// NetworkFromFileName returns the network name of a podcd .network file.
 func NetworkFromFileName(name string) (string, bool) {
 	if !strings.HasPrefix(name, Prefix) || !strings.HasSuffix(name, ".network") {
 		return "", false
@@ -102,9 +91,7 @@ type NetworkUnit struct {
 	SpecHash    string
 }
 
-// RenderNetwork produces the .network unit for one network. Quadlet turns it
-// into a oneshot service that runs `podman network create --ignore`, so the
-// unit only says what the network should look like; it does not create it.
+// RenderNetwork produces the .network unit for one network.
 func (r *Renderer) RenderNetwork(net model.Network) (NetworkUnit, error) {
 	if net.Name == "" {
 		return NetworkUnit{}, fmt.Errorf("network has no name")
@@ -129,8 +116,7 @@ func (r *Renderer) RenderNetwork(net model.Network) (NetworkUnit, error) {
 	b.WriteString(markerVersion + Version + "\n\n")
 	fmt.Fprintf(&b, "[Unit]\nDescription=podcd network %s\n\n", net.Name)
 	b.WriteString("[Network]\n")
-	// Without NetworkName Quadlet would call it systemd-podcd-<name>; the
-	// document's name is what people expect to see in `podman network ls`.
+	// Otherwise Quadlet names it systemd-podcd-<name>.
 	fmt.Fprintf(&b, "NetworkName=%s\n", net.Name)
 	fmt.Fprintf(&b, "Label=%s=true\n", labelManaged)
 	fmt.Fprintf(&b, "Label=%s=%s\n", labelNetwork, net.Name)
@@ -167,16 +153,13 @@ func (r *Renderer) RenderNetwork(net model.Network) (NetworkUnit, error) {
 	return u, nil
 }
 
-// Labels podcd stamps on the networks it creates, so Inspect can find one
-// whose unit file is gone. They mirror the pod labels in package config; the
-// renderer cannot import config, so they are spelled out here.
+// Network labels, so Inspect finds networks whose unit is gone. Mirrors package config (import cycle).
 const (
 	labelManaged = "io.podcd.managed"
 	labelNetwork = "io.podcd.network"
 )
 
-// ManifestPath is where the played manifest goes, or "" when no kube directory
-// is configured.
+// ManifestPath is where the played manifest goes; "" without a kube directory.
 func (r *Renderer) ManifestPath(app string) string {
 	if r.KubeDir == "" {
 		return ""
@@ -184,8 +167,7 @@ func (r *Renderer) ManifestPath(app string) string {
 	return filepath.Join(r.KubeDir, app+".yaml")
 }
 
-// AppFromFileName returns the application name for a managed unit file, and
-// whether it is one of ours by name.
+// AppFromFileName returns the application name of a podcd unit file.
 func AppFromFileName(name string) (string, bool) {
 	if !strings.HasPrefix(name, Prefix) {
 		return "", false
@@ -212,7 +194,6 @@ func (r *Renderer) Render(app model.Application) (Unit, error) {
 }
 
 // renderKube produces a .kube unit and the manifest it plays.
-// podman does the pod interpretation, the unit only says where the YAML is and how systemd should supervise it.
 func (r *Renderer) renderKube(app model.Application, u Unit) (Unit, error) {
 	if len(app.Manifest) == 0 {
 		return Unit{}, fmt.Errorf("pod %q has no manifest", app.Name)
@@ -233,9 +214,7 @@ func (r *Renderer) renderKube(app model.Application, u Unit) (Unit, error) {
 		}
 		fmt.Fprintf(&b, "UserNS=%s\n", app.UserNS)
 	}
-	// A network podcd manages is named by its unit file, which Quadlet
-	// resolves to the network's name and turns into a Requires=/After= on
-	// the network's service. Any other network is named as it is.
+	// Managed networks by unit file (Quadlet adds Requires=/After=); others by name.
 	for _, n := range app.Networks {
 		if slices.Contains(app.ManagedNetworks, n) {
 			fmt.Fprintf(&b, "Network=%s\n", NetworkFileName(n))
@@ -244,8 +223,6 @@ func (r *Renderer) renderKube(app model.Application, u Unit) (Unit, error) {
 		}
 	}
 	b.WriteString("\n")
-	// Quadlet generates `podman kube play --replace` and `podman kube down`.
-	// Restart= applies to the service container that stands for the pod.
 	writeService(&b, app)
 	writeInstall(&b)
 	u.Content = b.Bytes()
@@ -263,9 +240,7 @@ func writeHeader(b *bytes.Buffer, u Unit) {
 	b.WriteString(markerVersion + Version + "\n\n")
 }
 
-// writeService writes the [Service] section: how systemd supervises the unit.
-// Resource limits belong to systemd, not the container runtime: the unit is
-// what systemd supervises, and cgroup limits survive a restart.
+// writeService writes the [Service] section, including resource limits.
 func writeService(b *bytes.Buffer, app model.Application) {
 	b.WriteString("[Service]\n")
 	fmt.Fprintf(b, "Restart=%s\n", cmp.Or(app.RestartPolicy, "always"))
@@ -282,8 +257,7 @@ func writeService(b *bytes.Buffer, app model.Application) {
 	b.WriteString("\n")
 }
 
-// writeInstall makes the unit come back after a reboot. With lingering
-// enabled for the agent user, that is all "survives reboot" needs.
+// writeInstall makes the unit start on boot (with lingering enabled).
 func writeInstall(b *bytes.Buffer) {
 	b.WriteString("[Install]\nWantedBy=default.target\n")
 }
@@ -322,8 +296,7 @@ func ParseMarkers(content []byte) Markers {
 	return m
 }
 
-// quoteIfNeeded quotes a unit value only when it has to be quoted.
-// Simple values stay readable to whoever is debugging on the host at 3am.
+// quoteIfNeeded quotes a unit value only when it has to be.
 func quoteIfNeeded(s string) string {
 	if s == "" {
 		return `""`
@@ -334,11 +307,8 @@ func quoteIfNeeded(s string) string {
 	return unitQuote(s)
 }
 
-// unitQuote wraps a value in double quotes the way systemd reads them.
-//
-// strconv.Quote does not work here: it escapes non-ASCII into \u sequences systemd cannot decode.
-// That would corrupt any value with an accent in it.
-// systemd only needs \\ and \" escaped inside double quotes.
+// unitQuote double-quotes for systemd, escaping only \\ and \". Not strconv.Quote:
+// systemd cannot decode its \u escapes.
 func unitQuote(s string) string {
 	r := strings.NewReplacer(`\`, `\\`, `"`, `\"`)
 	return `"` + r.Replace(s) + `"`

@@ -3,15 +3,7 @@ id: model
 title: The configuration model
 ---
 
-podcd fetches documents from a Git repository.
-
-There is no prescribed directory structure; every `.yaml`/`.yml`/`.tpl` file in the tree is read and rendered.
-
-```yaml
-apiVersion: gitops.podcd.io/v1
-```
-
-The core document types are:
+Every `.yaml`/`.yml`/`.tpl` file in the repository is read; layout is free. podcd's own kinds use `apiVersion: gitops.podcd.io/v1`:
 
 - `Pod`: a workload definition, referenced by name
 - `Network`: how a podman network the pods join should be created
@@ -19,12 +11,11 @@ The core document types are:
 - `Group`: a role or machine-purpose definition
 - `Host`: a specific VM, including its environment, groups, and overrides
 
-`Pod` defines a workload. `Environment`, `Group` and `Host` decide **which workloads run on a host** and may override their configuration. A `Network` is neither: it follows the pods that name it.
+`Environment`, `Group` and `Host` decide **which workloads run on a host** and may override them. A `Network` follows the pods that name it.
 
 ## Pod
 
-A workload is a plain Kubernetes `Pod`, played by podman through a Quadlet
-`.kube` unit. It says what a workload *is*, not where it runs:
+A workload is a plain Kubernetes `Pod`, played by podman through a Quadlet `.kube` unit. It says what runs, not where:
 
 ```yaml
 apiVersion: v1
@@ -48,11 +39,11 @@ spec:
         httpGet: { path: /, port: 80 }
 ```
 
-`podcd` considers a workload healthy when its regular containers are running; it does not actively interpret container healthchecks. You can still define probes that `podman` supports, `podcd` will still consider running pods healthy.
+A workload is healthy when its regular containers are running; probes are passed to podman but do not decide podcd's verdict.
 
-`initContainers` are supported as well. the underlying `podman` runs them once in declaration order before regular containers. A completed init container with exit code zero is expected to be exited; `podcd` waits while an init container is still running and treats a non-zero exit as an unhealthy workload.
+`initContainers` run once, in order, before the regular containers. podcd waits while one runs; a non-zero exit makes the workload unhealthy.
 
-Podman has no field for networks, podcd instead takes them as an annotation and writes them into the unit's `Network=` lines:
+Networks are an annotation, written into the unit's `Network=` lines:
 
 ```yaml
 metadata:
@@ -60,9 +51,9 @@ metadata:
     io.podcd.networks: "edge,monitoring"
 ```
 
-A name here is either a network a [`Network` document](#network) declares, which podcd then creates and removes, or one that already exists on the host - podman's own `podman`, or one made by hand - which podcd leaves alone.
+A name is either a [`Network` document](#network), which podcd creates and removes, or a network already on the host (podman's own `podman`, or one made by hand), which podcd leaves alone.
 
-Kubernetes has no field for it, so podcd takes it as an annotation and writes it into the unit's `UserNS=` line, which Quadlet passes to `podman kube play --userns`:
+The user namespace is an annotation too, written into the unit's `UserNS=` line (`podman kube play --userns`):
 
 ```yaml
 metadata:
@@ -70,62 +61,13 @@ metadata:
     io.podcd.userns: "keep-id"
 ```
 
-The value is anything `--userns` accepts and applies to every container in the pod.
+Any `--userns` value; it applies to every container in the pod.
 
-Pods are validated before anything is written:
-
-- referenced ConfigMaps and Secrets must exist, or be marked optional
-- host port conflicts across the workloads one host runs
+Before anything is written, referenced ConfigMaps and Secrets must exist (or be optional), and host ports must not conflict across the host's workloads.
 
 ## Network
 
-A `Network` says how podman should create a network of that name. Every field is optional; an empty spec is a plain bridge network with podman's defaults. The fields are the ones `podman network create` takes:
-
-```yaml
-apiVersion: gitops.podcd.io/v1
-kind: Network
-metadata:
-  name: backend
-spec:
-  driver: bridge          # bridge (default), macvlan, ipvlan
-  subnet: 10.90.0.0/24
-  gateway: 10.90.0.1
-  ipRange: 10.90.0.128/25
-  internal: false         # no route out of the host
-  ipv6: false
-  disableDNS: false
-  dns: [10.90.0.53]
-  options: {mtu: "1400"}  # driver options, --opt key=value
-```
-
-A `Network` is not selected by a `Host`, `Group` or `Environment`. It exists on a host when a pod that host runs names it in `io.podcd.networks`, and is removed once no pod there does. 
-
-Pods on it resolve each other by pod name. Declaring one that nothing joins will simply creates nothing.
-
-`podcd` writes a Quadlet `.network` unit for it, and a pod's own unit refers to the network through that unit, so systemd creates the network before the pod and stops the pod when the network is stopped.
-
-Podman cannot change an existing network in place, so **changing a `Network` recreates it, and every pod on this host that joins it is restarted** in the same reconcile.
-
-A network of that name that already exists on the host when the document first appears is adopted as it is and will not be replaced: `podcd` will not tear a network out from under containers it does not manage. From then on it is podcd's, and a later change to the document recreates it. The full lifecycle - adoption, recreation, removal, ordering - is on the [Networks](networks.md) page. 
-
-A `Network` resource may be a template, so a subnet that differs per host is one document rendered with each host's values. And like a `Pod`, it can be overridden per layer, under `networkOverrides` rather than `overrides` so a network and an application may share a name:
-
-```yaml
-apiVersion: gitops.podcd.io/v1
-kind: Host
-metadata:
-  name: vm-1
-spec:
-  groups: [web]
-  networkOverrides:
-    backend:
-      subnet: 10.91.0.0/24
-      options: {mtu: "1500"}
-```
-
-A network override is a plain merge into the spec: a field it names is set, one it does not name is kept, `options` gains and replaces keys, and a list such as `dns` is replaced whole. Precedence and the rules about stale entries are the ones below.
-
-`podcd create network NAME [--subnet CIDR] [--gateway IP] [--internal] [--dns IP]... [--opt KEY=VALUE]...` prints one, validated.
+A `Network` says how podman creates a network of that name; every field is optional. It exists on a host while a pod there names it in `io.podcd.networks`, and is not selected by `Host`, `Group` or `Environment`. Changing one recreates it and restarts the pods on it. Fields, lifecycle, `networkOverrides` and templating: [Networks](networks.md).
 
 ## Host
 
@@ -154,11 +96,11 @@ spec:
     - node-exporter
 ```
 
-If the application was not selected in the first place, podcd reports an error rather than silently ignoring the entry.
+Excluding an application that was never selected is an error.
 
 ## Groups and environments
 
-For larger repositories, applications are selected indirectly. A group names what its members run, and may override them:
+A group names what its members run, and may override them:
 
 ```yaml
 apiVersion: gitops.podcd.io/v1
@@ -199,7 +141,7 @@ groups:
 
 `web` overrides `base`, and the host overrides both.
 
-An override is a **strategic merge patch** against the Pod, it follows Kubernetes' own merge rules:
+An override is a Kubernetes **strategic merge patch** against the Pod:
 
 ```yaml
 # pod
@@ -228,8 +170,6 @@ containers:
       - {name: PORT, value: "8080"}
 ```
 
-An environment or group override may name any application the repository defines, whether or not every member runs it: the override applies wherever the application does and is simply idle elsewhere.
+An environment or group override may name any application the repository defines; it is idle on members that do not run it. An override for an application no Pod defines is an error, and a Host override for an application that host does not run is refused as stale. `networkOverrides` follow the same rules.
 
-An override that no Pod defines is treated as an error. A Host's own overrides are held to a stricter rule, an override for one it does not run is a stale entry and is refused. `networkOverrides` follow the same two rules, against the Network documents and the networks the host's applications join.
-
-For parametrizing *within* a shared definition - an image tag that differs between dev and prod, say - see [values templating](values.md).
+To parametrize *within* a shared definition (an image tag per environment, say), use [values templating](values.md).

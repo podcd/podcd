@@ -3,9 +3,7 @@ package deploy
 
 import _ "embed"
 
-// AgentService is the systemd user unit that runs `podcd run`.
-// * `podcd install` writes this file;
-// * deploy/bootstrap.sh calls `podcd install`.
+// AgentService is the systemd user unit `podcd install` writes.
 //
 //go:embed podcd-agent.service
 var AgentService []byte

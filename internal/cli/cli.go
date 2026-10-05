@@ -52,8 +52,7 @@ func (f *configFlags) addFlags(root *cobra.Command) {
 	pf.StringVar(&f.logFormat, "log-format", "", "text or json")
 }
 
-// For the commands whose behaviour needs it
-// run reads that file, install writes its path into the service.
+// addConfigFlag adds --config for commands that read the agent config.
 func (f *configFlags) addConfigFlag(cmd *cobra.Command) {
 	cmd.Flags().StringVar(&f.config, "config", "", "agent config file (default: $PODCD_CONFIG, ~/.config/podcd/agent.yaml, /etc/podcd/agent.yaml)")
 }
@@ -145,9 +144,7 @@ func withEngine(f *configFlags, body func(context.Context, *environment) error) 
 	})
 }
 
-// withEngineArgs is withEngine for a command whose body also needs cobra's
-// own args and *cobra.Command - positional arguments cobra parsed, or a
-// confirmation prompt that has to write to the command's own streams.
+// withEngineArgs is withEngine with access to the command and its args.
 func withEngineArgs(f *configFlags, body func(context.Context, *environment, *cobra.Command, []string) error) func(*cobra.Command, []string) error {
 	return func(cmd *cobra.Command, args []string) error {
 		ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
@@ -172,8 +169,7 @@ func setup(f configFlags) (*environment, error) {
 	}
 	if f.host != "" {
 		cfg.Host = f.host
-		// An explicit --host must win over a hostname or PODCD_HOST that
-		// happens to be set; otherwise "what does host X get?" is unanswerable.
+		// explicit --host beats PODCD_HOST
 		os.Unsetenv("PODCD_HOST")
 	}
 	if f.logFormat != "" {
@@ -244,8 +240,7 @@ func versionString() string {
 	return "podcd " + v
 }
 
-// defaultServiceFilePath is where `install` writes and `uninstall` looks
-// when --output is not given.
+// defaultServiceFilePath is the agent unit's path without --output.
 func defaultServiceFilePath() (string, error) {
 	home, err := os.UserHomeDir()
 	if err != nil {

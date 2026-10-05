@@ -21,8 +21,7 @@ import (
 	"github.com/podcd/podcd/pkg/model"
 )
 
-// item is one document, flattened for listing: what kind, what name, where
-// it is, and its parsed body for -o json|yaml.
+// item is one document flattened for listing.
 type item struct {
 	Kind   string `json:"kind"`
 	Name   string `json:"name"`
@@ -103,10 +102,8 @@ func newGetCommand(f *configFlags) *cobra.Command {
 	return cmd
 }
 
-// loadIndex reads the documents. Without --repo the repository in the agent
-// config is fetched as the agent would fetch it. With --repo, the value is
-// tried as the repository name from the agent config, then as a local
-// directory, then as a git URL; the config is only required in the first case.
+// loadIndex reads the agent config's repository, or --repo as a configured
+// repository name, a local directory, or a git URL.
 func loadIndex(ctx context.Context, f *configFlags, repo, revision string) (*config.Index, []string, error) {
 	env, setupErr := setup(*f)
 	if repo == "" {
@@ -141,8 +138,7 @@ func loadIndex(ctx context.Context, f *configFlags, repo, revision string) (*con
 	return ix, nil, ix.LoadTree("", r.TreePath())
 }
 
-// notARepo explains what --repo could have been, naming the configured
-// repository when there is a config to name it from.
+// notARepo explains what --repo accepts.
 func notARepo(env *environment, setupErr error) string {
 	if setupErr != nil {
 		return fmt.Sprintf("not a directory or git URL, and the agent config could not be read to look it up by name (%v)", setupErr)
@@ -178,8 +174,7 @@ func collect(ix *config.Index, kind, name string) []item {
 		add(config.KindConfigMap, n, d.Source, d.Spec.Data, dash(strings.Join(slices.Sorted(maps.Keys(d.Spec.Data)), ",")))
 	}
 	for n, d := range ix.Secrets {
-		// StringData holds references, never values, so listing keys and
-		// references is safe.
+		// StringData holds references, not values.
 		add(config.KindSecret, n, d.Source, d.Spec.StringData, dash(strings.Join(slices.Sorted(maps.Keys(d.Spec.StringData)), ",")))
 	}
 	slices.SortFunc(items, func(a, b item) int {

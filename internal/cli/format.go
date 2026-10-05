@@ -166,8 +166,7 @@ func (o *outputFormat) addFlag(cmd *cobra.Command) {
 	cmd.Flags().VarP(o, "output", "o", "output format: json or yaml")
 }
 
-// write encodes v in the chosen format. The yaml goes through JSON first so
-// the json tags - and the secret redaction behind them - apply to both.
+// write encodes v; yaml goes through JSON so json tags (and secret redaction) apply.
 func (o outputFormat) write(w io.Writer, v any) error {
 	switch o {
 	case "yaml":
@@ -257,8 +256,7 @@ func errString(err error) string {
 	return err.Error()
 }
 
-// containerSummary is "running/total", with any healthcheck verdict that is
-// not plain healthy called out: "2/2", "1/2", "2/2 (starting)".
+// containerSummary: "2/2", "1/2", "2/2 (starting)".
 func containerSummary(a model.ActualApp) string {
 	if len(a.Containers) == 0 {
 		return dash(a.ContainerState)

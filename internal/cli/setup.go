@@ -14,8 +14,7 @@ import (
 	"github.com/podcd/podcd/pkg/config"
 )
 
-// The host-setup commands. They touch files under the user's home and never
-// need Git, the runtime or an agent config to already exist.
+// Host-setup commands; need no Git, runtime or existing config.
 
 func newInstallCommand(f *configFlags) *cobra.Command {
 	var output string
@@ -71,17 +70,13 @@ func newInstallCommand(f *configFlags) *cobra.Command {
 	return cmd
 }
 
-// The lines of deploy/podcd-agent.service that install fills in from the
-// agent config: the run command gets the config's path, and the environment
-// file is the one the config's envFile names.
+// Lines of deploy/podcd-agent.service that install fills in from the config.
 const (
 	execStartLine       = "ExecStart=/usr/local/bin/podcd run"
 	environmentFileLine = "EnvironmentFile=-%h/.config/podcd/agent.env"
 )
 
-// renderAgentService returns the agent's unit for a config file and the
-// envFile it names. The config path is made absolute: the unit's
-// WorkingDirectory is the home directory, not wherever install ran.
+// renderAgentService returns the agent unit for a config (made absolute) and its envFile.
 func renderAgentService(configPath, envFile string) ([]byte, error) {
 	abs, err := filepath.Abs(configPath)
 	if err != nil {
@@ -103,8 +98,7 @@ func renderAgentService(configPath, envFile string) ([]byte, error) {
 	return []byte(unit), nil
 }
 
-// confirm asks a yes/no question on the terminal. Anything but an explicit
-// yes - including EOF from a non-interactive stdin - is a no.
+// confirm asks yes/no; anything but an explicit yes (including EOF) is no.
 func confirm(cmd *cobra.Command, question string) bool {
 	fmt.Fprintf(cmd.ErrOrStderr(), "%s [y/N]: ", question)
 	answer, _ := bufio.NewReader(cmd.InOrStdin()).ReadString('\n')
@@ -196,8 +190,6 @@ func newConfigCreateCommand(f *configFlags) *cobra.Command {
 			if interval > 0 {
 				cfg.Interval = interval
 			}
-			// The secrets file is written into the config, never guessed at
-			// run time: beside the config unless told otherwise.
 			cfg.EnvFile = envFile
 			if cfg.EnvFile == "" {
 				cfg.EnvFile = config.EnvFileBeside(path)

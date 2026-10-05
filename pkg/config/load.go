@@ -19,15 +19,9 @@ import (
 	sigyaml "sigs.k8s.io/yaml"
 )
 
-// documents is every decoded document of every kind, addressed by name.
-//
-// Names are global across repositories on purpose.
-// Two repositories defining the same Pod is an ambiguity, and ambiguity is an error here, not a coin flip.
-//
-// The Index holds one set for the plain .yaml files in the tree; Resolve
-// builds a second, per host, from what that host's templates render to. Both
-// go through the same decode path (addDocuments), so a rendered document is
-// validated exactly like a written one.
+// documents is every decoded document, by kind and name. Names are global
+// across repositories; a duplicate is an error. The Index holds the plain
+// files; Resolve builds a second set per host from rendered templates.
 type documents struct {
 	Groups       map[string]Doc[SelectionSpec]
 	Environments map[string]Doc[SelectionSpec]
@@ -56,23 +50,14 @@ func newDocuments() documents {
 	}
 }
 
-// Index is everything the agent loaded from Git: the plain documents,
-// decoded; the templates, still raw; and every file's bytes.
+// Index is everything loaded from Git: decoded documents, raw templates, and every file's bytes.
 type Index struct {
 	documents
 
-	// templates are the *.tpl files, kept as text. A template is not a
-	// document until it is rendered, and it cannot be rendered until a host
-	// and that host's values are known - so nothing about it is decided
-	// here. See Resolve. Which files are templates is decided by their
-	// name, never by their contents: a plain .yaml may contain "{{" and it
-	// is just text.
+	// templates are *.tpl files (by name, never content), rendered per host in Resolve.
 	templates []Source
 
-	// files holds every loaded file's raw bytes, keyed by repository and the
-	// path it was loaded under - not just recognized documents. A Host,
-	// Group or Environment's own `values:` list is resolved against this
-	// cache in Resolve, so reading it back never touches disk again.
+	// files caches every loaded file by repo and path, for `values:` lookups.
 	files map[string]map[string][]byte
 }
 
@@ -90,8 +75,7 @@ func (ix *Index) Templates() []Source { return ix.templates }
 // TemplateSuffix marks a file as a template rather than a document.
 const TemplateSuffix = ".tpl"
 
-// isTemplate reports whether a file name declares a template: foo.yaml.tpl
-// (or any other *.tpl).
+// isTemplate reports whether a file name is *.tpl.
 func isTemplate(name string) bool { return strings.HasSuffix(strings.ToLower(name), TemplateSuffix) }
 
 // isDocument reports whether a file name is a plain YAML document.
@@ -103,11 +87,7 @@ func isDocument(name string) bool {
 // HostNames returns the known host names, sorted.
 func (ix *Index) HostNames() []string { return slices.Sorted(maps.Keys(ix.Hosts)) }
 
-// LoadTree walks one repository checkout and adds every document and template it finds.
-//
-// Files are visited in sorted path order, so load order never depends on the filesystem.
-// Only .yaml/.yml (documents) and .tpl (templates) are read, everything else
-// (READMEs, scripts, Containerfiles) is ignored. Dot-directories are skipped.
+// LoadTree loads every .yaml/.yml/.tpl in a checkout, in sorted path order, skipping dot-directories.
 func (ix *Index) LoadTree(repo, root string) error {
 	var files []string
 	err := filepath.WalkDir(root, func(path string, d fs.DirEntry, err error) error {
@@ -150,15 +130,13 @@ func (ix *Index) LoadTree(repo, root string) error {
 	return nil
 }
 
-// LoadBytes adds one file's content, routed by its name the same way LoadTree
-// routes files it finds: *.tpl is a template, anything else a document.
+// LoadBytes adds one file's content, routed by name as in LoadTree.
 func (ix *Index) LoadBytes(repo, path string, data []byte) error {
 	return ix.loadFile(repo, path, data)
 }
 
 func SplitDocuments(repo, path string, data []byte) ([]Source, error) {
-	// The reader hands back lines re-terminated with "\n", so normalise the
-	// input the same way and every chunk is a verbatim slice of it.
+	// Normalise line endings so every chunk is a verbatim slice of data.
 	data = bytes.ReplaceAll(data, []byte("\r\n"), []byte("\n"))
 	if len(data) > 0 && !bytes.HasSuffix(data, []byte("\n")) {
 		data = append(data, '\n')
@@ -174,8 +152,7 @@ func SplitDocuments(repo, path string, data []byte) ([]Source, error) {
 		if err != nil {
 			return nil, err
 		}
-		// The chunk is a verbatim slice of the input, so its position is where it next occurs after the previous one;
-		// reported at its first content line rather than at a separator, blank line or comment.
+		// Locate the chunk after the previous one; report its first content line.
 		at := offset + bytes.Index(data[offset:], raw)
 		offset = at + len(raw)
 		if skip := leadingBlank(raw); skip >= 0 {
@@ -194,8 +171,7 @@ func leadingBlank(raw []byte) int {
 	return -1
 }
 
-// loadFile routes one file by its name: a *.tpl is kept raw as a template,
-// anything else is decoded as documents, strictly, here and now.
+// loadFile keeps *.tpl raw as a template and strictly decodes anything else.
 func (ix *Index) loadFile(repo, path string, data []byte) error {
 	if ix.files[repo] == nil {
 		ix.files[repo] = map[string][]byte{}
@@ -209,15 +185,8 @@ func (ix *Index) loadFile(repo, path string, data []byte) error {
 	return ix.addDocuments(repo, path, data, false)
 }
 
-// addDocuments decodes one possibly multi-document YAML file into d.
-// Each document is decoded strictly against its real Go type. An unknown
-// field is an error whichever family the document belongs to.
-//
-// rendered marks text that came out of a template rather than a file. A
-// template may only produce deployable resources: a Host, Group or
-// Environment decides which values a host gets, so it cannot itself depend
-// on them - and a rendered document's line numbers refer to the rendered
-// text.
+// addDocuments strictly decodes a multi-document YAML file into d. rendered
+// marks template output, which may only hold deployable kinds.
 func (d *documents) addDocuments(repo, path string, data []byte, rendered bool) error {
 	docs, err := SplitDocuments(repo, path, data)
 	if err != nil {
@@ -244,9 +213,7 @@ func (d *documents) addDocuments(repo, path string, data []byte, rendered bool) 
 	return nil
 }
 
-// deployable reports whether a kind is something a host runs or provides,
-// as opposed to something that decides what a host runs. Only the latter
-// are barred from templates.
+// deployable reports whether a kind may come from a template (not Host, Group, Environment).
 func deployable(kind string) bool {
 	switch kind {
 	case KindPod, KindConfigMap, KindSecret, KindExternalSecret, KindNetwork:
@@ -306,8 +273,7 @@ func addSpec[T any](into map[string]Doc[T], kind, name string, src Source) error
 	return put(into, kind, name, src, doc.Spec)
 }
 
-// addObject decodes a whole core/v1 object and indexes it, after an optional
-// extra check.
+// addObject decodes and indexes a core/v1 object, after an optional check.
 func addObject[T any](into map[string]Doc[T], kind, name string, src Source, check func(T, Source) error) error {
 	var obj T
 	if err := strictDecode(&obj, src, kind); err != nil {
@@ -330,10 +296,7 @@ func put[T any](into map[string]Doc[T], kind, name string, src Source, spec T) e
 	return nil
 }
 
-// readValuesFile resolves one entry of a Host, Group or Environment's own
-// `values:` list against the repository that document came from - the same
-// repository, because there is no other document-relative anchor to resolve
-// a bare path against.
+// readValuesFile reads a `values:` entry relative to the document's repository.
 func (ix *Index) readValuesFile(repo, path string) (Values, error) {
 	data, ok := ix.files[repo][path]
 	if !ok {
@@ -345,8 +308,7 @@ func (ix *Index) readValuesFile(repo, path string) (Values, error) {
 	return parseValues(Source{Repo: repo, Path: path}.String(), data)
 }
 
-// strictDecode decodes a YAML document against its real Go type and rejects unknown fields.
-// A misspelled key is a mistake worth failing on: silently ignoring `imagee:` would leave a host running the wrong thing.
+// strictDecode decodes a YAML document against its Go type, rejecting unknown fields.
 func strictDecode(out any, src Source, kind string) error {
 	if err := sigyaml.UnmarshalStrict(src.Raw, out); err != nil {
 		return fmt.Errorf("%s: kind %s: %w", src, kind, err)

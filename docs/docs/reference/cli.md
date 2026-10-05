@@ -15,7 +15,7 @@ podcd health      # report application health; non-zero exit if anything is unhe
 podcd logs api    # recent output for one application (--tail N)
 ```
 
-`status` and `health` work offline: they read `state.json` and the runtime, not Git. `plan` and `reconcile` fetch first.
+`status` works offline (`state.json` and the runtime). `plan`, `reconcile` and `health` fetch Git first.
 
 ## The repository
 
@@ -27,7 +27,7 @@ podcd init        # scaffold a minimal repository: one host, one nginx
 podcd create      # prints a document from a kind: pod, network, host, group, environment
 ```
 
-`lint` and `get` need no agent configuration when given a path - they are the two commands meant to run on a laptop against a checkout:
+`lint` and `get` need no agent config when given a path:
 
 ```bash
 podcd lint                                  # the current directory
@@ -38,7 +38,7 @@ podcd lint --values values/common.yaml .    # the agent.yaml fallback layer for 
 podcd get                                   # every document, with its file and line
 podcd get hosts                             # NAME  ENVIRONMENT  GROUPS  APPLICATIONS  SOURCE
 podcd get networks                          # NAME  DRIVER  SUBNET  SOURCE
-podcd get application api -o yaml           # one document, as written
+podcd get pod api -o yaml                   # one document, as written
 podcd get all --repo ./gitops               # a checkout you are editing
 podcd get pods --repo https://github.com/podcd/podcd-gitops.git
 ```
@@ -68,8 +68,6 @@ podcd prune       # remove what podcd manages here but Git no longer declares; n
 podcd remove      # stop and remove applications directly, without consulting Git (--all, or by name); alias rm
 podcd teardown    # remove --all, then uninstall; --purge-state and --purge-config to also delete local state/config
 ```
-
-Both say what they are about to remove and ask first; `-y` skips the question.
 
 ## Shell completion
 

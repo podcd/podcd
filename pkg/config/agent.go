@@ -17,9 +17,8 @@ import (
 	"github.com/podcd/podcd/pkg/secrets"
 )
 
-// The agent configuration is described once, here, on the struct.
-// The yaml tag is the key, the doc tag is the explanation a user sees in the file, and the example tag shows how an optional section is filled in.
-// The rendered agent.yaml, `podcd config set`, and the validation messages all derive from these tags, so there is no second list of fields anywhere.
+// The struct tags are the single source for agent.yaml: yaml is the key, doc
+// the rendered comment, example a commented sample for unset optional sections.
 
 // RepositorySpec is one Git repository the agent pulls.
 type RepositorySpec struct {
@@ -32,10 +31,8 @@ type RepositorySpec struct {
 	Auth     *RepoAuth `yaml:"auth,omitempty" doc:"A private repository needs a read credential. The token is a secret reference (env: or file:), never a literal in this file; it is resolved on every fetch. GitLab deploy tokens have their own username."`
 }
 
-// RepoAuth is a repository's read credential.
-//
-// HTTPS uses a token, which must be a secret reference (env:NAME, file:path, vault:...) because agent.yaml is world-readable.
-// The value is resolved on every fetch and reaches git as an Authorization header via git's configuration-in-environment, scoped to this repository's URL.
+// RepoAuth is a repository's read credential. The token must be a secret
+// reference (env:NAME, file:path), resolved on every fetch.
 type RepoAuth struct {
 	Username          string `yaml:"username,omitempty" example:"gitlab+deploy-token-42" doc:"Username for HTTPS. Needed for GitLab deploy tokens; access tokens work with the default (x-access-token on github.com, oauth2 elsewhere)."`
 	Token             string `yaml:"token,omitempty" example:"env:GITOPS_TOKEN" doc:"A secret reference to the token, resolved at fetch time."`
@@ -43,8 +40,7 @@ type RepoAuth struct {
 	SSHKnownHostsPath string `yaml:"sshKnownHostsPath,omitempty" example:"~/.ssh/known_hosts" doc:"Overrides ~/.ssh/known_hosts for host key checks."`
 }
 
-// AgentConfig is the agent's own configuration: where Git is, who this host is, how often to reconcile.
-// It lives on the host, not in Git, because it is what tells the host which Git to trust.
+// AgentConfig is the host-local agent configuration.
 type AgentConfig struct {
 	Host string `yaml:"host,omitempty" doc:"Which Host document this machine is. Empty means the system hostname (with any domain stripped). PODCD_HOST in the environment overrides both."`
 
@@ -119,10 +115,7 @@ func LoadAgentConfig(path string) (AgentConfig, error) {
 	return cfg, nil
 }
 
-// EnvFileBeside is where `podcd config create` puts envFile when not told:
-// agent.env next to the config file it writes. It is a value written into
-// the config, never a fallback read from it - a config without envFile is
-// invalid, so the agent never guesses where its secrets are.
+// EnvFileBeside is the default envFile `podcd config create` writes: agent.env beside the config.
 func EnvFileBeside(configPath string) string {
 	if abs, err := filepath.Abs(configPath); err == nil {
 		configPath = abs
@@ -284,7 +277,7 @@ func defaultUnitDir() string {
 	return filepath.Join(home, ".config", "containers", "systemd")
 }
 
-// expandPath expands a leading ~ and any $VARs, so configs can be written once for a fleet without knowing the agent user's home directory.
+// expandPath expands a leading ~ and $VARs.
 func expandPath(p string) string {
 	if p == "" {
 		return p

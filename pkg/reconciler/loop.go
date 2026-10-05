@@ -7,11 +7,7 @@ import (
 	"time"
 )
 
-// Run reconciles forever, until the context is cancelled.
-//
-// The loop never exits because of a bad commit, an unreachable Git remote or an
-// application that will not start: those are conditions to retry, not reasons to
-// stop managing the host. It exits only when asked to.
+// Run reconciles until the context is cancelled; failures are retried, never fatal.
 func (e *Engine) Run(ctx context.Context) error {
 	e.log.Info("agent starting",
 		"host", e.ident.Host,
@@ -22,8 +18,7 @@ func (e *Engine) Run(ctx context.Context) error {
 		"state", e.store.Path(),
 	)
 	if ok, why := e.rt.Available(ctx); !ok {
-		// Keep running: a host that is still installing podman should converge
-		// once it is ready rather than needing someone to log in and restart us.
+		// Keep going; the runtime may still be installing.
 		e.log.Error("container runtime is not usable yet", "runtime", e.rt.Name(), "reason", why)
 	}
 
@@ -86,8 +81,7 @@ func sleepCtx(ctx context.Context, d time.Duration) bool {
 	}
 }
 
-// withJitter spreads a fleet out, so a hundred VMs do not hit Git in lockstep
-// every minute forever.
+// withJitter adds a random delay up to jitter.
 func withJitter(interval, jitter time.Duration) time.Duration {
 	if jitter <= 0 {
 		return interval

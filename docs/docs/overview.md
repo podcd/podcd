@@ -3,49 +3,38 @@ id: overview
 title: Overview
 ---
 
-
-
 ![podcd-diagram](../static/img/overview.svg)
 
+## Fetch
 
-## Overview
+- The repository in `agent.yaml` is fetched at its `revision` (branch, tag or commit). If the remote is unreachable but a checkout exists, the agent reconciles from that commit and reports the repository as offline.
+- Every manifest is read into one index; a name defined twice is considered an error. The index is compiled for *this* host: the `Host` document named by `agent.yaml`'s `host` (default: the hostname). See the [configuration model](configuration/model.md) and [values templating](configuration/values.md).
+- The runtime (podman or docker) is inspected: which units podcd wrote, their content hashes, whether they are active, which images are running.
 
-#### Fetch
-
-- Every repository in `agent.yaml` is fetched at its `revision` (a branch, a tag or a commit). If a remote is unreachable and a checkout already exists on disk, the agent reconciles from the commit it has and reports the repository as offline.
-
-- The checkout is read into one index. A name defined twice will be treated as an error. The index is then compiled for *this* host - the `Host` document matching `agent.yaml`'s `host` (default: the machine's hostname). See the [configuration model](configuration/model.md) and [values templating](configuration/values.md).
-
-- The runtime (podman, or docker) is inspected: which units podcd wrote, their content hashes, whether systemd reports them active, which container image is actually running.
-
-#### Plan & Reconcile
+## Plan & reconcile
 
 Desired and actual are compared per application:
 
-- not present on the host -> **create**
-- the rendered unit, or the manifest it plays, differs from what is on disk -> **update**
-- present and unchanged, but the unit is not active -> **restart**
-- present in the runtime but no longer declared in Git -> **delete** (only when `prune` is on, the default; otherwise reported as a no-op)
+- not on the host -> **create**
+- the rendered unit, or the manifest it plays, differs from disk -> **update**
+- unchanged, but the unit is not active -> **restart**
+- on the host but no longer in Git -> **delete** (when `prune` is on, the default; otherwise a no-op)
 
-Networks a `Network` document declares go through the same comparison, as `.network` units. A changed network is recreated and the applications on it restarted; one no pod on the host names any more is deleted.
+[Networks](configuration/networks.md) go through the same comparison. Deletes run before creates, so a renamed application frees its host port before its successor binds it.
 
-Deletes are ordered before creates, so a renamed application frees its host port before its successor binds it; networks sit in between, after the applications that leave them and before the ones that join them.
+Reconciles run one at a time under a file lock, so `podcd reconcile` and the agent's loop never fight. Destructive actions are logged before they happen. The first failure stops the run and is recorded.
 
-Reconciles run one at a time under a file lock, so a human running `podcd reconcile` and the agent's own loop cannot fight over the same unit files. A destructive action is logged before it happens. The first failure stops the run and is recorded.
+A failed reconcile is retried after `retryInterval`, doubling up to `maxRetryInterval`; after a success the regular `interval` resumes. `jitter` adds a random delay to `interval` so a fleet does not hit Git in lockstep.
 
-A failed reconcile is retried after `retryInterval`, doubling on each further failure up to `maxRetryInterval`, then the regular `interval` resumes once a reconcile succeeds. `jitter` adds a random delay on top of `interval` so a fleet does not hit Git in lockstep.
+## State
 
-#### State and history
+`~/.local/state/podcd/state.json` records the host identity, last revisions, last success and failure, and per-application history. `podcd status` reads it, so it works offline. It is metadata only and safe to delete.
 
-The agent stores local state in `~/.local/state/podcd/state.json`. It records the agent identity, last revisions, last successful and failed reconciliation, and per-application history including the previous deployment. `podcd status` reads it, so status works offline.
-
-That state is metadata only and is safe to delete. The agent can reconstruct its state from Git and the host.
-
-Everything else the agent owns is under its running user's home:
+Everything the agent owns is under its user's home:
 
 ```text
 ~/.config/podcd/agent.yaml          agent config
 ~/.config/podcd/agent.env           secrets
-~/.config/containers/systemd/       the Quadlet units podcd wrote
+~/.config/containers/systemd/       Quadlet units podcd wrote
 ~/.local/state/podcd/               checkouts, played manifests, state.json
 ```

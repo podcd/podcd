@@ -1,8 +1,5 @@
-// Package podman runs applications as rootless Podman containers managed by systemd through Quadlet.
-//
-// The agent writes .container files and asks systemd to start them.
-// It never runs `podman run`: systemd owns the process, Podman owns the container, and the agent owns neither.
-// Podman is only asked questions.
+// Package podman runs pods as rootless Podman under systemd --user, via Quadlet .kube units.
+// The agent writes units and asks systemd to run them; it only queries podman.
 package podman
 
 import (
@@ -25,9 +22,7 @@ import (
 	"github.com/podcd/podcd/pkg/renderer"
 )
 
-// How long WaitHealthy keeps asking after a change is applied. A pod that has
-// just been played needs a moment before its containers report for duty.
-// Variables rather than constants so a test can wait milliseconds, not minutes.
+// WaitHealthy polling; variables so tests can shorten them.
 var (
 	waitRetries  = 15
 	waitInterval = 2 * time.Second
@@ -36,8 +31,7 @@ var (
 // Options configures a Runtime.
 type Options struct {
 	UnitDir string
-	// KubeDir holds the manifests played by .kube units.
-	// It can contain resolved secrets and is never the unit directory.
+	// KubeDir holds played manifests, which may contain resolved secrets.
 	KubeDir string
 
 	// PodmanBin and SystemctlBin default to the names on PATH.
@@ -59,9 +53,7 @@ type Runtime struct {
 
 	rend *renderer.Renderer
 
-	// exec runs one process. Every podman, systemctl and journalctl call goes
-	// through it, which is the seam a test replaces to feed the runtime
-	// recorded output instead of a real host.
+	// exec runs every podman, systemctl and journalctl call; tests replace it.
 	exec func(context.Context, subprocess.Command) (string, error)
 }
 
@@ -79,8 +71,7 @@ func New(opts Options) *Runtime {
 	return r
 }
 
-// Renderer exposes the renderer this runtime writes with.
-// So the planner compares against the bytes the runtime would produce.
+// Renderer is what this runtime writes with, so the planner compares the same bytes.
 func (r *Runtime) Renderer() *renderer.Renderer { return r.rend }
 
 // Name implements runtime.Runtime.
@@ -95,8 +86,7 @@ func (r *Runtime) Available(ctx context.Context) (bool, string) {
 		return false, fmt.Sprintf("systemctl is not installed (%v)", err)
 	}
 	if _, err := r.systemctlRun(ctx, "is-system-running"); err != nil {
-		// is-system-running exits non-zero for "degraded", that is fine.
-		// Only a total absence of a user manager is fatal.
+		// Non-zero for "degraded" and "starting" too; only no user manager is fatal.
 		if !strings.Contains(err.Error(), "degraded") && !strings.Contains(err.Error(), "starting") {
 			return false, "no systemd user manager: " + err.Error()
 		}
@@ -133,9 +123,7 @@ func (r *Runtime) Inspect(ctx context.Context) (model.ActualState, error) {
 			name = m.App
 		}
 		if prev, ok := state.Apps[name]; ok {
-			// Two files claiming one podcd-<name>.service: the header inside one
-			// of them names an app that another file is already named after.
-			// Refuse to guess which one systemd picked.
+			// One file's header names an app another file is named after; don't guess which systemd picked.
 			return state, fmt.Errorf("application %q has two unit files: %s and %s; remove one", name, prev.UnitFile, path)
 		}
 		cur := model.ActualApp{
@@ -148,8 +136,7 @@ func (r *Runtime) Inspect(ctx context.Context) (model.ActualState, error) {
 			UnitName:     renderer.ServiceNameOfFile(e.Name()),
 			UnitState:    model.UnitUnknown,
 		}
-		// A unit is only as current as the manifest it points at.
-		// If that file was edited or deleted, the unit must be re-applied even though its own bytes still match.
+		// An edited or deleted manifest needs a re-apply even if the unit's bytes match.
 		if m.Managed {
 			if manifestPath := yamlPathOf(content); manifestPath != "" {
 				data, err := os.ReadFile(manifestPath)
@@ -162,8 +149,7 @@ func (r *Runtime) Inspect(ctx context.Context) (model.ActualState, error) {
 		state.Apps[name] = cur
 	}
 
-	// Containers we own but have no unit for: a half-removed application, or a unit file someone deleted by hand.
-	// They are still ours to clean up.
+	// Labelled containers without a unit (half-removed app, unit deleted by hand) are still ours.
 	containers, err := r.listContainers(ctx, "")
 	if err != nil {
 		return state, err
@@ -197,21 +183,17 @@ func (r *Runtime) Inspect(ctx context.Context) (model.ActualState, error) {
 }
 
 type containerInfo struct {
-	id    string
-	name  string
-	image string
-	// state is podman's own word for it: running, exited, created, paused.
-	state    string
+	id       string
+	name     string
+	image    string
+	state    string // running, exited, created, paused
 	exitCode int
-	// health is the healthcheck verdict `podman ps` folds into its status
-	// column - "Up 2 minutes (healthy)" - or empty when there is no check.
-	health   string
+	health   string // healthcheck verdict, empty without a check
 	restarts int
 	infra    bool
 }
 
-// healthFromStatus pulls the healthcheck verdict out of a `podman ps` status
-// line: "Up 2 minutes (healthy)" -> "healthy". No parenthetical, no check.
+// healthFromStatus: "Up 2 minutes (healthy)" -> "healthy".
 func healthFromStatus(status string) string {
 	for _, v := range []string{"healthy", "unhealthy", "starting"} {
 		if strings.Contains(status, "("+v+")") {
@@ -221,11 +203,7 @@ func healthFromStatus(status string) string {
 	return ""
 }
 
-// listContainers asks Podman for everything labelled as ours, grouped by app.
-//
-// A pod contributes several containers under one app name, infra included, so
-// the caller gets all of them rather than an arbitrary winner. Passing an app
-// name narrows the query to that one workload.
+// listContainers returns every podcd-labelled container (infra included), grouped by app; app narrows it to one.
 func (r *Runtime) listContainers(ctx context.Context, app string) (map[string][]containerInfo, error) {
 	args := []string{"ps", "--all", "--filter", "label=" + config.LabelManaged + "=true"}
 	if app != "" {
@@ -278,8 +256,7 @@ func (r *Runtime) listContainers(ctx context.Context, app string) (map[string][]
 	return result, nil
 }
 
-// workload drops the infra container, which is podman's own plumbing and says
-// nothing about whether the application is running.
+// workload drops infra containers.
 func workload(containers []containerInfo) []containerInfo {
 	var out []containerInfo
 	for _, c := range containers {
@@ -369,10 +346,7 @@ func parseShowBlocks(out string) map[string]map[string]string {
 	return result
 }
 
-// Apply writes the unit for one application and makes systemd run it.
-//
-// It is safe to call on an application that is already correct.
-// Writing the same bytes and restarting is the worst it can do, and the planner makes sure it is not called in that case.
+// Apply writes the unit for one application and (re)starts it.
 func (r *Runtime) Apply(ctx context.Context, app model.Application) error {
 	unit, err := r.rend.Render(app)
 	if err != nil {
@@ -384,9 +358,7 @@ func (r *Runtime) Apply(ctx context.Context, app model.Application) error {
 		return fmt.Errorf("writing manifest for %s: %w", app.Name, err)
 	}
 
-	// A unit for this application under another file name - written by an
-	// older podcd - would be a second unit claiming the same app once ours
-	// is in place. Retire it first.
+	// Retire units for this app under another file name (older podcd).
 	for _, stale := range r.unitFilesFor(app.Name) {
 		if stale == unit.Path {
 			continue
@@ -409,14 +381,9 @@ func (r *Runtime) Apply(ctx context.Context, app model.Application) error {
 	return nil
 }
 
-// Remove stops an application and deletes its definition.
-//
-// Volumes are deliberately left alone.
-// Removing an application from Git is a configuration change, deleting its data is not, and podcd will not do it.
+// Remove stops an application and deletes its unit and manifest. Volumes (data) are kept.
 func (r *Runtime) Remove(ctx context.Context, app string) error {
-	// The unit is whichever file claims this app, not just the name we would
-	// write today: Inspect finds units by their header, so Remove must too,
-	// or an older file name is reported as managed and then never removed.
+	// Match by header as Inspect does, so older file names are removed too.
 	files := r.unitFilesFor(app)
 	if len(files) == 0 {
 		files = []string{filepath.Join(r.unitDir, renderer.KubeFileName(app))}
@@ -430,15 +397,12 @@ func (r *Runtime) Remove(ctx context.Context, app string) error {
 	if err := r.daemonReload(ctx); err != nil {
 		return err
 	}
-	// Quadlet normally removes the container (or plays the pod down) on stop.
-	// If something interrupted that, the names must still be free for the next reconcile.
-	// Volumes are untouched either way.
+	// Quadlet normally plays the pod down on stop; force it in case that was interrupted.
 	_, _ = r.podmanRun(ctx, "pod", "rm", "--force", "--time", "10", app)
 	return nil
 }
 
-// unitFilesFor returns every unit file in the unit directory that belongs to
-// app: named after it, or carrying its name in the header marker.
+// unitFilesFor returns unit files named after app or naming it in their header.
 func (r *Runtime) unitFilesFor(app string) []string {
 	entries, err := os.ReadDir(r.unitDir)
 	if err != nil {
@@ -465,13 +429,10 @@ func (r *Runtime) unitFilesFor(app string) []string {
 	return files
 }
 
-// stopUnitFile stops the service a unit file defines and deletes the file
-// and the manifest it plays. The service name follows the file name, as
-// Quadlet derives it.
+// stopUnitFile stops a unit's service and deletes the unit and its manifest.
 func (r *Runtime) stopUnitFile(ctx context.Context, path string) error {
 	service := renderer.ServiceNameOfFile(filepath.Base(path))
 	if _, err := r.systemctlRun(ctx, "stop", service); err != nil && !unitUnknown(err) {
-		// A unit that is not loaded is already stopped; anything else matters.
 		return fmt.Errorf("stopping %s: %w", service, err)
 	}
 	if content, err := os.ReadFile(path); err == nil {
@@ -483,7 +444,7 @@ func (r *Runtime) stopUnitFile(ctx context.Context, path string) error {
 	return nil
 }
 
-// removeIfExists deletes a file; a missing file, or no path at all, is not an error.
+// removeIfExists ignores a missing file or empty path.
 func removeIfExists(path string) error {
 	if path == "" {
 		return nil
@@ -513,9 +474,7 @@ func (r *Runtime) Restart(ctx context.Context, app string) error {
 	return nil
 }
 
-// Health reports whether the init containers completed successfully and every
-// regular workload container is running. Podman healthchecks are intentionally
-// not part of podcd's readiness decision.
+// Health: init containers completed and every regular container running.
 func (r *Runtime) Health(ctx context.Context, app model.Application) (model.Health, error) {
 	containers, err := r.listContainers(ctx, app.Name)
 	if err != nil {
@@ -526,10 +485,7 @@ func (r *Runtime) Health(ctx context.Context, app model.Application) (model.Heal
 	if h.OK() {
 		return h, nil
 	}
-	// `podman ps` gives the verdict; the reason takes one more call, and only
-	// on this path. A container that still exists can be inspected - the
-	// probe's own output, the failing streak, an OOM kill. One that Quadlet
-	// already tore down has only what it wrote to the journal.
+	// Explain why: inspect containers that still exist, else read the journal.
 	var why string
 	if len(running) == 0 {
 		why = r.lastContainerOutput(ctx, app.Name)
@@ -542,10 +498,7 @@ func (r *Runtime) Health(ctx context.Context, app model.Application) (model.Heal
 	return h, nil
 }
 
-// lastContainerOutput returns the last thing the application's containers
-// wrote before they went away. The unit's journal carries podman's own
-// events too (died, cleanup, removed - dozens of lines per pod), so this
-// keeps only what came through conmon, which is container stdout and stderr.
+// lastContainerOutput returns the last container stdout/stderr lines (via conmon) from the unit's journal.
 func (r *Runtime) lastContainerOutput(ctx context.Context, app string) string {
 	out, err := r.run(ctx, r.journalctl, "--user", "-u", renderer.ServiceName(app),
 		"_COMM=conmon", "-n", "3", "--no-pager", "--output=cat")
@@ -555,8 +508,7 @@ func (r *Runtime) lastContainerOutput(ctx context.Context, app string) string {
 	var lines []string
 	for _, l := range strings.Split(strings.TrimSpace(out), "\n") {
 		l = strings.TrimSpace(l)
-		// conmon's own warnings ("conmon <id> <nwarn>: ...") travel the same
-		// way as the container's output; they are about podman, not the app.
+		// skip conmon's own warnings
 		if l == "" || strings.HasPrefix(l, "-- ") || strings.HasPrefix(l, "conmon ") {
 			continue
 		}
@@ -568,8 +520,7 @@ func (r *Runtime) lastContainerOutput(ctx context.Context, app string) string {
 	return "last output: " + strings.Join(lines, " | ")
 }
 
-// troubled names the containers a bad verdict is about: not running, or
-// running with a healthcheck that is failing or has not passed.
+// troubled names containers not running, or with a failing or not-yet-passed healthcheck.
 func troubled(containers []containerInfo, initNames []string) []string {
 	var out []string
 	for _, c := range containers {
@@ -583,8 +534,7 @@ func troubled(containers []containerInfo, initNames []string) []string {
 	return out
 }
 
-// explain asks podman why the named containers are in the state they are in,
-// in one call, and returns a short human line per container.
+// explain returns one short reason per container from a single podman inspect.
 func (r *Runtime) explain(ctx context.Context, names []string) string {
 	if len(names) == 0 {
 		return ""
@@ -635,8 +585,7 @@ func (r *Runtime) explain(ctx context.Context, names []string) string {
 	return strings.Join(parts, "; ")
 }
 
-// lastLine returns the final non-empty line of command output, trimmed, since
-// that is where a failing probe says what went wrong.
+// lastLine returns the final non-empty line, where a failing probe says why.
 func lastLine(s string) string {
 	lines := strings.Split(strings.TrimSpace(s), "\n")
 	for i := len(lines) - 1; i >= 0; i-- {
@@ -654,10 +603,7 @@ func healthForContainers(app string, containers []containerInfo, initNames []str
 		h.Status, h.Message = model.HealthUnhealthy, "no containers"
 		return h
 	}
-	// Only an init container podman still shows can say anything. kube play
-	// creates them as type "once" and removes them when they finish, so one
-	// that is absent has completed - and one that never ran leaves the regular
-	// containers un-started, which the check below catches.
+	// kube play removes finished init containers, so an absent one has completed.
 	var incomplete, failed []string
 	for _, c := range init {
 		switch c.state {
@@ -690,9 +636,7 @@ func healthForContainers(app string, containers []containerInfo, initNames []str
 		return h
 	}
 
-	// Everything is up. Now podman's own verdict, for the containers that
-	// declare a healthcheck. A restart count travels with it: "starting" on a
-	// container that has restarted before is a crash loop, not a warm-up.
+	// All running; now healthchecks. "starting" with restarts > 0 is a crash loop.
 	var unhealthy, starting, restarted []string
 	for _, c := range regular {
 		if c.restarts > 0 {
@@ -726,10 +670,6 @@ func plural(n int) string {
 	return "s"
 }
 
-// splitInitContainers separates completed setup work from the regular workload.
-// podman kube play prefixes a Kubernetes container name with the pod name, so
-// matching the final "-<container>" portion works for both Podman-generated
-// names and plain names returned by other Podman versions.
 func splitInitContainers(containers []containerInfo, initNames []string) (regular, init []containerInfo) {
 	for _, c := range containers {
 		if model.IsInitContainer(initNames, c.name) {
@@ -741,9 +681,7 @@ func splitInitContainers(containers []containerInfo, initNames []string) (regula
 	return regular, init
 }
 
-// WaitHealthy asks again until the application is healthy or the retries run
-// out. It is what the reconciler uses right after applying a change: an app
-// that never comes up should fail the reconcile, not quietly stay broken.
+// WaitHealthy polls Health until healthy or out of retries.
 func (r *Runtime) WaitHealthy(ctx context.Context, app model.Application) model.Health {
 	var last model.Health
 	for attempt := 0; attempt <= waitRetries; attempt++ {
@@ -784,8 +722,7 @@ func (r *Runtime) daemonReload(ctx context.Context) error {
 	return nil
 }
 
-// diagnose adds the tail of the unit's journal to an error.
-// "Job failed" on its own has never helped anybody at 3am.
+// diagnose returns the tail of the unit's journal, to append to an error.
 func (r *Runtime) diagnose(ctx context.Context, app string) string {
 	logs, err := r.Logs(ctx, app, 15)
 	if err != nil || strings.TrimSpace(logs) == "" {
@@ -806,7 +743,7 @@ func (r *Runtime) run(ctx context.Context, bin string, args ...string) (string, 
 	return r.exec(ctx, subprocess.Command{Bin: bin, Args: args, Env: sessionEnv(), Timeout: r.timeout})
 }
 
-// sessionEnv makes sure systemctl --user can find the user's session bus, even when the agent was started from cron, a shell over a serial console, or a systemd service without a full session environment.
+// sessionEnv fills in the user session bus for systemctl --user when the environment lacks it.
 func sessionEnv() []string {
 	env := os.Environ()
 	uid := os.Getuid()

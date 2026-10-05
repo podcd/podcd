@@ -11,8 +11,7 @@ import (
 	"github.com/podcd/podcd/pkg/scaffold"
 )
 
-// The repository-side commands: they write Git documents, never touch the
-// host, and need no agent config.
+// Repository commands: print documents; no host or agent config needed.
 
 func newInitCommand() *cobra.Command {
 	var host string
@@ -70,9 +69,7 @@ func newCreateCommand() *cobra.Command {
 	return cmd
 }
 
-// emit prints documents as one YAML stream. A leading separator is written
-// before every document, so appending the output to a file that already has
-// documents in it gives a valid stream.
+// emit prints documents, each after a separator, so output appends to a file cleanly.
 func emit(cmd *cobra.Command, docs ...[]byte) error {
 	for _, d := range docs {
 		if _, err := fmt.Fprintf(cmd.OutOrStdout(), "---\n%s", d); err != nil {

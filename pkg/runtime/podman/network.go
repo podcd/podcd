@@ -1,11 +1,7 @@
 package podman
 
-// Networks follow the same shape as applications: podcd writes a Quadlet
-// .network unit, systemd runs the oneshot service Quadlet generates from it,
-// and that service is what calls `podman network create`. The one thing
-// Quadlet does not do is change a network that exists - `--ignore` keeps
-// whatever is there - or remove one when its unit goes away. Those two are
-// the podman calls below.
+// Networks are Quadlet .network units; podcd calls podman directly only to
+// recreate (Quadlet's --ignore keeps an existing one) and remove them.
 
 import (
 	"context"
@@ -20,12 +16,10 @@ import (
 	"github.com/podcd/podcd/pkg/renderer"
 )
 
-// labelNetwork is the label a podcd-created network carries, so one whose
-// unit file is gone is still recognised as ours.
+// labelNetwork marks podcd networks, so one without a unit is still recognised.
 const labelNetwork = "io.podcd.network"
 
-// inspectNetworks fills state.Networks: the .network units on disk, whether
-// podman has each network, and any labelled network with no unit left.
+// inspectNetworks fills state.Networks from units on disk and labelled podman networks.
 func (r *Runtime) inspectNetworks(ctx context.Context, state *model.ActualState) error {
 	state.Networks = map[string]model.ActualNetwork{}
 
@@ -84,8 +78,7 @@ func (r *Runtime) inspectNetworks(ctx context.Context, state *model.ActualState)
 	return r.fillNetworkUnitStates(ctx, state)
 }
 
-// listNetworks asks podman for every network, and reports for each whether
-// it carries podcd's label.
+// listNetworks maps every podman network to whether it carries podcd's label.
 func (r *Runtime) listNetworks(ctx context.Context) (map[string]bool, error) {
 	out, err := r.podmanRun(ctx, "network", "ls", "--format", "json")
 	if err != nil {
@@ -132,15 +125,9 @@ func (r *Runtime) fillNetworkUnitStates(ctx context.Context, state *model.Actual
 	return nil
 }
 
-// ApplyNetwork writes the unit for one network and makes systemd run it.
-//
-// A network whose unit podcd already wrote is being changed, and Quadlet
-// cannot change a network in place: the service is stopped - which stops
-// every unit that Requires= it, that is, every pod on it - the network is
-// removed, and the service started again creates it fresh. A network with
-// no unit yet is only created; if podman already has one of that name, from
-// a hand-run `podman network create`, it is adopted as it is rather than
-// torn out from under whatever is using it.
+// ApplyNetwork writes a network's unit and starts it. An existing unit means
+// a change: stop the service (and its pods), remove the network, start again.
+// Without a unit, an existing podman network is adopted as is.
 func (r *Runtime) ApplyNetwork(ctx context.Context, net model.Network) error {
 	unit, err := r.rend.RenderNetwork(net)
 	if err != nil {
@@ -169,11 +156,7 @@ func (r *Runtime) ApplyNetwork(ctx context.Context, net model.Network) error {
 	return nil
 }
 
-// RemoveNetwork stops the network's unit, deletes it, and removes the network.
-//
-// It never forces: a network something still uses is an ordering mistake
-// the planner is supposed to have avoided, and `--force` would take that
-// something's containers with it.
+// RemoveNetwork stops and deletes the unit and removes the network, never forcing.
 func (r *Runtime) RemoveNetwork(ctx context.Context, network string) error {
 	service := renderer.NetworkServiceName(network)
 	if _, err := r.systemctlRun(ctx, "stop", service); err != nil && !unitUnknown(err) {

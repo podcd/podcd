@@ -34,8 +34,7 @@ func LoadPaths(paths ...string) (*Index, error) {
 	return ix, nil
 }
 
-// problems collects validation errors so a user sees them all at once
-// rather than one per run. prefix, when set, is put in front of every message.
+// problems collects validation errors to report at once, each with an optional prefix.
 type problems struct {
 	prefix string
 	errs   []error
@@ -45,22 +44,19 @@ func (p *problems) add(format string, args ...any) {
 	p.errs = append(p.errs, fmt.Errorf(p.prefix+format, args...))
 }
 
-// err returns the collected problems as one error, sorted so the same input
-// always reports the same text, or nil when there are none.
+// err returns the problems as one sorted error, or nil.
 func (p *problems) err() error {
 	slices.SortFunc(p.errs, func(a, b error) int { return strings.Compare(a.Error(), b.Error()) })
 	return errors.Join(p.errs...)
 }
 
-// Finding is one problem compiling a host: the documents themselves are fine but together they do not add up.
-// i.e. a reference to something that is not defined.
+// Finding is one cross-document problem compiling a host, e.g. an undefined reference.
 type Finding struct {
 	Host string `json:"host"`
 	Err  string `json:"error"`
 }
 
-// Lint compiles the index for every Host it defines and returns everything that went wrong, host by host.
-// values is the agent.yaml-fallback baseline, the same as ResolveOptions.Values.
+// Lint compiles every Host (or those given) and returns findings; values as in ResolveOptions.
 func Lint(ctx context.Context, ix *Index, values Values, hosts ...string) []Finding {
 	if len(hosts) == 0 {
 		hosts = ix.HostNames()
@@ -87,9 +83,7 @@ func Lint(ctx context.Context, ix *Index, values Values, hosts ...string) []Find
 // ErrNoHosts is returned by LintPaths when the documents define no Host: they loaded, but nothing could be compiled.
 var ErrNoHosts = errors.New("no Host documents found; nothing to compile")
 
-// LintPaths is LoadPaths followed by Lint: what `podcd lint` runs.
-// An error means a document is wrong in itself (malformed, unknown field, duplicate name) or there was nothing to compile;
-// findings are what does not fit together across the documents that did load, such as a reference to something not defined here.
+// LintPaths is LoadPaths then Lint. An error means a document is invalid on its own or nothing loaded.
 func LintPaths(ctx context.Context, hosts []string, values Values, paths ...string) (*Index, []Finding, error) {
 	ix, err := LoadPaths(paths...)
 	if err != nil {

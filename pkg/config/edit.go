@@ -24,8 +24,7 @@ func EditAgentConfig(path string, settings ...Setting) error {
 
 // EditAgentConfigBytes is EditAgentConfig on a document in memory.
 func EditAgentConfigBytes(data []byte, settings ...Setting) ([]byte, error) {
-	// Keys and values are checked against the struct before any text is
-	// touched, so the error for a typo names the real fields.
+	// Validate against the struct before touching text.
 	scratch, err := ParseAgentConfig(data)
 	if err != nil {
 		return nil, err
@@ -93,8 +92,7 @@ func editYAML(data []byte, path []string, value string) ([]byte, error) {
 		path = path[1:]
 	}
 
-	// Appending a scalar to an existing sequence of scalars - repository.values.1,
-	// e.g when values already has one item: one new line, no new header.
+	// Append a scalar to an existing scalar sequence (e.g. repository.values.1).
 	if len(path) == 1 && section.Kind == yaml.SequenceNode && !holdsMappings(section) {
 		if _, err := strconv.Atoi(path[0]); err == nil {
 			itemIndent := indent + 2
@@ -115,7 +113,7 @@ func editYAML(data []byte, path []string, value string) ([]byte, error) {
 		}
 	}
 
-	// The rest of the path is new. List items of mappings are never created here: they need several keys at once, which is an edit, not a set.
+	// The rest of the path is new. Mapping list items are never created here.
 	if _, isIndex := strconv.Atoi(path[0]); isIndex == nil || section.Kind == yaml.SequenceNode {
 		return nil, fmt.Errorf("list item %q does not exist; add it by editing the file", path[0])
 	}
