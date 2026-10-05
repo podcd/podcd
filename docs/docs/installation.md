@@ -31,7 +31,7 @@ curl -fsSL https://raw.githubusercontent.com/podcd/podcd/main/deploy/bootstrap.s
   --repo-url https://github.com/podcd/podcd.git --repo-path examples --host local
 ```
 
-Without `--user`, the script sets up the invoking user. Within a minute:
+Without `--user`, the script sets up the invoking user and within a minute:
 
 ```bash
 podcd status                          # last reconcile, and podcd-local running
@@ -39,7 +39,8 @@ curl -s http://127.0.0.1:8080/ | head -3
 journalctl --user -u podcd-agent -f   # see pull, plan, apply
 ```
 
-`podcd plan` shows what would change, `podcd reconcile` does it. Tear down when done:
+`podcd plan` shows what would change, `podcd reconcile` executes a manual reconcile.
+Tear down when done:
 
 ```bash
 podcd teardown --purge-state --purge-config -y
@@ -51,7 +52,9 @@ podcd teardown --purge-state --purge-config -y
 
 A repository needs at least a `Host` and a `Pod`; there is no prescribed directory structure.
 
-See the [configuration model](configuration/model.md), [`examples/`](https://github.com/podcd/podcd/tree/main/examples) or [podcd/podcd-gitops](https://github.com/podcd/podcd-gitops). `podcd init` scaffolds one, `podcd create` prints a single document.
+See the [configuration model](configuration/model.md), [`examples/`](https://github.com/podcd/podcd/tree/main/examples) or [podcd/podcd-gitops](https://github.com/podcd/podcd-gitops). 
+
+You could use `podcd init` to scaffold a podcd gitops repository as well as `podcd create` to output a single podcd manifest.
 
 ```bash
 podcd lint                          # current directory
@@ -97,7 +100,8 @@ podcd install
 systemctl --user daemon-reload && systemctl --user enable --now podcd-agent.service
 ```
 
-- `podcd config create` writes `~/.config/podcd/agent.yaml` (`--path` elsewhere), with `envFile` pointing at `agent.env` beside it (`--env-file` elsewhere). A config without `envFile` is refused. Put [secrets](configuration/secrets.md) there, before or after starting the agent.
+- `podcd config create` writes `~/.config/podcd/agent.yaml` (`--path` elsewhere), with `envFile` pointing at `agent.env` beside it (`--env-file` elsewhere). 
+  - A config without `envFile` is refused. Put [secrets](configuration/secrets.md) there, before or after starting the agent.
 - `podcd install` writes `~/.config/systemd/user/podcd-agent.service`, which runs `podcd run --config <config>` (`--config` for a config elsewhere).
 
 ### `bootstrap.sh` helper script

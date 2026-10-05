@@ -3,19 +3,21 @@ id: model
 title: The configuration model
 ---
 
-Every `.yaml`/`.yml`/`.tpl` file in the repository is read; layout is free. podcd's own kinds use `apiVersion: gitops.podcd.io/v1`:
+Every `.yaml`/`.yml`/`.tpl` file in the repository is read; there is no prescribed directory structure. 
+
+`podcd`'s Kinds use `apiVersion: gitops.podcd.io/v1`:
 
 - `Pod`: a workload definition, referenced by name
-- `Network`: how a podman network the pods join should be created
+- `Network`: a podman network
 - `Environment`: what applies broadly to a whole environment
 - `Group`: a role or machine-purpose definition
 - `Host`: a specific VM, including its environment, groups, and overrides
 
-`Environment`, `Group` and `Host` decide **which workloads run on a host** and may override them. A `Network` follows the pods that name it.
+`Environment`, `Group` and `Host` decide **which workloads run on a host** and may override them. Pods maybe assigned to a `Network`.
 
 ## Pod
 
-A workload is a plain Kubernetes `Pod`, played by podman through a Quadlet `.kube` unit. It says what runs, not where:
+A workload is a plain Kubernetes `Pod`, played by podman through a Quadlet `.kube` unit:
 
 ```yaml
 apiVersion: v1
@@ -39,9 +41,8 @@ spec:
         httpGet: { path: /, port: 80 }
 ```
 
-A workload is healthy when its regular containers are running; probes are passed to podman but do not decide podcd's verdict.
-
-`initContainers` run once, in order, before the regular containers. podcd waits while one runs; a non-zero exit makes the workload unhealthy.
+A workload is healthy when its regular containers are running.
+`initContainers` run before the regular containers.
 
 Networks are an annotation, written into the unit's `Network=` lines:
 
@@ -51,9 +52,9 @@ metadata:
     io.podcd.networks: "edge,monitoring"
 ```
 
-A name is either a [`Network` document](#network), which podcd creates and removes, or a network already on the host (podman's own `podman`, or one made by hand), which podcd leaves alone.
+You can refer to a [`Network` document](#network), which podcd will create and remove, or a network already on the host (podman's own `podman`, or one made by hand), which podcd leaves alone.
 
-The user namespace is an annotation too, written into the unit's `UserNS=` line (`podman kube play --userns`):
+The user namespace can also be passed via annotations, internally written into the unit's `UserNS=` line (`podman kube play --userns`):
 
 ```yaml
 metadata:
@@ -61,13 +62,15 @@ metadata:
     io.podcd.userns: "keep-id"
 ```
 
-Any `--userns` value; it applies to every container in the pod.
+A `--userns` value applies to every container in the pod.
 
-Before anything is written, referenced ConfigMaps and Secrets must exist (or be optional), and host ports must not conflict across the host's workloads.
+Referenced ConfigMaps and Secrets must exist (or marked optional), and host ports must not conflict across the host's workloads.
 
 ## Network
 
-A `Network` says how podman creates a network of that name; every field is optional. It exists on a host while a pod there names it in `io.podcd.networks`, and is not selected by `Host`, `Group` or `Environment`. Changing one recreates it and restarts the pods on it. Fields, lifecycle, `networkOverrides` and templating: [Networks](networks.md).
+A `Network` defines how podman creates a network of that name. It will be kept on a host for as long as a pod names it via `io.podcd.networks`. It is not selected by `Host`, `Group` or `Environment`.
+
+Changing one recreates it and restarts the pods on it. Fields, lifecycle, `networkOverrides` and templating: [Networks](networks.md).
 
 ## Host
 
@@ -96,11 +99,11 @@ spec:
     - node-exporter
 ```
 
-Excluding an application that was never selected is an error.
+Excluding an application that was never selected will produce an error.
 
 ## Groups and environments
 
-A group names what its members run, and may override them:
+A group can specify what its members run, and may override them as well:
 
 ```yaml
 apiVersion: gitops.podcd.io/v1
@@ -121,7 +124,9 @@ spec:
                 hostPort: 9090
 ```
 
-An `Environment` has exactly the same shape. Both may also name [values files](values.md).
+An `Environment` works similarly. 
+
+Both `Group` and `Environment` can list [values files](values.md).
 
 ## Overrides, inheritance and merge rules
 
@@ -141,7 +146,7 @@ groups:
 
 `web` overrides `base`, and the host overrides both.
 
-An override is a Kubernetes **strategic merge patch** against the Pod:
+An override is a **strategic merge patch** against the Pod:
 
 ```yaml
 # pod
@@ -170,6 +175,6 @@ containers:
       - {name: PORT, value: "8080"}
 ```
 
-An environment or group override may name any application the repository defines; it is idle on members that do not run it. An override for an application no Pod defines is an error, and a Host override for an application that host does not run is refused as stale. `networkOverrides` follow the same rules.
+An environment or group override may name any application the repository defines; it is idle on members that do not run it. An override for an application no Pod defines will raise an error, and a Host override for an application that a host does not run is refused and is considered stale. `networkOverrides` follow the same rules.
 
 To parametrize *within* a shared definition (an image tag per environment, say), use [values templating](values.md).

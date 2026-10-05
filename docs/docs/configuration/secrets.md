@@ -7,17 +7,14 @@ title: Secrets
 
 ![An ExternalSecret in Git references a value in Vault; podcd fetches it on the host and bundles the resulting Secret into the pod manifest podman plays](../../static/img/secrets.svg)
 
-Git declares **where** a secret comes from; the agent fetches it on the host at reconcile time and bundles it into the pod manifest. Two documents:
+Git declares **where** a secret comes from; the agent fetches it on the host at reconcile time and bundles it into the pod manifest.
 
 | Document | What it does |
 |---|---|
 | `SecretStore` | Configures a backend: the agent's environment, a files directory, or HashiCorp Vault |
 | `ExternalSecret` | Names one or more keys to fetch from a store and assemble into a `v1/Secret` |
 
-A host fetches only the secrets its own workloads reference, once each. Rotating a value in the backend changes the manifest, and the next reconcile restarts the pod.
-
-If a secret cannot be fetched, only the workloads that reference it are held back (never pruned); the rest still reconcile, and the reconcile is recorded as failed and retried.
-
+A host fetches only the secrets its own workloads reference.
 
 ## `env` store - secrets from agent.env
 
@@ -61,7 +58,7 @@ DB_USER=app
 EOF
 ```
 
-The file is re-read on every reconcile; rotation needs no restart. Reference the secret from a Pod:
+The file is re-read on every reconcile. Reference the secret from a Pod:
 
 ```yaml
 # envFrom injects every key as an environment variable
