@@ -774,6 +774,15 @@ func (r *Runtime) composeRun(ctx context.Context, app string, args ...string) (s
 	return r.dockerRun(ctx, append(base, args...)...)
 }
 
+// PruneImages removes every image no container uses, daemon-wide.
+func (r *Runtime) PruneImages(ctx context.Context) (int, error) {
+	out, err := r.dockerRun(ctx, "image", "prune", "--all", "--force")
+	if err != nil {
+		return 0, fmt.Errorf("pruning images: %w", err)
+	}
+	return strings.Count(out, "deleted: "), nil
+}
+
 func (r *Runtime) dockerRun(ctx context.Context, args ...string) (string, error) {
 	return r.exec(ctx, subprocess.Command{Bin: r.docker, Args: args, Env: append(os.Environ(), "LC_ALL=C"), Timeout: r.timeout})
 }

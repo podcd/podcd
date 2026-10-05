@@ -36,6 +36,8 @@ type fakeRuntime struct {
 	networksApplied []string
 	networksRemoved []string
 
+	imagePrunes int
+
 	applyErr  error
 	removeErr map[string]error
 	unhealthy map[string]bool
@@ -112,6 +114,19 @@ func (f *fakeRuntime) Health(_ context.Context, app model.Application) (model.He
 		return model.Health{App: app.Name, Status: model.HealthUnhealthy, Message: "it is broken"}, nil
 	}
 	return model.Health{App: app.Name, Status: model.HealthHealthy}, nil
+}
+
+func (f *fakeRuntime) PruneImages(context.Context) (int, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.imagePrunes++
+	return 0, nil
+}
+
+func (f *fakeRuntime) prunes() int {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.imagePrunes
 }
 
 func (f *fakeRuntime) Logs(_ context.Context, app string, lines int) (string, error) {

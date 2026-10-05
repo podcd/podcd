@@ -405,3 +405,18 @@ func writeNetworkRecord(t *testing.T, r *Runtime, name string) {
 		t.Fatal(err)
 	}
 }
+
+func TestPruneImagesRemovesUnusedAndCountsThem(t *testing.T) {
+	out := "Deleted Images:\nuntagged: nginx:1\nuntagged: nginx@sha256:aa\ndeleted: sha256:aa\ndeleted: sha256:bb\n\nTotal reclaimed space: 12MB\n"
+	r, f := newRuntime(t, func(bin string, args []string) (string, error) { return out, nil })
+	n, err := r.PruneImages(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !f.has("image prune --all --force") {
+		t.Fatalf("calls: %+v", f.calls)
+	}
+	if n != 2 {
+		t.Fatalf("removed = %d, want 2", n)
+	}
+}

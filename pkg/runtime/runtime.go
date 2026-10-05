@@ -54,4 +54,7 @@ type Runtime interface {
 	// RemoveNetwork removes a network's definition and the network itself.
 	// It fails, rather than forces, when something still uses the network.
 	RemoveNetwork(ctx context.Context, network string) error
+
+	// PruneImages removes every image no container uses and returns how many.
+	PruneImages(ctx context.Context) (int, error)
 }

@@ -706,6 +706,15 @@ func (r *Runtime) WaitHealthy(ctx context.Context, app model.Application) model.
 	return last
 }
 
+// PruneImages removes every image no container uses.
+func (r *Runtime) PruneImages(ctx context.Context) (int, error) {
+	out, err := r.podmanRun(ctx, "image", "prune", "--all", "--force")
+	if err != nil {
+		return 0, fmt.Errorf("pruning images: %w", err)
+	}
+	return len(strings.Fields(out)), nil // one removed image ID per line
+}
+
 // Logs returns the most recent journal lines for an application.
 func (r *Runtime) Logs(ctx context.Context, app string, lines int) (string, error) {
 	if lines <= 0 {
