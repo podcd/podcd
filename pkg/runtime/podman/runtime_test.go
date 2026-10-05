@@ -666,3 +666,19 @@ func TestRemoveActsOnTheUnitFileThatClaimsTheApp(t *testing.T) {
 		t.Fatalf("one unit per app after apply: %v", err)
 	}
 }
+
+func TestPruneImagesRemovesUnusedAndCountsThem(t *testing.T) {
+	r, f := newRuntime(t, func(bin string, args []string) (string, error) {
+		return "8f2a1c\n3b9e07\n", nil
+	})
+	n, err := r.PruneImages(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !f.has("podman", "image prune --all --force") {
+		t.Fatalf("calls: %+v", f.calls)
+	}
+	if n != 2 {
+		t.Fatalf("removed = %d, want 2", n)
+	}
+}

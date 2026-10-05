@@ -6,6 +6,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 )
 
 // writeTree writes files into a temporary directory and returns its path.
@@ -488,5 +489,25 @@ func TestEnvFileIsRequiredAndNeverDefaulted(t *testing.T) {
 	}
 	if DefaultAgentConfig().EnvFile != "" {
 		t.Fatal("DefaultAgentConfig must not carry an envFile: config create decides it, per config")
+	}
+}
+
+func TestImagePruneDefaultsOnAndZeroDisables(t *testing.T) {
+	base := "envFile: /e\nrepository: {url: https://example.com/r.git}\n"
+	for src, want := range map[string]time.Duration{
+		base:                    24 * time.Hour,
+		base + "imagePrune: 0s": 0,
+		base + "imagePrune: 6h": 6 * time.Hour,
+	} {
+		cfg, err := ParseAgentConfig([]byte(src))
+		if err != nil {
+			t.Fatalf("%q: %v", src, err)
+		}
+		if cfg.ImagePrune != want {
+			t.Errorf("%q: imagePrune = %s, want %s", src, cfg.ImagePrune, want)
+		}
+	}
+	if _, err := ParseAgentConfig([]byte(base + "imagePrune: -1h")); err == nil {
+		t.Error("a negative imagePrune must be refused")
 	}
 }

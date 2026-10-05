@@ -3,7 +3,7 @@ id: docker
 title: Docker runtime
 ---
 
-A host without podman can run the same repository on Docker. Nothing in Git changes; set it per host in `agent.yaml`:
+A host without podman can run `podcd` using Docker. This has to be configured in `agent.yaml`:
 
 ```yaml
 runtime: docker
@@ -11,16 +11,16 @@ runtime: docker
 
 ## What the host needs
 
-- Docker Engine, reachable by the agent's user through the `docker` CLI: add it to the `docker` group (`sudo usermod -aG docker $USER`, then log in again), or set `DOCKER_HOST` in `agent.env` for a rootless or remote daemon.
+- Docker, reachable by the agent's user through the `docker` CLI: add it to the `docker` group (`sudo usermod -aG docker $USER`, then log in again), or set `DOCKER_HOST` in `agent.env` for a rootless or remote daemon.
 - The Compose plugin, v2 or later (`docker compose version`). Compose v1, the python `docker-compose`, cannot wait for an init container to finish and is refused.
 - Access to `registry.k8s.io/pause:3.10` (directly or via a registry mirror) for the infra container.
 
 ## How a Pod runs
 
-Each `Pod` becomes a Compose project `podcd-<app>` shaped like a podman pod:
+Each `Pod` becomes a Compose project `podcd-<app>` emulating a podman pod:
 
-- An **infra** container (`<app>-infra`, the pause image) owns the network namespace, the published `hostPort`s and the pod's networks. It carries the pod's name as a network alias, so other pods reach it by name over a [managed network](networks.md) exactly as on podman.
-- Every container joins it (`network_mode: service:infra`): containers of one pod talk over `localhost`, and the pod has one address per network.
+- An **infra** container (`<app>-infra`, the pause image) owns the network namespace, the published `hostPort`s and the pod's networks. It carries the pod's name as a network alias, so other pods reach it by name over a [managed network](networks.md).
+- Every container is joined to it (`network_mode: service:infra`): containers of one pod talk over `localhost`, and the pod has one address per network.
 - Init containers run first, in order, as services the workload `depends_on` having completed successfully. A failing init container fails the apply, with its output in the error.
 - The pod's `restartPolicy` becomes Compose's `restart:`; Docker brings the containers back after a daemon restart or a reboot on its own.
 - `hostNetwork: true` puts the infra container, and so the pod, on the host's network; ports are then not published.
@@ -42,11 +42,11 @@ Differences from podman:
 
 ## Volumes
 
-`hostPath` binds the path. `emptyDir` and `persistentVolumeClaim` become named volumes (`podcd-<app>_<volume>`, or the claim's own name), which removing the application never deletes. `configMap` and `secret` are files, as above. Other volume types are refused.
+`hostPath` binds the path. `emptyDir` and `persistentVolumeClaim` become named volumes (`podcd-<app>_<volume>`, or the claim's own name), `configMap` and `secret` are files.
 
 ## What is not supported
 
-These fail the apply with a message naming the field:
+These fail the apply:
 
 - volume types other than `hostPath`, `emptyDir`, `persistentVolumeClaim`, `configMap` and `secret`
 - `env[].valueFrom.fieldRef` and `resourceFieldRef`
@@ -67,7 +67,7 @@ These are accepted and ignored:
 
 ## What podcd keeps on disk
 
-podcd records what it applied in the same unit format the podman runtime writes, under `<stateDir>/docker/`, so `podcd plan` reads the same on both runtimes. Do not edit these files.
+podcd records what it applied in the same unit format the podman runtime writes, under `<stateDir>/docker/`, so `podcd plan` reads the same on both runtimes.
 
 ```text
 <stateDir>/
@@ -81,4 +81,4 @@ podcd records what it applied in the same unit format the podman runtime writes,
   kube/<app>.yaml             the played manifest, 0600
 ```
 
-An application whose containers are gone but whose record remains (`docker compose down` by hand) is restarted from the manifest on the next reconcile; containers left without a record are still podcd's, and pruned when Git no longer declares them.
+An application whose containers are gone but whose record remains (`docker compose down` by hand) is restarted from the manifest on the next reconcile.
