@@ -510,3 +510,19 @@ func TestBrokenConfigDoesNotTouchTheHost(t *testing.T) {
 		t.Fatalf("a bad commit changed the host: applied=%v removed=%v", rt.applied, rt.removed)
 	}
 }
+
+func TestNewEngineRestrictsTheStateDirToTheAgentUser(t *testing.T) {
+	cfg := config.DefaultAgentConfig()
+	cfg.Host = "h"
+	cfg.StateDir = filepath.Join(t.TempDir(), "state")
+	if err := os.Mkdir(cfg.StateDir, 0o755); err != nil { // as an older podcd left it
+		t.Fatal(err)
+	}
+	if _, err := NewEngine(cfg, slog.New(slog.NewTextHandler(io.Discard, nil))); err != nil {
+		t.Fatal(err)
+	}
+	fi, err := os.Stat(cfg.StateDir)
+	if err != nil || fi.Mode().Perm() != 0o700 {
+		t.Fatalf("stateDir holds resolved secrets and must be 0700: %v %v", fi.Mode().Perm(), err)
+	}
+}

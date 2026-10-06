@@ -178,6 +178,14 @@ func TestVaultStoreWithATokenFetchesFieldsAndWholeSecrets(t *testing.T) {
 	}
 }
 
+func TestVaultKeysThatAreNotFileNamesAreRefused(t *testing.T) {
+	p, f := vaultProvisioner(t, "VAULT_TOKEN=root-token\n")
+	f.data["secret/demo/tls"]["../../.bashrc"] = "x"
+	if _, _, err := p.ProvisionSecret(context.Background(), "demo-db"); err == nil || !strings.Contains(err.Error(), "from the store") {
+		t.Fatalf("a dataFrom key escaping the secret's directory must be refused, got %v", err)
+	}
+}
+
 func TestVaultStoreWithAppRoleLogsInWithTheAgentsCredentials(t *testing.T) {
 	p, f := vaultProvisioner(t, "VAULT_ROLE_ID=rid\nVAULT_SECRET_ID=sid\n")
 	// The ExternalSecret is demo-tls; the Secret it produces is demo-tls-material.

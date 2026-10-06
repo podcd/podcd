@@ -117,7 +117,7 @@ It runs `podman network rm`, starts the service to create it fresh, and restarts
 
 ### Adoption
 
-When a `Network` document first appears for a name the host already has, podcd writes the unit and `--ignore` keeps the existing network, i.e. a stray Network will then be adopted. The next change to the document recreates it with the declared settings.
+When a `Network` document first appears for a name the host already has, podcd writes the unit and `--ignore` keeps the existing network, i.e. a stray Network will then be adopted. The next change to the document recreates it with the declared settings. Until then, removing the document removes only the unit: podcd deletes only networks carrying its `io.podcd.network` label.
 
 ### Removal
 

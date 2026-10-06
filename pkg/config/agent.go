@@ -48,7 +48,7 @@ type AgentConfig struct {
 	Jitter           time.Duration `yaml:"jitter,omitempty" doc:"Random extra delay on top of interval, so a fleet does not hit Git in lockstep."`
 	RetryInterval    time.Duration `yaml:"retryInterval,omitempty" doc:"Wait after a failed reconcile; doubles on each further failure."`
 	MaxRetryInterval time.Duration `yaml:"maxRetryInterval,omitempty" doc:"Cap for the retry backoff."`
-	ImagePrune       time.Duration `yaml:"imagePrune,omitempty" doc:"How often to remove images no container uses, after a successful reconcile. 0s disables it. On docker this covers every image on the daemon, not only podcd's."`
+	ImagePrune       time.Duration `yaml:"imagePrune,omitempty" doc:"How often to remove images no container uses, after a successful reconcile. 0s (the default) disables it. It covers every unused image of the agent user (podman) or the whole daemon (docker), not only podcd's."`
 
 	Runtime string `yaml:"runtime,omitempty" doc:"Container runtime: podman (rootless, via Quadlet) or docker (via Compose)."`
 
@@ -75,7 +75,6 @@ func DefaultAgentConfig() AgentConfig {
 		Jitter:           10 * time.Second,
 		RetryInterval:    15 * time.Second,
 		MaxRetryInterval: 10 * time.Minute,
-		ImagePrune:       24 * time.Hour,
 		Runtime:          "podman",
 		StateDir:         defaultStateDir(),
 		UnitDir:          defaultUnitDir(),

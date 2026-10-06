@@ -19,9 +19,9 @@
 # maxRetryInterval: 10m0s
 
 # How often to remove images no container uses, after a successful
-# reconcile. 0s disables it. On docker this covers every image on the
-# daemon, not only podcd's.
-# imagePrune: 24h0m0s
+# reconcile. 0s (the default) disables it. It covers every unused image of
+# the agent user (podman) or the whole daemon (docker), not only podcd's.
+# imagePrune: 0s
 
 # Container runtime: podman (rootless, via Quadlet) or docker (via Compose).
 # runtime: podman

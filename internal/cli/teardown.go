@@ -4,7 +4,6 @@ import (
 	"context"
 	"fmt"
 	"os"
-	"path/filepath"
 	"strings"
 
 	"github.com/spf13/cobra"
@@ -18,9 +17,10 @@ func newTeardownCommand(f *configFlags) *cobra.Command {
 		Short: "stop and remove everything podcd runs on this host, and uninstall the agent",
 		Long: "Composes `podcd prune --all` and `podcd uninstall`: every application podcd manages is\n" +
 			"stopped and removed, then the agent's own systemd unit is stopped, disabled and removed.\n" +
-			"--purge-state additionally deletes stateDir (checkouts, played manifests, state.json).\n" +
-			"--purge-config additionally deletes the directory holding agent.yaml, and its envFile - the\n" +
-			"repository URL and any secrets resolved through env: references live there.",
+			"--purge-state additionally deletes what podcd keeps in stateDir (checkouts, played manifests,\n" +
+			"state.json); the directory itself and anything else in it are left alone.\n" +
+			"--purge-config additionally deletes agent.yaml and its envFile - the repository URL and any\n" +
+			"secrets resolved through env: references live there.",
 		Args: cobra.NoArgs,
 		RunE: withEngineArgs(f, func(ctx context.Context, env *environment, cmd *cobra.Command, _ []string) error {
 			candidates, networks, _, err := env.engine.RemoveCandidates(ctx, nil, true)
@@ -32,7 +32,8 @@ func newTeardownCommand(f *configFlags) *cobra.Command {
 				return err
 			}
 			stateDir := env.cfg.StateDir
-			configDir := filepath.Dir(env.cfg.Path)
+			// Only what podcd writes there: stateDir is configurable and may be shared.
+			stateFiles := []string{env.cfg.ReposDir(), env.cfg.KubeDir(), env.cfg.DockerDir(), env.cfg.StatePath(), env.cfg.LockPath()}
 
 			fmt.Fprintln(env.out, "this will:")
 			if len(candidates) > 0 {
@@ -45,10 +46,10 @@ func newTeardownCommand(f *configFlags) *cobra.Command {
 			}
 			fmt.Fprintln(env.out, "  stop, disable and remove "+serviceUnitName+" ("+serviceFile+")")
 			if purgeState {
-				fmt.Fprintln(env.out, "  delete "+stateDir+" (checkouts, played manifests, state.json)")
+				fmt.Fprintln(env.out, "  delete podcd's checkouts, played manifests and state.json in "+stateDir)
 			}
 			if purgeConfig {
-				fmt.Fprintln(env.out, "  delete "+configDir+" and "+env.cfg.EnvFile+" (secrets)")
+				fmt.Fprintln(env.out, "  delete "+env.cfg.Path+" and "+env.cfg.EnvFile+" (secrets)")
 			}
 			if !yes && !confirm(cmd, "Proceed?") {
 				fmt.Fprintln(cmd.ErrOrStderr(), "aborted")
@@ -62,19 +63,21 @@ func newTeardownCommand(f *configFlags) *cobra.Command {
 			fmt.Fprintln(env.out, "removed "+serviceFile)
 
 			if purgeState {
-				if err := os.RemoveAll(stateDir); err != nil {
-					return fmt.Errorf("removing %s: %w", stateDir, err)
+				for _, p := range stateFiles {
+					if err := os.RemoveAll(p); err != nil {
+						return fmt.Errorf("removing %s: %w", p, err)
+					}
 				}
-				fmt.Fprintln(env.out, "removed "+stateDir)
+				fmt.Fprintln(env.out, "removed podcd's state in "+stateDir)
 			}
 			if purgeConfig {
-				if err := os.Remove(env.cfg.EnvFile); err != nil && !os.IsNotExist(err) {
-					return fmt.Errorf("removing %s: %w", env.cfg.EnvFile, err)
+				// Only the files podcd owns: --config may point into $HOME, /etc or anywhere else.
+				for _, p := range []string{env.cfg.Path, env.cfg.EnvFile} {
+					if err := os.Remove(p); err != nil && !os.IsNotExist(err) {
+						return fmt.Errorf("removing %s: %w", p, err)
+					}
 				}
-				if err := os.RemoveAll(configDir); err != nil {
-					return fmt.Errorf("removing %s: %w", configDir, err)
-				}
-				fmt.Fprintln(env.out, "removed "+configDir+" and "+env.cfg.EnvFile)
+				fmt.Fprintln(env.out, "removed "+env.cfg.Path+" and "+env.cfg.EnvFile)
 			}
 			if removeErr != nil {
 				return removeErr
@@ -82,7 +85,7 @@ func newTeardownCommand(f *configFlags) *cobra.Command {
 			return res.Err()
 		}),
 	}
-	cmd.Flags().BoolVar(&purgeState, "purge-state", false, "also delete stateDir (checkouts, played manifests, state.json)")
+	cmd.Flags().BoolVar(&purgeState, "purge-state", false, "also delete podcd's checkouts, played manifests and state.json from stateDir")
 	cmd.Flags().BoolVar(&purgeConfig, "purge-config", false, "also delete agent.yaml and its envFile (secrets)")
 	cmd.Flags().BoolVarP(&yes, "yes", "y", false, "tear down without asking")
 	return cmd

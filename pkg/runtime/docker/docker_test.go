@@ -336,7 +336,10 @@ func TestApplyNetworkCreatesAdoptsAndRecreates(t *testing.T) {
 }
 
 func TestRemoveNetworkTolerantOfMissing(t *testing.T) {
-	r, _ := newRuntime(t, func(string, []string) (string, error) {
+	r, _ := newRuntime(t, func(_ string, args []string) (string, error) {
+		if args[1] == "ls" {
+			return "", nil
+		}
 		return "", errors.New("Error response from daemon: No such network: backend")
 	})
 	writeNetworkRecord(t, r, "backend")
@@ -346,11 +349,23 @@ func TestRemoveNetworkTolerantOfMissing(t *testing.T) {
 	if _, err := os.Stat(filepath.Join(r.unitDir, "podcd-backend.network")); !os.IsNotExist(err) {
 		t.Fatal("the record should be gone")
 	}
-	r2, _ := newRuntime(t, func(string, []string) (string, error) {
+	r2, _ := newRuntime(t, func(_ string, args []string) (string, error) {
+		if args[1] == "ls" {
+			return `{"Name":"backend","Labels":"io.podcd.network=backend"}` + "\n", nil
+		}
 		return "", errors.New("network backend has active endpoints")
 	})
 	if err := r2.RemoveNetwork(context.Background(), "backend"); err == nil {
 		t.Fatal("a network in use is not forced")
+	}
+	r3, f3 := newRuntime(t, func(_ string, args []string) (string, error) {
+		if args[1] == "ls" {
+			return `{"Name":"backend","Labels":""}` + "\n", nil
+		}
+		return "", nil
+	})
+	if err := r3.RemoveNetwork(context.Background(), "backend"); err != nil || f3.has("network rm") {
+		t.Fatalf("an adopted network is left alone: %v %+v", err, f3.calls)
 	}
 }
 

@@ -78,6 +78,13 @@ func (p *Provisioner) ProvisionSecret(ctx context.Context, name string) (corev1.
 		}
 	}
 
+	// Keys from the backend become file names on the host (docker runtime).
+	for k := range data {
+		if why := config.CheckKey(k); why != "" {
+			return corev1.Secret{}, false, fmt.Errorf("key %q from the store: %s", k, why)
+		}
+	}
+
 	sec := corev1.Secret{
 		TypeMeta:   metav1.TypeMeta{APIVersion: config.CoreAPIVersion, Kind: config.KindSecret},
 		ObjectMeta: metav1.ObjectMeta{Name: name, Labels: map[string]string{config.LabelManaged: "true"}},

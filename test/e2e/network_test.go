@@ -156,6 +156,59 @@ func TestNetworkEndToEnd(t *testing.T) {
 	}
 }
 
+// TestAdoptedNetworkIsLeftOnPrune: a network podcd did not create is adopted
+// by its Network document, and dropping the document removes only the unit.
+func TestAdoptedNetworkIsLeftOnPrune(t *testing.T) {
+	if os.Getenv("PODCD_E2E") != "1" {
+		t.Skip("set PODCD_E2E=1 to run the end-to-end test (it starts real containers)")
+	}
+	requireTools(t)
+	digest := imageDigest(t)
+	t.Setenv("PODCD_E2E_NET_TOKEN", "net-secret")
+
+	ctx := context.Background()
+	repoDir := t.TempDir()
+	unitDir := userUnitDir(t)
+	t.Cleanup(func() { cleanupNetwork(unitDir) })
+
+	runCmdOut(t, "podman", "network", "create", "--subnet", "10.96.0.0/24", netName)
+	writeNetworkConfig(t, repoDir, digest, "10.96.0.0/24", false)
+	gitInit(t, repoDir)
+
+	cfg := config.DefaultAgentConfig()
+	cfg.Host = netHost
+	cfg.StateDir = t.TempDir()
+	cfg.UnitDir = unitDir
+	cfg.Repository = config.RepositorySpec{Name: "infra", URL: repoDir, Revision: "main"}
+	engine, err := reconciler.NewEngine(cfg, slog.New(slog.NewTextHandler(io.Discard, nil)))
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if _, err := engine.Reconcile(ctx, reconciler.Options{}); err != nil {
+		t.Fatalf("first reconcile: %v", err)
+	}
+	if labels := runCmdOut(t, "podman", "network", "inspect", netName, "--format", "{{.Labels}}"); strings.Contains(labels, "io.podcd.network") {
+		t.Fatalf("the hand-made network should have been adopted as is: %s", labels)
+	}
+
+	write(t, filepath.Join(repoDir, "host.yaml"), fmt.Sprintf("apiVersion: gitops.podcd.io/v1\nkind: Host\nmetadata:\n  name: %s\nspec: {}\n", netHost))
+	gitCommit(t, repoDir, "drop the server")
+	gone, err := engine.Reconcile(ctx, reconciler.Options{})
+	if err != nil {
+		t.Fatalf("reconcile after dropping the server: %v", err)
+	}
+	if got := appliedSummary(gone); got != "delete podcd-e2e-server, delete network e2e-net" {
+		t.Fatalf("got %q", got)
+	}
+	if _, err := os.Stat(filepath.Join(unitDir, renderer.NetworkFileName(netName))); !os.IsNotExist(err) {
+		t.Fatal("the .network unit is still there")
+	}
+	if !networkExists() {
+		t.Fatal("a network podcd did not create must survive the prune")
+	}
+}
+
 // writeNetworkConfig writes a Network, a server pod on it that serves a page
 // and a templated secret, and - with client - a second pod on it to call the
 // server from. The Host's values file carries the secret's variable name.
