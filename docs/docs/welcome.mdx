@@ -20,7 +20,10 @@ import useBaseUrl from '@docusaurus/useBaseUrl';
 
 <p style={{textAlign: 'center'}}>A Git-driven reconciler for Linux workloads.</p>
 
-podcd reconciles IaC code declared in Git. i.e. what applications should run on which host, and a local agent reconciles the host to match, continuously. Workloads are rootless Podman pods managed by Quadlet and systemd (or Docker Compose projects); there is no control plane beyond the agent on each host.
+podcd is a GitOps tool to manage quadlets on a linux host.
+Podman pods are managed by utilizing Quadlets and systemd (or Docker Compose projects).
+
+There is no control plane beyond the agent on each host.
 
 ## Where to go next
 
