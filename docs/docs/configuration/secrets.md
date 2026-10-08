@@ -7,12 +7,12 @@ title: Secrets
 
 ![An ExternalSecret in Git references a value in Vault; podcd fetches it on the host and bundles the resulting Secret into the pod manifest podman plays](../../static/img/secrets.svg)
 
-Git declares **where** a secret comes from; the agent fetches it on the host at reconcile time and bundles it into the pod manifest.
+On a podcd-gitops repository you can define references to a secret via `ExternalSecret` and its `SecretStore`
 
 | Document | What it does |
 |---|---|
-| `SecretStore` | Configures a backend: the agent's environment, a files directory, or HashiCorp Vault |
-| `ExternalSecret` | Names one or more keys to fetch from a store and assemble into a `v1/Secret` |
+| `SecretStore` | Configures the secret backend: the agent's environment, a files directory, or HashiCorp Vault |
+| `ExternalSecret` | Configures one or more keys to fetch from a store and assemble into a `v1/Secret` |
 
 A host fetches only the secrets its own workloads reference.
 
@@ -21,7 +21,7 @@ A host fetches only the secrets its own workloads reference.
 Reads variables from the agent's environment and its `envFile`.
 
 ```yaml
-# In Git: declare the store and what to fetch
+# In Git: declare the store
 apiVersion: external-secrets.io/v1beta1
 kind: SecretStore
 metadata:
@@ -125,7 +125,8 @@ spec:
 
 ## `vault` store - HashiCorp Vault KV
 
-Server, KV version and auth method live in the `SecretStore`; Vault's own credentials are references resolved from `agent.env`.
+Server, KV version and auth method live in the `SecretStore`.
+Vault's own credentials are references resolved from `agent.env`.
 
 ```yaml
 apiVersion: external-secrets.io/v1beta1
@@ -215,7 +216,7 @@ spec:
 
 ## Git-defined Secrets
 
-A plain `v1/Secret` in Git is bundled into the manifest as written.
+You can write a plain `v1/Secret` into Git. Not recommended.
 
 ## Repository credentials
 

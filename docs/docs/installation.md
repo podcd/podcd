@@ -39,7 +39,8 @@ curl -s http://127.0.0.1:8080/ | head -3
 journalctl --user -u podcd-agent -f   # see pull, plan, apply
 ```
 
-`podcd plan` shows what would change, `podcd reconcile` executes a manual reconcile.
+`podcd plan` shows what would change, you can also do `podcd reconcile` to do a manual reconcile.
+
 Tear down when done:
 
 ```bash
@@ -100,13 +101,15 @@ podcd install
 systemctl --user daemon-reload && systemctl --user enable --now podcd-agent.service
 ```
 
-- `podcd config create` writes `~/.config/podcd/agent.yaml` (`--path` elsewhere), with `envFile` pointing at `agent.env` beside it (`--env-file` elsewhere). 
-  - A config without `envFile` is refused. Put [secrets](configuration/secrets.md) there, before or after starting the agent.
-- `podcd install` writes `~/.config/systemd/user/podcd-agent.service`, which runs `podcd run --config <config>` (`--config` for a config elsewhere).
+- `podcd config create` writes `~/.config/podcd/agent.yaml` (
+  - Use `--path` to point the config elsewhere and `--env-file` to point the `envFile` elsewhere
+  - Put [secrets](configuration/secrets.md) there, before or after starting the agent.
+- `podcd install` writes `~/.config/systemd/user/podcd-agent.service`
+  - This service runs `podcd run --config <config>`.
 
 ### `bootstrap.sh` helper script
 
-For a fresh machine that also needs Podman and a dedicated service user. Idempotent.
+For a fresh machine that also needs Podman and a dedicated `podcd` service user.
 
 ```bash
 curl -fsSL https://raw.githubusercontent.com/podcd/podcd/main/deploy/bootstrap.sh | sudo bash -s -- \
@@ -135,4 +138,5 @@ make image                                              # builds podcd:$(VERSION
 podman run --rm -v /repo:/repo:ro,Z ghcr.io/podcd/podcd:latest lint /repo
 ```
 
-The image runs as non-root UID 1000 and carries `git`, `podman` and `systemctl`; reconciling from inside it needs the host's Podman socket and systemd user bus bind-mounted in.
+The image runs as non-root UID 1000 and carries `git`, `podman` and `systemctl`.
+To reconcile from inside a container it needs the host's Podman socket and systemd user bus bind-mounted in.

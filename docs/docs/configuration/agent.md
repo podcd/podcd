@@ -3,11 +3,25 @@ id: agent
 title: The agent configuration
 ---
 
-`agent.yaml` lives on the host and says which `Host` document this machine is and which Git repository to reconcile. Set it once per host; everything else lives in Git (the [configuration model](model.md)).
+`podcd` requires a config file to run (default: `~/.config/podcd/agent.yaml`).
+The config tells `podcd` which Git repository to reconcile and which `Host` document this machine is. 
 
-Lookup order: `$PODCD_CONFIG`, `~/.config/podcd/agent.yaml`, `/etc/podcd/agent.yaml`. Elsewhere: `podcd config create --path <file>`, then `podcd install --config <file>` / `podcd run --config <file>`.
+Lookup order: `$PODCD_CONFIG`, `~/.config/podcd/agent.yaml`, `/etc/podcd/agent.yaml`.
 
-`podcd config create` writes it with every field documented and defaults commented out:
+To create a config elsewhere: 
+```sh
+podcd config create --path <file>
+```
+To setup the service
+```sh
+podcd install --config <file>
+```
+To run the loop manually (e.g. for testing purposes):
+```sh
+podcd run --config <file>
+```
+
+### Reference
 
 ```yaml
 # podcd agent configuration.

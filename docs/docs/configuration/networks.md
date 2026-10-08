@@ -3,10 +3,11 @@ id: networks
 title: Networks
 ---
 
+## Pod Networks
+
 Pods reach each other by name over a shared podman network. A `Network` document declares a podman network.
 `podcd` creates it on hosts that has applications requiring it, and recreates it when there are changes. Cleanup occurs when nothing on the host uses it.
 
-## Declaring one
 
 ```yaml
 apiVersion: gitops.podcd.io/v1

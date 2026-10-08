@@ -3,7 +3,9 @@ id: cli
 title: CLI reference
 ---
 
-Every command takes `-c`/`--config` to point at an `agent.yaml` other than the default, and most take `-o json` for a scraper. `podcd <command> --help` has the full flag list.
+Every command takes `-c`/`--config` to point at a config `agent.yaml`. 
+
+Run `podcd <command> --help` to see the full flag list.
 
 ## Everyday
 

@@ -3,7 +3,10 @@ id: values
 title: Values templating
 ---
 
-Overrides patch one application by name. Values templating parametrizes the documents themselves: hosts share one `Pod` and each fills in what differs.
+You can utilize `Hosts`/`Groups`/`Environments` to do overrides, an alternative way to do overrides is by using templating and values.
+Each `Hosts`/`Groups`/`Environments` can specify values files it should include.
+
+`Host`, `Group` and `Environment` cannot be templated (they decide the values), nor can `SecretStore` be templated.
 
 ## Templates
 
@@ -31,9 +34,9 @@ spec:
           memory: '{{ default "256Mi" .Values.resources.memory }}'
 ```
 
-A template may render `Pod`, `ConfigMap`, `Secret`, `ExternalSecret` or `Network`. `Host`, `Group` and `Environment` cannot be templated (they decide the values), nor can `SecretStore` (shared by every host; its credentials are already host-resolved references).
+A template may render `Pod`, `ConfigMap`, `Secret`, `ExternalSecret` or `Network`.
 
-A YAML `#` comment in a `.tpl` is still template text, so one quoting template syntax (`{{ if }}`) fails to parse. Use `{{/* ... */}}`.
+A YAML `#` comment in a `.tpl` is still template text, use `{{/* ... */}}` to prevent rendering.
 
 ## Where values come from
 
@@ -62,7 +65,7 @@ resources:
   memory: 512M
 ```
 
-`agent.yaml` can also list values files, as the lowest-precedence layer. Prefer keeping values in Git documents.
+`agent.yaml` can also list values files as the lowest-precedence layer. This is not recommended, as this hides configurations from IaC/Git.
 
 ```yaml
 repository:
@@ -88,7 +91,7 @@ Go's own `text/template`, plus a small helper set:
 
 ## Secrets and values
 
-Values may carry secret *names*, never values: a template can emit an `ExternalSecret` or reference one by name:
+Values may carry secret *names*: a template can emit an `ExternalSecret` or reference one by name:
 
 ```yaml
 # apps/api.yaml.tpl

@@ -17,7 +17,7 @@ Every `.yaml`/`.yml`/`.tpl` file in the repository is read; there is no prescrib
 
 ## Pod
 
-A workload is a plain Kubernetes `Pod`, played by podman through a Quadlet `.kube` unit:
+Pods in `podcd` is a plain Kubernetes `Pod`, played by podman through a Quadlet `.kube` unit:
 
 ```yaml
 apiVersion: v1
@@ -41,8 +41,8 @@ spec:
         httpGet: { path: /, port: 80 }
 ```
 
-A workload is healthy when its regular containers are running.
-`initContainers` run before the regular containers.
+A workload is healthy when its containers are running.
+`initContainers` run before the containers.
 
 Networks are an annotation, written into the unit's `Network=` lines:
 
@@ -52,7 +52,8 @@ metadata:
     io.podcd.networks: "edge,monitoring"
 ```
 
-You can refer to a [`Network` document](#network), which podcd will create and remove, or a network already on the host (podman's own `podman`, or one made by hand), which podcd leaves alone.
+You can assign workloads to a [`Network`](#network), which podcd will create and/or remove.
+You can assign workloads to a network already on the host (podman's own `podman`, or one made by hand).
 
 The user namespace can also be passed via annotations, internally written into the unit's `UserNS=` line (`podman kube play --userns`):
 
@@ -70,11 +71,12 @@ Referenced ConfigMaps and Secrets must exist (or marked optional), and host port
 
 A `Network` defines how podman creates a network of that name. It will be kept on a host for as long as a pod names it via `io.podcd.networks`. It is not selected by `Host`, `Group` or `Environment`.
 
-Changing one recreates it and restarts the pods on it. Fields, lifecycle, `networkOverrides` and templating: [Networks](networks.md).
+Changing the network recreates it and will restart the pods on the network.
+Fields, lifecycle, `networkOverrides` and templating: [Networks](networks.md).
 
 ## Host
 
-A `Host` selects what should run on one machine, directly and/or through an environment and groups:
+A `Host` an agent identifies as determines what should run on a machine:
 
 ```yaml
 apiVersion: gitops.podcd.io/v1
@@ -89,7 +91,7 @@ spec:
     - my-api
 ```
 
-The final set is the union of everything selected by the environment, the groups and the host itself. A host can remove something a layer above selected:
+The final set is the union of everything selected by the environment, the groups and the host itself. A host can remove something a layer above prescribed:
 
 ```yaml
 spec:
@@ -103,7 +105,7 @@ Excluding an application that was never selected will produce an error.
 
 ## Groups and environments
 
-A group can specify what its members run, and may override them as well:
+A group can specify what Hosts under it run, and may override them as well:
 
 ```yaml
 apiVersion: gitops.podcd.io/v1
@@ -174,7 +176,5 @@ containers:
       - {name: LOG_LEVEL, value: debug}
       - {name: PORT, value: "8080"}
 ```
-
-An environment or group override may name any application the repository defines; it is idle on members that do not run it. An override for an application no Pod defines will raise an error, and a Host override for an application that a host does not run is refused and is considered stale. `networkOverrides` follow the same rules.
 
 To parametrize *within* a shared definition (an image tag per environment, say), use [values templating](values.md).
