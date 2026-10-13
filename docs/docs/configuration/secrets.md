@@ -231,7 +231,7 @@ Fetched from Vault, as the default for one registry (`agent.yaml`):
 ```yaml
 registries:
   - server: registry.example.com
-    secretRef: registry-creds   # a Secret in Git, here provisioned by the ExternalSecret below
+    secretRef: registry-creds   # the Secret the ExternalSecret below provisions
 ```
 
 ```yaml
@@ -259,7 +259,7 @@ spec:
     - name: registry-creds
 ```
 
-Or from the agent's own references, with no Secret in Git:
+Or from the agent's own references, with no Secret at all:
 
 ```yaml
 registries:
