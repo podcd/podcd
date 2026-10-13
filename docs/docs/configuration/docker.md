@@ -58,7 +58,6 @@ These are accepted and ignored:
 | Field | Notes |
 |---|---|
 | `startupProbe`, `readinessProbe` | Docker has one healthcheck per container over the `livenessProbe`. |
-| `imagePullSecrets` | Registry credentials come from the daemon's own login (`docker login`). |
 | `hostAliases`, `dnsConfig` | No per-container `/etc/hosts` or resolver settings are written. |
 | `hostPID`, `hostIPC` | Host namespaces are not shared. |
 | `lifecycle` | No postStart or preStop hooks. |

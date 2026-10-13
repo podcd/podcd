@@ -57,4 +57,8 @@ type Runtime interface {
 
 	// PruneImages removes every image no container uses and returns how many.
 	PruneImages(ctx context.Context) (int, error)
+
+	// Login stores credentials for one registry where this runtime's pulls
+	// read them. The password travels on stdin, never in arguments.
+	Login(ctx context.Context, server, username, password string) error
 }

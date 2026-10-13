@@ -715,6 +715,19 @@ func (r *Runtime) PruneImages(ctx context.Context) (int, error) {
 	return len(strings.Fields(out)), nil // one removed image ID per line
 }
 
+// Login runs podman login. Rootless, the credentials land in
+// $XDG_RUNTIME_DIR/containers/auth.json, where kube play reads them.
+func (r *Runtime) Login(ctx context.Context, server, username, password string) error {
+	_, err := r.exec(ctx, subprocess.Command{
+		Bin: r.podman, Args: []string{"login", "--username=" + username, "--password-stdin", "--", server},
+		Env: sessionEnv(), Stdin: password, Timeout: r.timeout,
+	})
+	if err != nil {
+		return fmt.Errorf("registry login to %s: %w", server, err)
+	}
+	return nil
+}
+
 // Logs returns the most recent journal lines for an application.
 func (r *Runtime) Logs(ctx context.Context, app string, lines int) (string, error) {
 	if lines <= 0 {

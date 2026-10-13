@@ -18,6 +18,8 @@ type Command struct {
 	Args []string
 	Dir  string   // working directory; "" for the current one
 	Env  []string // full environment; nil inherits the process's
+	// Stdin is fed to the process; it carries secrets, which must never be args.
+	Stdin string
 	// Timeout bounds the run; zero means no deadline beyond ctx.
 	Timeout time.Duration
 }
@@ -32,6 +34,9 @@ func Run(ctx context.Context, c Command) (string, error) {
 	cmd := exec.CommandContext(ctx, c.Bin, c.Args...)
 	cmd.Dir = c.Dir
 	cmd.Env = c.Env
+	if c.Stdin != "" {
+		cmd.Stdin = strings.NewReader(c.Stdin)
+	}
 	var stdout, stderr bytes.Buffer
 	cmd.Stdout = &stdout
 	cmd.Stderr = &stderr

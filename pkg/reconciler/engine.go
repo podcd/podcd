@@ -4,9 +4,11 @@ package reconciler
 
 import (
 	"context"
+	"crypto/sha256"
 	"errors"
 	"fmt"
 	"log/slog"
+	"maps"
 	"os"
 	"slices"
 	"strings"
@@ -38,6 +40,9 @@ type Engine struct {
 	store  state.Store
 	source *Source
 	log    *slog.Logger
+
+	// logins maps a registry to a digest of the credentials last logged in with.
+	logins map[string][sha256.Size]byte
 }
 
 // NewEngine builds an engine from the agent configuration.
@@ -133,12 +138,20 @@ func (e *Engine) desiredState(ctx context.Context) (model.DesiredState, []string
 	if err != nil {
 		return model.DesiredState{}, offline, nil, nil, err
 	}
+	prov := NewProvisioner(index, e.source.Secrets)
 	desired, err := index.Resolve(ctx, config.ResolveOptions{
 		Host:      e.source.Host,
-		Secrets:   NewProvisioner(index, e.source.Secrets),
+		Secrets:   prov,
 		Revisions: revisions,
 		Values:    values,
 	})
+	if err == nil || errors.As(err, new(*config.ProvisioningError)) {
+		logins, loginErr := e.registryLogins(ctx, index, prov)
+		if loginErr != nil {
+			return model.DesiredState{}, offline, revisions, nil, loginErr
+		}
+		desired.Logins = logins
+	}
 	if err == nil {
 		return desired, offline, revisions, nil, nil
 	}
@@ -225,6 +238,11 @@ func (e *Engine) Reconcile(ctx context.Context, opts Options) (Result, error) {
 		return res, nil
 	}
 
+	if err := e.login(ctx, desired); err != nil {
+		e.recordFailure(&st, started, desired.Revisions, err)
+		return res, err
+	}
+
 	applied, applyErr := e.apply(ctx, plan, desired, &st)
 	res.Applied = applied
 	if applyErr != nil {
@@ -248,6 +266,89 @@ func (e *Engine) Reconcile(ctx context.Context, opts Options) (Result, error) {
 	res.Elapsed = time.Since(started)
 	e.recordSuccess(&st, started, desired.Revisions, applied, res.Elapsed)
 	return res, nil
+}
+
+// registryLogins resolves the agent.yaml registries: username and password
+// through the agent's references, secretRef through the provisioner the pods use.
+func (e *Engine) registryLogins(ctx context.Context, index *config.Index, prov *Provisioner) ([]model.RegistryLogin, error) {
+	var logins []model.RegistryLogin
+	for _, reg := range e.cfg.Registries {
+		if reg.SecretRef == "" {
+			user := reg.Username
+			if secrets.IsReference(user) {
+				v, err := e.source.Secrets.Resolve(ctx, user)
+				if err != nil {
+					return nil, fmt.Errorf("registry %s username: %w", reg.Server, err)
+				}
+				user = v
+			}
+			pass, err := e.source.Secrets.Resolve(ctx, reg.Password)
+			if err != nil {
+				return nil, fmt.Errorf("registry %s password: %w", reg.Server, err)
+			}
+			logins = append(logins, model.RegistryLogin{Server: reg.Server, Username: user, Password: pass})
+			continue
+		}
+		sec, ok, err := prov.ProvisionSecret(ctx, reg.SecretRef)
+		if err != nil {
+			return nil, fmt.Errorf("registry %s: Secret %q: %w", reg.Server, reg.SecretRef, err)
+		}
+		if !ok {
+			doc, found := index.Secrets[reg.SecretRef]
+			if !found {
+				return nil, fmt.Errorf("registry %s: Secret %q is not defined in Git (define it, or provision it with an ExternalSecret)", reg.Server, reg.SecretRef)
+			}
+			sec = doc.Spec
+		}
+		found, err := config.PullLogins(sec, []string{reg.Server})
+		if err != nil {
+			return nil, fmt.Errorf("registry %s: Secret %q: %w", reg.Server, reg.SecretRef, err)
+		}
+		n := len(logins)
+		for _, l := range found {
+			if l.Server == reg.Server {
+				logins = append(logins, l)
+			}
+		}
+		if len(logins) == n {
+			return nil, fmt.Errorf("registry %s: Secret %q has no credentials for it", reg.Server, reg.SecretRef)
+		}
+	}
+	return logins, nil
+}
+
+// login logs in to every registry the agent config and the pods' imagePullSecrets
+// name, skipping those whose credentials have not changed since this engine last
+// did, so a steady state costs no registry round trip.
+// a manual logout goes unnoticed until the credentials change or the agent restarts.
+func (e *Engine) login(ctx context.Context, desired model.DesiredState) error {
+	logins := slices.Clone(desired.Logins)
+	for _, app := range desired.Applications {
+		logins = append(logins, app.Logins...)
+	}
+	want := map[string]model.RegistryLogin{}
+	for _, l := range logins {
+		if prev, ok := want[l.Server]; ok && prev != l {
+			return fmt.Errorf("registry %s has two different credentials; the agent user holds one login per registry, so agent.yaml and imagePullSecrets must agree", l.Server)
+		}
+		want[l.Server] = l
+	}
+	for _, server := range slices.Sorted(maps.Keys(want)) {
+		l := want[server]
+		sum := sha256.Sum256([]byte(l.Username + "\x00" + l.Password))
+		if prev, ok := e.logins[server]; ok && prev == sum {
+			continue
+		}
+		if err := e.rt.Login(ctx, server, l.Username, l.Password); err != nil {
+			return err
+		}
+		if e.logins == nil {
+			e.logins = map[string][sha256.Size]byte{}
+		}
+		e.logins[server] = sum
+		e.log.Info("logged in to registry", "server", server, "username", l.Username)
+	}
+	return nil
 }
 
 // apply executes the plan, one action at a time, loudly.

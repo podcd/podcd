@@ -63,3 +63,40 @@ repository:
 		t.Fatalf("want an error about both auth kinds, got: %v", err)
 	}
 }
+
+func TestRegistriesNeedAReferencedPasswordAndUniqueServers(t *testing.T) {
+	_, err := loadAgent(t, `
+host: x
+envFile: /etc/podcd/agent.env
+repository: {url: https://example.com/infra.git}
+registries:
+  - {server: registry.example.com, username: robot, password: hunter2}
+  - {server: https://other.example.com, username: robot, password: env:P}
+  - {server: other.example.com, username: robot, password: env:P}
+  - {server: other.example.com, password: env:P}
+`)
+	for _, want := range []string{
+		"registries[0]: password must be a secret reference",
+		"registries[1]: registry server \"https://other.example.com\" must be a host[:port]",
+		"registries[3]: server \"other.example.com\" is listed twice",
+		"registries[3]: needs a username and password, or a secretRef",
+	} {
+		if err == nil || !strings.Contains(err.Error(), want) {
+			t.Errorf("want %q in: %v", want, err)
+		}
+	}
+
+	cfg, err := loadAgent(t, `
+host: x
+envFile: /etc/podcd/agent.env
+repository: {url: https://example.com/infra.git}
+registries:
+  - {server: "registry.example.com:5000", username: env:REG_USER, password: env:REG_PASS}
+`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(cfg.Registries) != 1 || cfg.Registries[0].Password != "env:REG_PASS" {
+		t.Fatalf("registries not loaded: %+v", cfg.Registries)
+	}
+}

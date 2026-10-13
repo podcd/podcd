@@ -218,6 +218,59 @@ spec:
 
 You can write a plain `v1/Secret` into Git. Not recommended.
 
+## Registry credentials
+
+The agent logs in to private registries before it applies anything, with the password on stdin.
+It logs in again when the credentials change; rootless podman keeps the login in `$XDG_RUNTIME_DIR`, so after a reboot the restarted agent restores it.
+
+A pull Secret holds either a `.dockerconfigjson` key (as `docker login` writes it) or `username` and `password` keys.
+With `username`/`password`, the registry is the one the pod's images come from, which must be a single, fully qualified registry.
+
+Fetched from Vault, as the default for one registry (`agent.yaml`):
+
+```yaml
+registries:
+  - server: registry.example.com
+    secretRef: registry-creds   # a Secret in Git, here provisioned by the ExternalSecret below
+```
+
+```yaml
+apiVersion: external-secrets.io/v1beta1
+kind: ExternalSecret
+metadata:
+  name: registry-creds
+spec:
+  secretStoreRef:
+    name: vault
+  target:
+    name: registry-creds
+  data:
+    - secretKey: username
+      remoteRef: {key: secret/prod/registry, property: username}
+    - secretKey: password
+      remoteRef: {key: secret/prod/registry, property: password}
+```
+
+Per pod, with the standard field:
+
+```yaml
+spec:
+  imagePullSecrets:
+    - name: registry-creds
+```
+
+Or from the agent's own references, with no Secret in Git:
+
+```yaml
+registries:
+  - server: registry.example.com
+    username: robot-pull
+    password: env:REGISTRY_PASSWORD
+```
+
+The agent user holds one login per registry, so every source naming the same registry must carry the same credentials; a mismatch fails the reconcile.
+Pull Secrets are never played into the pod.
+
 ## Repository credentials
 
 See [private repositories](../installation.md#private-repositories).

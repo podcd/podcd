@@ -3,6 +3,7 @@ package config
 import (
 	"os"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"testing"
 	"time"
@@ -218,5 +219,29 @@ func TestEditLeavesTheFileAloneOnAnyError(t *testing.T) {
 		if after, _ := os.ReadFile(path); string(after) != src {
 			t.Errorf("set %s=%s: the file was modified despite the error", tc.path, tc.value)
 		}
+	}
+}
+
+func TestRenderRegistriesExampleWhenEmptyAndRoundTripsWhenSet(t *testing.T) {
+	if out := RenderAgentConfig(minimal()); !strings.Contains(out,
+		"\n# registries:\n#   - server: registry.example.com\n#     username: robot-pull\n#     password: env:REGISTRY_PASSWORD\n") {
+		t.Errorf("unset registries should render as a commented example item:\n%s", out)
+	}
+
+	cfg := minimal()
+	cfg.Registries = []RegistryAuth{
+		{Server: "registry.example.com:5000", Username: "robot", Password: "env:A"},
+		{Server: "ghcr.io", SecretRef: "ghcr-pull"},
+	}
+	path := filepath.Join(t.TempDir(), "agent.yaml")
+	if err := WriteAgentConfig(path, cfg); err != nil {
+		t.Fatal(err)
+	}
+	back, err := LoadAgentConfig(path)
+	if err != nil {
+		t.Fatalf("the rendered file does not load: %v", err)
+	}
+	if !reflect.DeepEqual(back.Registries, cfg.Registries) {
+		t.Fatalf("round trip lost registries: %+v", back.Registries)
 	}
 }
