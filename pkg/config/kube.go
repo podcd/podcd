@@ -193,28 +193,45 @@ func (h hostDocuments) podToApplication(ctx context.Context, name string, pod co
 		configMaps = append(configMaps, doc.Spec)
 	}
 	// An ExternalSecret wins over a Git Secret of the same name; fetched only when referenced.
-	var secretDocs []corev1.Secret
-	for _, secName := range slices.Sorted(maps.Keys(refs.secrets)) {
+	lookup := func(secName string, optional bool) (corev1.Secret, bool) {
 		if provisioner != nil {
 			sec, ok, err := provisioner.ProvisionSecret(ctx, secName)
 			if err != nil {
 				p.errs = append(p.errs, &SecretProvisionError{Secret: secName, Err: err})
-				continue
+				return corev1.Secret{}, false
 			}
 			if ok {
-				secretDocs = append(secretDocs, sec)
-				continue
+				return sec, true
 			}
 		}
 		doc, ok := h.secret(secName)
+		if !ok && !optional && !h.externalSecretDeclares(secName) {
+			p.add("refers to Secret %q, which is not defined (define it in Git or provision it with an ExternalSecret)", secName)
+		}
+		return doc.Spec, ok
+	}
+	var secretDocs []corev1.Secret
+	for _, secName := range slices.Sorted(maps.Keys(refs.secrets)) {
+		if sec, ok := lookup(secName, refs.secrets[secName]); ok {
+			secretDocs = append(secretDocs, sec)
+		}
+	}
+
+	// Pull Secrets become registry logins the agent performs; they are not played.
+	hosts := imageHosts(app.Images)
+	for _, ref := range pod.Spec.ImagePullSecrets {
+		sec, ok := lookup(ref.Name, false)
 		if !ok {
-			if !refs.secrets[secName] && !h.externalSecretDeclares(secName) {
-				p.add("refers to Secret %q, which is not defined (define it in Git or provision it with an ExternalSecret)", secName)
-			}
 			continue
 		}
-		secretDocs = append(secretDocs, doc.Spec)
+		logins, err := PullLogins(sec, hosts)
+		if err != nil {
+			p.add("imagePullSecrets: Secret %q: %v", ref.Name, err)
+			continue
+		}
+		app.Logins = append(app.Logins, logins...)
 	}
+	pod.Spec.ImagePullSecrets = nil
 
 	checkFiles(&p, pod, configMaps, secretDocs)
 

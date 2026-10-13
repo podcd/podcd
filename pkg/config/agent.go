@@ -40,6 +40,15 @@ type RepoAuth struct {
 	SSHKnownHostsPath string `yaml:"sshKnownHostsPath,omitempty" example:"~/.ssh/known_hosts" doc:"Overrides ~/.ssh/known_hosts for host key checks."`
 }
 
+// RegistryAuth is a container registry the agent logs in to before it pulls:
+// username and password (a secret reference), or a Secret in Git.
+type RegistryAuth struct {
+	Server    string `yaml:"server" example:"registry.example.com"`
+	Username  string `yaml:"username,omitempty" example:"robot-pull"`
+	Password  string `yaml:"password,omitempty" example:"env:REGISTRY_PASSWORD"`
+	SecretRef string `yaml:"secretRef,omitempty"`
+}
+
 // AgentConfig is the host-local agent configuration.
 type AgentConfig struct {
 	Host string `yaml:"host,omitempty" doc:"Which Host document this machine is. Empty means the system hostname (with any domain stripped). PODCD_HOST in the environment overrides both."`
@@ -53,6 +62,8 @@ type AgentConfig struct {
 	Runtime string `yaml:"runtime,omitempty" doc:"Container runtime: podman (rootless, via Quadlet) or docker (via Compose)."`
 
 	Repository RepositorySpec `yaml:"repository" doc:"The Git repository this host reconciles against."`
+
+	Registries []RegistryAuth `yaml:"registries,omitempty" doc:"Container registries to log in to before applying: server (host[:port]) with username (a literal or a secret reference) and password (a secret reference), or with secretRef, the name of a Secret in Git - typically an ExternalSecret target fed from Vault - holding a .dockerconfigjson or username and password keys. Pods add their own through imagePullSecrets. The agent runs podman login (docker login) with the password on stdin, again whenever the credentials change. Rootless podman keeps the login in $XDG_RUNTIME_DIR, which a reboot clears; the restarted agent logs in again. Docker writes it to ~/.docker/config.json."`
 
 	StateDir   string `yaml:"stateDir,omitempty" doc:"Where the agent keeps checkouts, played manifests and state.json."`
 	UnitDir    string `yaml:"unitDir,omitempty" doc:"Where Quadlet units are written. Must be a directory systemd --user reads."`
@@ -229,6 +240,24 @@ func (c AgentConfig) Validate() error {
 			if a.Token == "" && a.SSHKeyPath == "" {
 				p.add("repository %q: auth needs a token or an sshKeyPath", r.Name)
 			}
+		}
+	}
+	seen := map[string]bool{}
+	for i, reg := range c.Registries {
+		if err := CheckRegistryServer(reg.Server); err != nil {
+			p.add("registries[%d]: %v", i, err)
+		} else if seen[reg.Server] {
+			p.add("registries[%d]: server %q is listed twice", i, reg.Server)
+		}
+		seen[reg.Server] = true
+		switch {
+		case reg.SecretRef != "" && (reg.Username != "" || reg.Password != ""):
+			p.add("registries[%d]: has both a secretRef and a username/password; pick one", i)
+		case reg.SecretRef != "":
+		case reg.Username == "":
+			p.add("registries[%d]: needs a username and password, or a secretRef", i)
+		case !secrets.IsReference(reg.Password):
+			p.add("registries[%d]: password must be a secret reference such as env:REGISTRY_PASSWORD, not a literal (agent.yaml is not a secret store)", i)
 		}
 	}
 	if c.ImagePrune < 0 {

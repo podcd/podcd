@@ -794,6 +794,18 @@ func (r *Runtime) PruneImages(ctx context.Context) (int, error) {
 	return strings.Count(out, "deleted: "), nil
 }
 
+// Login runs docker login; the daemon's pulls read ~/.docker/config.json.
+func (r *Runtime) Login(ctx context.Context, server, username, password string) error {
+	_, err := r.exec(ctx, subprocess.Command{
+		Bin: r.docker, Args: []string{"login", "--username=" + username, "--password-stdin", "--", server},
+		Env: append(os.Environ(), "LC_ALL=C"), Stdin: password, Timeout: r.timeout,
+	})
+	if err != nil {
+		return fmt.Errorf("registry login to %s: %w", server, err)
+	}
+	return nil
+}
+
 func (r *Runtime) dockerRun(ctx context.Context, args ...string) (string, error) {
 	return r.exec(ctx, subprocess.Command{Bin: r.docker, Args: args, Env: append(os.Environ(), "LC_ALL=C"), Timeout: r.timeout})
 }

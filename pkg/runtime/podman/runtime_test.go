@@ -682,3 +682,29 @@ func TestPruneImagesRemovesUnusedAndCountsThem(t *testing.T) {
 		t.Fatalf("removed = %d, want 2", n)
 	}
 }
+
+func TestLoginSendsThePasswordOnStdinOnly(t *testing.T) {
+	r, _ := newRuntime(t, nil)
+	var got subprocess.Command
+	r.exec = func(_ context.Context, c subprocess.Command) (string, error) {
+		got = c
+		return "Login Succeeded!\n", nil
+	}
+	if err := r.Login(context.Background(), "registry.example.com", "robot", "s3cret"); err != nil {
+		t.Fatal(err)
+	}
+	if args := strings.Join(got.Args, " "); args != "login --username=robot --password-stdin -- registry.example.com" {
+		t.Fatalf("args = %q", args)
+	}
+	if got.Stdin != "s3cret" {
+		t.Fatalf("the password must go on stdin, got %q", got.Stdin)
+	}
+
+	r.exec = func(context.Context, subprocess.Command) (string, error) {
+		return "", errors.New("podman login: unauthorized")
+	}
+	if err := r.Login(context.Background(), "registry.example.com", "robot", "s3cret"); err == nil ||
+		!strings.Contains(err.Error(), "registry.example.com") || strings.Contains(err.Error(), "s3cret") {
+		t.Fatalf("want an error naming the server and not the password, got %v", err)
+	}
+}

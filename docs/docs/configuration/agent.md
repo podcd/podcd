@@ -77,6 +77,20 @@ repository:
   #   sshKeyPath: ~/.ssh/deploy_key
   #   sshKnownHostsPath: ~/.ssh/known_hosts
 
+# Container registries to log in to before applying: server (host[:port])
+# with username (a literal or a secret reference) and password (a secret
+# reference), or with secretRef, the name of a Secret in Git - typically an
+# ExternalSecret target fed from Vault - holding a .dockerconfigjson or
+# username and password keys. Pods add their own through imagePullSecrets.
+# The agent runs podman login (docker login) with the password on stdin,
+# again whenever the credentials change. Rootless podman keeps the login in
+# $XDG_RUNTIME_DIR, which a reboot clears; the restarted agent logs in
+# again. Docker writes it to ~/.docker/config.json.
+# registries:
+#   - server: registry.example.com
+#     username: robot-pull
+#     password: env:REGISTRY_PASSWORD
+
 # Where the agent keeps checkouts, played manifests and state.json.
 # stateDir: /home/podcd/.local/state/podcd
 

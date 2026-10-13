@@ -154,6 +154,17 @@ type Application struct {
 	// Provenance, for humans debugging on the host.
 	SourceRepo string   `json:"sourceRepo,omitempty"`
 	Origins    []string `json:"origins,omitempty"`
+
+	// Logins come from the pod's imagePullSecrets. They hold secrets, so they
+	// never reach JSON, which also keeps a rotated password out of SpecHash.
+	Logins []RegistryLogin `json:"-"`
+}
+
+// RegistryLogin is one registry credential the agent logs in with before applying.
+type RegistryLogin struct {
+	Server   string
+	Username string
+	Password string
 }
 
 // ImageList returns every image the workload runs, one per container.
@@ -202,6 +213,9 @@ type DesiredState struct {
 
 	Applications []Application `json:"applications"`
 	Networks     []Network     `json:"networks,omitempty"`
+
+	// Logins are the agent.yaml registries resolved from a Secret in Git.
+	Logins []RegistryLogin `json:"-"`
 }
 
 // App returns the application with the given name.

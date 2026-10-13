@@ -50,6 +50,8 @@ func renderStruct(b *strings.Builder, v, def reflect.Value, indent string, top b
 		case f.Type.Kind() == reflect.Struct && f.Type != reflect.TypeOf(time.Duration(0)):
 			fmt.Fprintf(b, "%s%s:\n", indent, key)
 			renderStruct(b, fv, reflect.Zero(f.Type), indent+"  ", false)
+		case f.Type.Kind() == reflect.Slice && f.Type.Elem().Kind() == reflect.Struct:
+			renderStructSlice(b, key, fv, indent)
 		case f.Type.Kind() == reflect.Slice:
 			renderScalarSlice(b, key, fv, indent)
 		case f.Type.Kind() == reflect.Pointer && f.Type.Elem().Kind() == reflect.Struct:
@@ -82,6 +84,32 @@ func renderScalarSlice(b *strings.Builder, key string, v reflect.Value, indent s
 	fmt.Fprintf(b, "%s%s:\n", indent, key)
 	for i := 0; i < v.Len(); i++ {
 		fmt.Fprintf(b, "%s  - %s\n", indent, yamlScalar(scalar(v.Index(i))))
+	}
+}
+
+// renderStructSlice writes a list of flat structs, or a commented example item when empty.
+func renderStructSlice(b *strings.Builder, key string, v reflect.Value, indent string) {
+	t := v.Type().Elem()
+	if v.Len() == 0 {
+		fmt.Fprintf(b, "%s# %s:\n", indent, key)
+		dash := "- "
+		for i := 0; i < t.NumField(); i++ {
+			if k, ex := yamlKey(t.Field(i)), t.Field(i).Tag.Get("example"); k != "" && ex != "" {
+				fmt.Fprintf(b, "%s#   %s%s: %s\n", indent, dash, k, ex)
+				dash = "  "
+			}
+		}
+		return
+	}
+	fmt.Fprintf(b, "%s%s:\n", indent, key)
+	for i := 0; i < v.Len(); i++ {
+		dash := "- "
+		for j := 0; j < t.NumField(); j++ {
+			if k := yamlKey(t.Field(j)); k != "" && !v.Index(i).Field(j).IsZero() {
+				fmt.Fprintf(b, "%s  %s%s: %s\n", indent, dash, k, yamlScalar(scalar(v.Index(i).Field(j))))
+				dash = "  "
+			}
+		}
 	}
 }
 

@@ -37,6 +37,9 @@ type fakeRuntime struct {
 	networksRemoved []string
 
 	imagePrunes int
+	// logins records "server user pass" per Login call.
+	logins   []string
+	loginErr error
 
 	applyErr  error
 	removeErr map[string]error
@@ -121,6 +124,13 @@ func (f *fakeRuntime) PruneImages(context.Context) (int, error) {
 	defer f.mu.Unlock()
 	f.imagePrunes++
 	return 0, nil
+}
+
+func (f *fakeRuntime) Login(_ context.Context, server, user, pass string) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.logins = append(f.logins, server+" "+user+" "+pass)
+	return f.loginErr
 }
 
 func (f *fakeRuntime) prunes() int {
@@ -524,5 +534,85 @@ func TestNewEngineRestrictsTheStateDirToTheAgentUser(t *testing.T) {
 	fi, err := os.Stat(cfg.StateDir)
 	if err != nil || fi.Mode().Perm() != 0o700 {
 		t.Fatalf("stateDir holds resolved secrets and must be 0700: %v %v", fi.Mode().Perm(), err)
+	}
+}
+
+func TestReconcileLogsInBeforeApplyingAndOnlyAgainWhenCredentialsChange(t *testing.T) {
+	rt := newFakeRuntime()
+	e, _ := newTestEngine(t, rt, oneApp)
+	e.cfg.Registries = []config.RegistryAuth{{Server: "registry.example.com", Username: "robot", Password: "env:PODCD_TEST_REG_PASS"}}
+	t.Setenv("PODCD_TEST_REG_PASS", "one")
+	ctx := context.Background()
+
+	rt.loginErr = errors.New("unauthorized")
+	if _, err := e.Reconcile(ctx, Options{}); err == nil || len(rt.applied) != 0 {
+		t.Fatalf("a failed login must stop the reconcile before anything is applied: err=%v applied=%v", err, rt.applied)
+	}
+	rt.loginErr = nil
+
+	for range 2 {
+		if _, err := e.Reconcile(ctx, Options{}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if len(rt.applied) != 1 {
+		t.Fatalf("applied %v", rt.applied)
+	}
+	// The failed attempt, then one success; the steady state does not log in again.
+	if strings.Join(rt.logins, ",") != "registry.example.com robot one,registry.example.com robot one" {
+		t.Fatalf("logins %q", rt.logins)
+	}
+
+	t.Setenv("PODCD_TEST_REG_PASS", "two")
+	if _, err := e.Reconcile(ctx, Options{}); err != nil {
+		t.Fatal(err)
+	}
+	if got := rt.logins[len(rt.logins)-1]; len(rt.logins) != 3 || got != "registry.example.com robot two" {
+		t.Fatalf("a rotated password must log in again: %q", rt.logins)
+	}
+}
+
+const appWithPullSecrets = `apiVersion: v1
+kind: Secret
+metadata: {name: default-pull}
+stringData: {username: robot, password: from-git}
+---
+apiVersion: v1
+kind: Secret
+metadata: {name: other-pull}
+stringData: {username: robot, password: different}
+---
+apiVersion: v1
+kind: Pod
+metadata: {name: api}
+spec:
+  containers:
+    - name: api
+      image: registry.example.com/api@sha256:aaaa
+---
+apiVersion: gitops.podcd.io/v1
+kind: Host
+metadata: {name: vm-1}
+spec:
+  applications: [api]
+`
+
+func TestReconcileLogsInWithTheSecretRefAndRefusesConflictingPullSecrets(t *testing.T) {
+	rt := newFakeRuntime()
+	e, repo := newTestEngine(t, rt, appWithPullSecrets)
+	e.cfg.Registries = []config.RegistryAuth{{Server: "registry.example.com", SecretRef: "default-pull"}}
+	ctx := context.Background()
+
+	if _, err := e.Reconcile(ctx, Options{}); err != nil {
+		t.Fatal(err)
+	}
+	if strings.Join(rt.logins, ",") != "registry.example.com robot from-git" {
+		t.Fatalf("logins %q", rt.logins)
+	}
+
+	// A pod naming different credentials for the same registry cannot share the one login.
+	writeRepo(t, repo, strings.Replace(appWithPullSecrets, "spec:\n  containers:", "spec:\n  imagePullSecrets: [{name: other-pull}]\n  containers:", 1))
+	if _, err := e.Reconcile(ctx, Options{}); err == nil || !strings.Contains(err.Error(), "two different credentials") {
+		t.Fatalf("want a conflict, got %v", err)
 	}
 }
