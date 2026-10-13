@@ -296,7 +296,7 @@ func (e *Engine) registryLogins(ctx context.Context, index *config.Index, prov *
 		if !ok {
 			doc, found := index.Secrets[reg.SecretRef]
 			if !found {
-				return nil, fmt.Errorf("registry %s: Secret %q is not defined in Git (define it, or provision it with an ExternalSecret)", reg.Server, reg.SecretRef)
+				return nil, fmt.Errorf("registry %s: no ExternalSecret provisions Secret %q and no Secret of that name is in Git", reg.Server, reg.SecretRef)
 			}
 			sec = doc.Spec
 		}
