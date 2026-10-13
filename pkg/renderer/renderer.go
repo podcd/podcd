@@ -222,6 +222,9 @@ func (r *Renderer) renderKube(app model.Application, u Unit) (Unit, error) {
 			fmt.Fprintf(&b, "Network=%s\n", n)
 		}
 	}
+	// Without it kube play builds a missing image from any ./<image-name>/ with a
+	// Containerfile, and the unit's cwd is $HOME: a stray checkout replaces the pull.
+	b.WriteString("PodmanArgs=--build=false\n")
 	b.WriteString("\n")
 	writeService(&b, app)
 	writeInstall(&b)

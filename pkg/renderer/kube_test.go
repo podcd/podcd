@@ -33,7 +33,7 @@ func TestKubeUnitPointsAtTheManifest(t *testing.T) {
 		t.Errorf("manifest path = %q", u.ManifestPath)
 	}
 	got := string(u.Content)
-	for _, want := range []string{"[Kube]", "Yaml=/kube/web.yaml", "WantedBy=default.target", "# podcd-manifest-hash: " + u.ManifestHash} {
+	for _, want := range []string{"[Kube]", "Yaml=/kube/web.yaml", "PodmanArgs=--build=false", "WantedBy=default.target", "# podcd-manifest-hash: " + u.ManifestHash} {
 		if !strings.Contains(got, want) {
 			t.Errorf("unit is missing %q:\n%s", want, got)
 		}
@@ -98,6 +98,9 @@ func TestQuadletAcceptsAKubeUnit(t *testing.T) {
 	}
 	if !strings.Contains(text, "kube play") || !strings.Contains(text, u.ManifestPath) {
 		t.Fatalf("expected a kube play command for the manifest:\n%s", text)
+	}
+	if !strings.Contains(text, "--build=false") {
+		t.Fatalf("kube play must never build images:\n%s", text)
 	}
 }
 
