@@ -72,15 +72,16 @@ func IsReference(v string) bool {
 
 // Resolve looks up one "scheme:locator" reference.
 func (r *Resolver) Resolve(ctx context.Context, ref string) (string, error) {
+	// Until a provider claims it, ref may be a pasted literal secret: keep it out of the error.
 	scheme, locator, ok := SplitRef(ref)
 	if !ok {
-		return "", fmt.Errorf("secret reference %q must be \"scheme:locator\" (known schemes: %s)",
-			ref, strings.Join(r.Schemes(), ", "))
+		return "", fmt.Errorf("not a secret reference: want \"scheme:locator\" (known schemes: %s)",
+			strings.Join(r.Schemes(), ", "))
 	}
 	p, ok := r.providers[scheme]
 	if !ok {
-		return "", fmt.Errorf("secret reference %q: no provider for scheme %q (known schemes: %s)",
-			ref, scheme, strings.Join(r.Schemes(), ", "))
+		return "", fmt.Errorf("not a secret reference: unknown scheme (known schemes: %s)",
+			strings.Join(r.Schemes(), ", "))
 	}
 	v, err := p.Resolve(ctx, locator)
 	if err != nil {

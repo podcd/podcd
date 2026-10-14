@@ -5,8 +5,20 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 )
+
+func TestResolveNeverEchoesAnUnresolvableValue(t *testing.T) {
+	// A literal password can pass the shape check ("hunter:Secret123"); the error is logged on every retry.
+	r := Default(t.TempDir(), "")
+	for _, literal := range []string{"hunter:Secret123", "Secret123"} {
+		_, err := r.Resolve(context.Background(), literal)
+		if err == nil || strings.Contains(err.Error(), "Secret123") || strings.Contains(err.Error(), "hunter") {
+			t.Errorf("Resolve(%q) error = %v; want an error without the value", literal, err)
+		}
+	}
+}
 
 func TestEnvProviderFileWinsOverTheProcessEnvironment(t *testing.T) {
 	// Under systemd the process environment holds whatever the file said at start-up.
