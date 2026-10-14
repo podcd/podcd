@@ -13,25 +13,41 @@ jobs:
   lint:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
         with:
-          fetch-depth: 0 # .golangci.yml diffs against origin/main
-      - uses: actions/setup-go@v5
+          persist-credentials: false
+      - uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff # v5.6.0
         with:
           go-version-file: go.mod
       - run: go vet ./...
       - name: gofmt check
         run: test -z "$(gofmt -l .)"
-      # Same linter version as `make lint`; findings show inline on the PR.
-      - uses: golangci/golangci-lint-action@v9
+      # Findings show inline on the PR. Keep version in sync with GOLANGCILINT_VERSION in the Makefile.
+      - uses: golangci/golangci-lint-action@ba0d7d2ec06a0ea1cb5fa41b2e4a3ab91d21278a # v9.3.0
         with:
           version: v2.13.2
           args: --timeout 10m
+          # shortcut: ~300 older findings would fail every run, so only the PR's
+          # (or the push's) changes are checked. Fix them, then drop this.
+          only-new-issues: true
+
+  # Security linter for the workflow files themselves (pinning, credentials,
+  # injection). Results go to the Security tab.
+  zizmor:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      security-events: write
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          persist-credentials: false
+      - uses: zizmorcore/zizmor-action@cc914d7f3750a2d13d75c7f184a1060aa0e9d482 # v0.6.4
 
   govulncheck:
     runs-on: ubuntu-latest
     steps:
-      - uses: golang/govulncheck-action@v1
+      - uses: golang/govulncheck-action@032d45514ae346b1db93c04b0c90b841c370344f # v1.1.0
         with:
           go-version-file: go.mod
 
@@ -42,8 +58,10 @@ jobs:
       checks: write        # the test report on the PR
       pull-requests: write # the test summary comment
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-go@v5
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          persist-credentials: false
+      - uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff # v5.6.0
         with:
           go-version-file: go.mod
 
@@ -61,7 +79,7 @@ jobs:
           } >> "$GITHUB_STEP_SUMMARY"
 
       - name: publish test report
-        uses: mikepenz/action-junit-report@v5
+        uses: mikepenz/action-junit-report@3585e9575db828022551b4231f165eb59a0e74e3 # v5.6.2
         if: always()
         with:
           report_paths: junit.xml
@@ -71,7 +89,7 @@ jobs:
 
       # Optional: set CODECOV_TOKEN in the repository secrets to get coverage
       # trends and per-PR diffs on codecov.io. Without it this step is a no-op.
-      - uses: codecov/codecov-action@v4
+      - uses: codecov/codecov-action@b9fd7d16f6d7d1b5d2bec1a2887e65ceed900238 # v4.6.0
         if: always() && env.CODECOV_TOKEN != ''
         env:
           CODECOV_TOKEN: ${{ secrets.CODECOV_TOKEN }}
@@ -81,7 +99,7 @@ jobs:
           flags: unit
           fail_ci_if_error: false
 
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         if: always()
         with:
           name: test-results
@@ -94,7 +112,9 @@ jobs:
   image:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          persist-credentials: false
       - name: install podman
         run: sudo apt-get update -qq && sudo apt-get install -y -qq podman uidmap
       - run: make image VERSION=ci IMAGE=podcd:ci
@@ -115,8 +135,10 @@ jobs:
     needs: build-test
     continue-on-error: true
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-go@v5
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          persist-credentials: false
+      - uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff # v5.6.0
         with:
           go-version-file: go.mod
       - name: install podman
@@ -131,8 +153,10 @@ jobs:
     needs: build-test
     continue-on-error: true
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-go@v5
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          persist-credentials: false
+      - uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff # v5.6.0
         with:
           go-version-file: go.mod
       - run: make test-e2e-docker

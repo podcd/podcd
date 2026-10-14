@@ -21,8 +21,3 @@ linters:
       excludes:
         - G204 # podcd runs podman, docker, git and systemctl by design
         - G304 # podcd reads files from the Git repository it reconciles by design
-
-issues:
-  # shortcut: only code changed since origin/main is checked, so ~300 older
-  # findings do not block PRs. Fix them, then delete this line.
-  new-from-merge-base: origin/main
