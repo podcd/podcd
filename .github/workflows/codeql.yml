@@ -1,10 +1,20 @@
 name: CodeQL
 
+# Docs-only changes skip this workflow (docs.yml builds those). If a check from
+# here ever becomes required, switch to per-job filtering: a skipped workflow
+# leaves a required check pending forever.
 on:
   push:
     branches: [main]
+    paths-ignore: &no-code
+      - 'docs/**'
+      - '**.md'
+      - 'assets/**'
+      - LICENSE
+      - '.github/ISSUE_TEMPLATE/**'
   pull_request:
     branches: [main]
+    paths-ignore: *no-code
   schedule:
     - cron: '27 4 * * 1'
 
