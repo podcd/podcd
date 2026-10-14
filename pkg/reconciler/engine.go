@@ -4,7 +4,6 @@ package reconciler
 
 import (
 	"context"
-	"crypto/sha256"
 	"errors"
 	"fmt"
 	"log/slog"
@@ -41,8 +40,8 @@ type Engine struct {
 	source *Source
 	log    *slog.Logger
 
-	// logins maps a registry to a digest of the credentials last logged in with.
-	logins map[string][sha256.Size]byte
+	// logins maps a registry to the credentials last logged in with.
+	logins map[string]model.RegistryLogin
 }
 
 // NewEngine builds an engine from the agent configuration.
@@ -335,17 +334,16 @@ func (e *Engine) login(ctx context.Context, desired model.DesiredState) error {
 	}
 	for _, server := range slices.Sorted(maps.Keys(want)) {
 		l := want[server]
-		sum := sha256.Sum256([]byte(l.Username + "\x00" + l.Password))
-		if prev, ok := e.logins[server]; ok && prev == sum {
+		if prev, ok := e.logins[server]; ok && prev == l {
 			continue
 		}
 		if err := e.rt.Login(ctx, server, l.Username, l.Password); err != nil {
 			return err
 		}
 		if e.logins == nil {
-			e.logins = map[string][sha256.Size]byte{}
+			e.logins = map[string]model.RegistryLogin{}
 		}
-		e.logins[server] = sum
+		e.logins[server] = l
 		e.log.Info("logged in to registry", "server", server, "username", l.Username)
 	}
 	return nil
