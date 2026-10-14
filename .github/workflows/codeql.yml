@@ -1,0 +1,41 @@
+name: CodeQL
+
+# Docs-only changes skip this workflow (docs.yml builds those). If a check from
+# here ever becomes required, switch to per-job filtering: a skipped workflow
+# leaves a required check pending forever.
+on:
+  push:
+    branches: [main]
+    paths-ignore: &no-code
+      - 'docs/**'
+      - '**.md'
+      - 'assets/**'
+      - LICENSE
+      - '.github/ISSUE_TEMPLATE/**'
+  pull_request:
+    branches: [main]
+    paths-ignore: *no-code
+  schedule:
+    - cron: '27 4 * * 1'
+
+permissions:
+  contents: read
+
+jobs:
+  analyze:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      security-events: write # upload results to the Security tab
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          persist-credentials: false
+      - uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff # v5.6.0
+        with:
+          go-version-file: go.mod
+      - uses: github/codeql-action/init@24c54180a607b1449ed407dd24f251e4e9147c8d # v4.38.3
+        with:
+          languages: go
+          build-mode: autobuild
+      - uses: github/codeql-action/analyze@24c54180a607b1449ed407dd24f251e4e9147c8d # v4.38.3
