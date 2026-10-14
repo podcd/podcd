@@ -1,0 +1,23 @@
+# CodeRabbit AI review: free on public repositories. Takes effect once the
+# CodeRabbit GitHub App is installed on the repository.
+# yaml-language-server: $schema=https://coderabbit.ai/integrations/schema.v2.json
+language: en-US
+reviews:
+  profile: chill
+  auto_review:
+    enabled: true
+    drafts: false
+  path_filters:
+    - "!dist/**"
+    - "!docs/build/**"
+    - "!**/*.sum"
+  path_instructions:
+    - path: "**/*.go"
+      instructions: >-
+        A secret value must never reach Git, a unit file, a log line or
+        state.json. Flag any change that could leak one. Check that errors
+        are wrapped with %w and that context is passed through.
+    - path: "**/*_test.go"
+      instructions: >-
+        Unit tests must stay fast: no containers and no network. Anything
+        that needs real podman, docker or systemd belongs in test/e2e.
