@@ -475,7 +475,7 @@ func TestDockerMatrixFailingLivenessProbeIsExplained(t *testing.T) {
         periodSeconds: 1
         failureThreshold: 2
 `))
-	_, _ = e.Reconcile(context.Background(), reconciler.Options{})
+	_, _ = e.Reconcile(context.Background(), reconciler.Options{SkipHealth: true})
 	deadline := time.Now().Add(40 * time.Second)
 	var h model.Health
 	for time.Now().Before(deadline) {

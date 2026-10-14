@@ -105,17 +105,17 @@ func TestMatrixExitedContainerIsUnhealthyWithItsExitCode(t *testing.T) {
 `))
 	// podcd's report is podman's state at that point in time, and a container
 	// that exits on start is `running` for a few hundred milliseconds first.
-	// Whether the reconcile's own health poll lands in that window or after
-	// it is timing, not behaviour, so what must hold is where the host
-	// settles: unhealthy, with no container left and the last output.
-	_, _ = e.Reconcile(context.Background(), reconciler.Options{})
+	// What must hold is where the host settles: unhealthy, with no container
+	// left and the last output. The test polls that itself, so the reconcile
+	// skips its own 30s health wait.
+	_, _ = e.Reconcile(context.Background(), reconciler.Options{SkipHealth: true})
 	h := settlesUnhealthy(t, e, 30*time.Second, "fatal: config missing")
 	if !strings.Contains(h.Message, "no containers") {
 		t.Errorf("message should say %q: %s", "no containers", h.Message)
 	}
 	// A further reconcile restarts the unit (the plan wants it running) and
 	// the container exits again, so the host settles the same way.
-	_, _ = e.Reconcile(context.Background(), reconciler.Options{})
+	_, _ = e.Reconcile(context.Background(), reconciler.Options{SkipHealth: true})
 	settlesUnhealthy(t, e, 30*time.Second, "fatal: config missing")
 }
 
@@ -186,7 +186,7 @@ func TestMatrixFailingLivenessProbeIsExplained(t *testing.T) {
         periodSeconds: 1
         failureThreshold: 2
 `))
-	_, _ = e.Reconcile(context.Background(), reconciler.Options{})
+	_, _ = e.Reconcile(context.Background(), reconciler.Options{SkipHealth: true})
 	deadline := time.Now().Add(40 * time.Second)
 	var h model.Health
 	for time.Now().Before(deadline) {
