@@ -2,6 +2,8 @@ version: 2
 updates:
   - package-ecosystem: gomod
     directory: /
+    cooldown:
+      default-days: 7 # let a bad release get yanked before we take it
     schedule:
       interval: weekly
     groups:
@@ -10,6 +12,8 @@ updates:
 
   - package-ecosystem: github-actions
     directory: /
+    cooldown:
+      default-days: 7 # let a bad release get yanked before we take it
     schedule:
       interval: weekly
     groups:
@@ -18,6 +22,8 @@ updates:
 
   - package-ecosystem: npm
     directory: /docs
+    cooldown:
+      default-days: 7 # let a bad release get yanked before we take it
     schedule:
       interval: monthly
     groups:
