@@ -46,7 +46,7 @@ Everything the agent owns is under its user's home:
 
 ## Metrics
 
-With `metricsAddress` set (e.g. `127.0.0.1:9464`), the agent serves `GET /metrics` in the Prometheus text format, rendered from `state.json` on every scrape:
+With `metricsEnabled: true`, the agent serves `GET /metrics` on `metricsAddress` (default `127.0.0.1:9464`) in the Prometheus text format, rendered from `state.json` on every scrape:
 
 | Metric | Meaning |
 |---|---|

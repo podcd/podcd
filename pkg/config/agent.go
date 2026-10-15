@@ -75,7 +75,8 @@ type AgentConfig struct {
 
 	LogFormat string `yaml:"logFormat,omitempty" doc:"text or json."`
 
-	MetricsAddress string `yaml:"metricsAddress,omitempty" doc:"Serve Prometheus metrics at http://<address>/metrics, e.g. 127.0.0.1:9464. Empty (the default) serves nothing: the agent listens on no port unless asked to."`
+	MetricsEnabled bool   `yaml:"metricsEnabled,omitempty" doc:"Serve Prometheus metrics at http://<metricsAddress>/metrics. Off by default: the agent listens on no port unless asked to."`
+	MetricsAddress string `yaml:"metricsAddress,omitempty" doc:"host:port the metrics are served on, when metricsEnabled."`
 
 	// Path this config was read from, for diagnostics.
 	Path string `yaml:"-"`
@@ -95,6 +96,7 @@ func DefaultAgentConfig() AgentConfig {
 		SecretsDir:       "",
 		Prune:            &prune,
 		LogFormat:        "text",
+		MetricsAddress:   "127.0.0.1:9464",
 	}
 }
 
@@ -192,6 +194,7 @@ func (c *AgentConfig) applyDefaults() {
 	}
 	c.Runtime = cmp.Or(c.Runtime, d.Runtime)
 	c.LogFormat = cmp.Or(c.LogFormat, d.LogFormat)
+	c.MetricsAddress = cmp.Or(c.MetricsAddress, d.MetricsAddress)
 	c.StateDir = expandPath(cmp.Or(c.StateDir, d.StateDir))
 	c.UnitDir = expandPath(cmp.Or(c.UnitDir, d.UnitDir))
 	c.EnvFile = expandPath(c.EnvFile)

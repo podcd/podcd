@@ -512,6 +512,16 @@ func TestImagePruneDefaultsOff(t *testing.T) {
 	}
 }
 
+func TestMetricsAreOffWithALoopbackDefault(t *testing.T) {
+	cfg, err := ParseAgentConfig([]byte("envFile: /e\nrepository: {url: https://example.com/r.git}\n"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.MetricsEnabled || cfg.MetricsAddress != "127.0.0.1:9464" {
+		t.Errorf("metricsEnabled = %v, metricsAddress = %q", cfg.MetricsEnabled, cfg.MetricsAddress)
+	}
+}
+
 func TestMetricsAddressMustBeHostPort(t *testing.T) {
 	base := "envFile: /e\nrepository: {url: https://example.com/r.git}\n"
 	for addr, ok := range map[string]bool{

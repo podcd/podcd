@@ -2,7 +2,7 @@
 #
 # It runs as an ordinary, unprivileged user. That user owns its containers and
 # nothing else; nothing here needs root, and nothing here listens on a port
-# unless the agent config sets metricsAddress.
+# unless the agent config sets metricsEnabled.
 #
 # `podcd install` writes it to ~/.config/systemd/user/podcd-agent.service with
 # ExecStart naming the agent config and EnvironmentFile the envFile that config

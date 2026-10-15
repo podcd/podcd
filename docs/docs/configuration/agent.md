@@ -112,10 +112,12 @@ repository:
 # text or json.
 # logFormat: text
 
-# Serve Prometheus metrics at http://<address>/metrics, e.g. 127.0.0.1:9464.
-# Empty (the default) serves nothing: the agent listens on no port unless
-# asked to.
-# metricsAddress: ""
+# Serve Prometheus metrics at http://<metricsAddress>/metrics. Off by default:
+# the agent listens on no port unless asked to.
+# metricsEnabled: false
+
+# host:port the metrics are served on, when metricsEnabled.
+# metricsAddress: 127.0.0.1:9464
 ```
 
 ## Editing it
