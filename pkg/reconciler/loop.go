@@ -4,7 +4,6 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"log/slog"
 	"math/rand"
 	"time"
 )
@@ -43,7 +42,7 @@ func (e *Engine) Run(ctx context.Context) error {
 		}
 
 		backoff = e.cfg.RetryInterval
-		idle = logReconciled(ctx, e, res, idle)
+		idle = logReconciled(e, res, idle)
 
 		// Only after success: every desired app is running, so its image is in use.
 		if e.cfg.ImagePrune > 0 && time.Since(lastImagePrune) >= e.cfg.ImagePrune {
@@ -93,7 +92,7 @@ type idleLog struct {
 // logReconciled reports an idle pass at info once, then at debug until the revisions, the
 // application count or the offline repositories change, something is applied, a reconcile
 // fails or idleHeartbeat passes. It returns the new idle state.
-func logReconciled(ctx context.Context, e *Engine, res Result, idle idleLog) idleLog {
+func logReconciled(e *Engine, res Result, idle idleLog) idleLog {
 	rev := res.Desired.RevisionString()
 	took := res.Elapsed.Round(time.Millisecond).String()
 	if len(res.Applied) > 0 {
@@ -112,10 +111,10 @@ func logReconciled(ctx context.Context, e *Engine, res Result, idle idleLog) idl
 	// Full shas and quoted names, so no two different states share a key.
 	key := fmt.Sprintf("%q|%d|%q", res.Desired.Revisions, len(res.Desired.Applications), res.Offline)
 	if key == idle.key && time.Since(idle.at) < idleHeartbeat {
-		e.log.Log(ctx, slog.LevelDebug, "nothing to do", args...)
+		e.log.Debug("nothing to do", args...)
 		return idle
 	}
-	e.log.Log(ctx, slog.LevelInfo, "nothing to do", args...)
+	e.log.Info("nothing to do", args...)
 	return idleLog{key: key, at: time.Now()}
 }
 

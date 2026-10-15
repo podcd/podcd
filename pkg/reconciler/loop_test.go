@@ -51,7 +51,7 @@ func TestSteadyIdleDropsToDebugUntilSomethingChanges(t *testing.T) {
 			idle.at = idle.at.Add(-idleHeartbeat)
 		}
 		buf.Reset()
-		idle = logReconciled(context.Background(), e, step.res, idle)
+		idle = logReconciled(e, step.res, idle)
 		if got := buf.String(); !strings.Contains(got, step.want) {
 			t.Fatalf("step %d: want %q, logged %q", i, step.want, got)
 		}
