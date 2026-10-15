@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"net"
 	"os"
 	"os/user"
 	"path/filepath"
@@ -73,6 +74,8 @@ type AgentConfig struct {
 	Prune *bool `yaml:"prune,omitempty" doc:"Remove applications that Git no longer declares. On by default; leaving orphans running is its own kind of drift."`
 
 	LogFormat string `yaml:"logFormat,omitempty" doc:"text or json."`
+
+	MetricsAddress string `yaml:"metricsAddress,omitempty" doc:"Serve Prometheus metrics at http://<address>/metrics, e.g. 127.0.0.1:9464. Empty (the default) serves nothing: the agent listens on no port unless asked to."`
 
 	// Path this config was read from, for diagnostics.
 	Path string `yaml:"-"`
@@ -268,6 +271,11 @@ func (c AgentConfig) Validate() error {
 	}
 	if c.LogFormat != "text" && c.LogFormat != "json" {
 		p.add("logFormat %q must be text or json", c.LogFormat)
+	}
+	if c.MetricsAddress != "" {
+		if _, port, err := net.SplitHostPort(c.MetricsAddress); err != nil || port == "" {
+			p.add("metricsAddress %q must be host:port, e.g. 127.0.0.1:9464", c.MetricsAddress)
+		}
 	}
 	return p.err()
 }

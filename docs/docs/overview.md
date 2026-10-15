@@ -43,3 +43,27 @@ Everything the agent owns is under its user's home:
 ~/.config/containers/systemd/       Quadlet units podcd wrote
 ~/.local/state/podcd/               checkouts, played manifests, state.json
 ```
+
+## Metrics
+
+With `metricsAddress` set (e.g. `127.0.0.1:9464`), the agent serves `GET /metrics` in the Prometheus text format, rendered from `state.json` on every scrape:
+
+| Metric | Meaning |
+|---|---|
+| `podcd_info{version,host}` | Always 1; the agent's version and host. |
+| `podcd_last_attempt_timestamp_seconds` | When the last reconcile started, successful or not. |
+| `podcd_last_success_timestamp_seconds` | When the last successful reconcile started. |
+| `podcd_consecutive_failures` | Reconciles failed since the last success. |
+| `podcd_repository_offline{repository}` | 1 if the last reconcile used the commit on disk because the remote was unreachable. |
+| `podcd_application_healthy{application}` | 1 if the application's last health check passed. |
+
+A port that cannot be bound is logged and the agent keeps reconciling. To scrape a loopback address from a container, e.g. Grafana Alloy deployed by podcd, give its pod `hostNetwork: true`:
+
+```alloy
+prometheus.scrape "podcd" {
+  targets    = [{"__address__" = "127.0.0.1:9464"}]
+  forward_to = [prometheus.remote_write.default.receiver] // or otelcol.receiver.prometheus for OTLP
+}
+```
+
+Useful alerts: `time() - podcd_last_success_timestamp_seconds > 900` (the agent is stuck, failing or gone), `podcd_application_healthy == 0`, and `podcd_repository_offline == 1` for longer than an outage you tolerate.

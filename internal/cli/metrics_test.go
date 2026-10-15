@@ -1,0 +1,48 @@
+package cli
+
+import (
+	"context"
+	"io"
+	"net"
+	"net/http"
+	"strings"
+	"testing"
+)
+
+func TestMetricsAreServedUntilTheAgentStops(t *testing.T) {
+	newFakeHost(t, hostWith())
+	if out, code := run(t, "reconcile"); code != 0 {
+		t.Fatal(out)
+	}
+	env, err := setup(configFlags{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan error, 1)
+	go func() { done <- serveMetrics(ctx, ln, env.engine) }()
+
+	resp, err := http.Get("http://" + ln.Addr().String() + "/metrics")
+	if err != nil {
+		t.Fatal(err)
+	}
+	body, _ := io.ReadAll(resp.Body)
+	_ = resp.Body.Close()
+	if resp.StatusCode != http.StatusOK || !strings.HasPrefix(resp.Header.Get("Content-Type"), "text/plain; version=0.0.4") {
+		t.Fatalf("%s %s", resp.Status, resp.Header.Get("Content-Type"))
+	}
+	for _, line := range []string{`host="vm-1"} 1`, "podcd_last_success_timestamp_seconds ", "podcd_consecutive_failures 0"} {
+		if !strings.Contains(string(body), line) {
+			t.Errorf("missing %q in:\n%s", line, body)
+		}
+	}
+
+	cancel()
+	if err := <-done; err != nil {
+		t.Fatalf("a stopping agent is not a metrics failure: %v", err)
+	}
+}

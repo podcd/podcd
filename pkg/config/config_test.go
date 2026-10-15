@@ -511,3 +511,19 @@ func TestImagePruneDefaultsOff(t *testing.T) {
 		t.Error("a negative imagePrune must be refused")
 	}
 }
+
+func TestMetricsAddressMustBeHostPort(t *testing.T) {
+	base := "envFile: /e\nrepository: {url: https://example.com/r.git}\n"
+	for addr, ok := range map[string]bool{
+		`""`:             true,
+		"127.0.0.1:9464": true,
+		":9464":          true,
+		"9464":           false,
+		"localhost:":     false,
+	} {
+		_, err := ParseAgentConfig([]byte(base + "metricsAddress: " + addr))
+		if (err == nil) != ok {
+			t.Errorf("metricsAddress %s: err = %v, want ok = %v", addr, err, ok)
+		}
+	}
+}
