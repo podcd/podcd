@@ -88,9 +88,9 @@ func TestGetKindTablesAndNames(t *testing.T) {
 	if !strings.Contains(out, "NAME  ENVIRONMENT  GROUPS  APPLICATIONS") || !strings.Contains(out, "vm-2  prod         web") {
 		t.Errorf("hosts table:\n%s", out)
 	}
-	out, _ = run(t, "get", "apps", "--repo", dir)
+	out, _ = run(t, "get", "pods", "--repo", dir)
 	if !strings.Contains(out, "CONTAINERS") || !strings.Contains(out, "8080→80") {
-		t.Errorf("applications table:\n%s", out)
+		t.Errorf("pods table:\n%s", out)
 	}
 	out, _ = run(t, "get", "pod", "side", "-o", "yaml", "--repo", dir)
 	if !strings.HasPrefix(out, "kind: Pod\n") || !strings.Contains(out, "hostPort: 8082") {
@@ -127,22 +127,7 @@ func TestGetReadsAGitURL(t *testing.T) {
 }
 
 func TestGetDefaultsToTheAgentConfigRepository(t *testing.T) {
-	if _, err := exec.LookPath("git"); err != nil {
-		t.Skip("git not available")
-	}
-	dir := repoWithEverything(t)
-	for _, args := range [][]string{{"init", "-q", "-b", "main"}, {"add", "-A"}, {"-c", "user.email=t@e.x", "-c", "user.name=t", "commit", "-qm", "init"}} {
-		cmd := exec.Command("git", args...)
-		cmd.Dir = dir
-		if out, err := cmd.CombinedOutput(); err != nil {
-			t.Fatalf("git %v: %v\n%s", args, err, out)
-		}
-	}
-	state := t.TempDir()
-	cfg := filepath.Join(state, "agent.yaml")
-	if err := os.WriteFile(cfg, []byte("host: vm-1\nstateDir: "+state+"\nenvFile: "+filepath.Join(state, "agent.env")+"\nrepository:\n  name: gitops\n  url: "+dir+"\n"), 0o644); err != nil {
-		t.Fatal(err)
-	}
+	cfg := agentConfigFor(t, repoWithEverything(t), "vm-1")
 	out, code := run(t, "--config", cfg, "get", "hosts")
 	if code != 0 || !strings.Contains(out, "gitops/hosts.yaml:") || !strings.Contains(out, "vm-2") {
 		t.Fatalf("get via agent.yaml should fetch the configured repository:\n%s", out)
@@ -242,5 +227,218 @@ func TestCreatePrintsAStreamReadyToAppend(t *testing.T) {
 	}
 	if _, code := run(t, "create", "pod", "api", "--image", "ghcr.io/you/api"+testDigest, "--to", "x"); code == 0 {
 		t.Fatal("--to must not exist any more")
+	}
+}
+
+// repoWithTemplate is repoWithEverything plus api.yaml.tpl, a templated Pod.
+func repoWithTemplate(t *testing.T) string {
+	t.Helper()
+	t.Setenv("HOME", t.TempDir()) // keep the developer's own agent config out
+	t.Setenv("XDG_CONFIG_HOME", "")
+	dir := repoWithEverything(t)
+	tpl := "apiVersion: v1\nkind: Pod\nmetadata:\n  name: '{{ default \"api\" .Values.name }}'\nspec:\n  containers:\n    - name: api\n      image: ghcr.io/you/api" + testDigest + "\n"
+	if err := os.WriteFile(filepath.Join(dir, "api.yaml.tpl"), []byte(tpl), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	return dir
+}
+
+// agentConfigFor commits dir and writes an agent.yaml that reconciles it as host.
+func agentConfigFor(t *testing.T, dir, host string) string {
+	t.Helper()
+	if _, err := exec.LookPath("git"); err != nil {
+		t.Skip("git not available")
+	}
+	t.Setenv("PODCD_HOST", "") // it beats the config's host:
+	for _, args := range [][]string{{"init", "-q", "-b", "main"}, {"add", "-A"}, {"-c", "user.email=t@e.x", "-c", "user.name=t", "commit", "-qm", "init"}} {
+		cmd := exec.Command("git", args...)
+		cmd.Dir = dir
+		if out, err := cmd.CombinedOutput(); err != nil {
+			t.Fatalf("git %v: %v\n%s", args, err, out)
+		}
+	}
+	state := t.TempDir()
+	cfg := filepath.Join(state, "agent.yaml")
+	if err := os.WriteFile(cfg, []byte("host: "+host+"\nstateDir: "+state+"\nenvFile: "+filepath.Join(state, "agent.env")+"\nrepository:\n  name: gitops\n  url: "+dir+"\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	return cfg
+}
+
+// A Pod in a template is still a Pod: get renders it for the host.
+func TestGetRendersTemplatesForTheHost(t *testing.T) {
+	out, code := run(t, "get", "pods", "--repo", repoWithTemplate(t), "--host", "vm-2")
+	if code != 0 || !strings.Contains(out, "api.yaml.tpl:1") || !strings.Contains(out, "side") {
+		t.Fatalf("%d\n%s", code, out)
+	}
+}
+
+func TestGetWithoutAHostNamesTheSkippedTemplates(t *testing.T) {
+	out, code := run(t, "get", "pods", "--repo", repoWithTemplate(t))
+	if code != 0 || !strings.Contains(out, "warning: 1 template(s) not listed: pass --host") || strings.Contains(out, "api.yaml.tpl") {
+		t.Fatalf("%d\n%s", code, out)
+	}
+}
+
+func TestGetOfATemplatedNameWithoutAHostPointsAtHost(t *testing.T) {
+	out, code := run(t, "get", "pod", "api", "--repo", repoWithTemplate(t))
+	if code == 0 || !strings.Contains(out, "1 template(s) were not rendered, pass --host") {
+		t.Fatalf("%d\n%s", code, out)
+	}
+}
+
+// As in lint: a --host the repository does not define is a mistake.
+func TestGetWithAnUnknownHostIsAnError(t *testing.T) {
+	out, code := run(t, "get", "pods", "--repo", repoWithTemplate(t), "--host", "nosuchhost")
+	if code == 0 || !strings.Contains(out, `no Host document matches "nosuchhost"`) {
+		t.Fatalf("%d\n%s", code, out)
+	}
+}
+
+// Whatever the kind: hosts come from no template, but --host still names one.
+func TestGetHostsWithAnUnknownHostIsAnError(t *testing.T) {
+	out, code := run(t, "get", "hosts", "--repo", repoWithTemplate(t), "--host", "nosuchhost")
+	if code == 0 || !strings.Contains(out, `no Host document matches "nosuchhost"`) {
+		t.Fatalf("%d\n%s", code, out)
+	}
+}
+
+// Hosts come from no template, so a broken one must not hide them.
+func TestGetHostsIgnoresABrokenTemplate(t *testing.T) {
+	dir := repoWithTemplate(t)
+	if err := os.WriteFile(filepath.Join(dir, "broken.yaml.tpl"), []byte("{{ .Values.missing.key }}"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	out, code := run(t, "get", "hosts", "--repo", dir, "--host", "vm-2")
+	if code != 0 || !strings.Contains(out, "vm-2") {
+		t.Fatalf("%d\n%s", code, out)
+	}
+}
+
+func TestGetWithAnUnknownHostOnTheAgentsRepositoryIsAnError(t *testing.T) {
+	dir := repoWithTemplate(t)
+	out, code := run(t, "--config", agentConfigFor(t, dir, "vm-2"), "--host", "nosuchhost", "get", "pods")
+	if code == 0 || !strings.Contains(out, `no Host document matches "nosuchhost"`) {
+		t.Fatalf("%d\n%s", code, out)
+	}
+}
+
+// repoWithSecrets is repoWithTemplate plus a SecretStore and a templated ExternalSecret with four keys.
+func repoWithSecrets(t *testing.T) string {
+	t.Helper()
+	dir := repoWithTemplate(t)
+	store := "apiVersion: external-secrets.io/v1beta1\nkind: SecretStore\nmetadata: {name: local}\nspec:\n  provider:\n    env: {}\n"
+	es := "apiVersion: external-secrets.io/v1beta1\nkind: ExternalSecret\nmetadata: {name: api-creds}\nspec:\n  secretStoreRef: {name: local}\n  target: {name: '{{ default \"api-secret\" .Values.target }}'}\n  data:\n"
+	for _, k := range []string{"a", "b", "c", "d"} {
+		es += "    - {secretKey: " + k + ", remoteRef: {key: API_" + k + "}}\n"
+	}
+	for file, doc := range map[string]string{"stores.yaml": store, "creds.yaml.tpl": es} {
+		if err := os.WriteFile(filepath.Join(dir, file), []byte(doc), 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	return dir
+}
+
+// Every kind counts: scaffold's nginx, side, web, prod, vm-1, vm-2, and the store.
+func TestLintCountsEveryKind(t *testing.T) {
+	out, code := run(t, "lint", repoWithSecrets(t))
+	if code != 0 || !strings.Contains(out, "ok: 7 document(s) and 2 template(s) loaded") {
+		t.Fatalf("%d\n%s", code, out)
+	}
+}
+
+func TestGetListsSecretStores(t *testing.T) {
+	out, code := run(t, "get", "secretstores", "--repo", repoWithSecrets(t))
+	if code != 0 || !strings.Contains(out, "NAME   PROVIDER  SOURCE") || !strings.Contains(out, "local  env") {
+		t.Fatalf("%d\n%s", code, out)
+	}
+}
+
+// Rendered like any template; key names shown, the fourth only counted.
+func TestGetListsRenderedExternalSecrets(t *testing.T) {
+	out, code := run(t, "get", "externalsecrets", "--repo", repoWithSecrets(t), "--host", "vm-2")
+	if code != 0 || !strings.Contains(out, "api-creds  local  api-secret  a,b,c +1  creds.yaml.tpl:1") {
+		t.Fatalf("%d\n%s", code, out)
+	}
+}
+
+func TestGetRendersTheAgentsRepositoryForItsIdentity(t *testing.T) {
+	dir := repoWithTemplate(t)
+	out, code := run(t, "--config", agentConfigFor(t, dir, "vm-2"), "get", "pods")
+	if code != 0 || !strings.Contains(out, "gitops/api.yaml.tpl:1") {
+		t.Fatalf("%d\n%s", code, out)
+	}
+}
+
+// A workstation's hostname is no Host, and hosts come from no template: get lists them quietly.
+func TestGetHostsWithAnIdentityTheRepositoryLacks(t *testing.T) {
+	dir := repoWithTemplate(t)
+	out, code := run(t, "--config", agentConfigFor(t, dir, "laptop"), "get", "hosts")
+	if code != 0 || !strings.Contains(out, "vm-2") || strings.Contains(out, "warning") {
+		t.Fatalf("%d\n%s", code, out)
+	}
+}
+
+func TestGetPodsWithAnIdentityTheRepositoryLacksWarns(t *testing.T) {
+	dir := repoWithTemplate(t)
+	out, code := run(t, "--config", agentConfigFor(t, dir, "laptop"), "get", "pods")
+	if code != 0 || !strings.Contains(out, `warning: 1 template(s) not listed: no Host document matches "laptop"`) {
+		t.Fatalf("%d\n%s", code, out)
+	}
+}
+
+func TestGetRepoDirIgnoresTheAgentIdentity(t *testing.T) {
+	dir := repoWithTemplate(t)
+	out, code := run(t, "--config", agentConfigFor(t, dir, "vm-2"), "get", "pods", "--repo", dir)
+	if code != 0 || !strings.Contains(out, "warning: 1 template(s) not listed: pass --host") {
+		t.Fatalf("only --host renders another repository:\n%s", out)
+	}
+}
+
+// lol why not, let's test that the README's create commands actually run and produce valid documents.
+func TestInitReadmeCreateCommandsRun(t *testing.T) {
+	dir := t.TempDir()
+	if out, code := run(t, "init", dir); code != 0 {
+		t.Fatal(out)
+	}
+	readme, err := os.ReadFile(filepath.Join(dir, "README.md"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	n := 0
+	for _, line := range strings.Split(string(readme), "\n") {
+		line, _, _ = strings.Cut(strings.TrimSpace(line), " >>")
+		if !strings.HasPrefix(line, "podcd create ") {
+			continue
+		}
+		n++
+		if out, code := run(t, strings.Fields(line)[1:]...); code != 0 {
+			t.Errorf("README: %s\n%s", line, out)
+		}
+	}
+	if n == 0 {
+		t.Fatal("the README shows no create commands")
+	}
+}
+
+func TestCreateRejectsAnUnknownKind(t *testing.T) {
+	if out, code := run(t, "create", "application", "api", "--image", "x:1"); code == 0 || !strings.Contains(out, `unknown kind "application"`) {
+		t.Fatalf("%d\n%s", code, out)
+	}
+}
+
+// A subcommand's own flag mistake must not read as an unknown kind.
+func TestCreateSubcommandKeepsItsFlagError(t *testing.T) {
+	out, code := run(t, "create", "pod", "api", "--bogus")
+	if code == 0 || !strings.Contains(out, "unknown flag: --bogus") || strings.Contains(out, "unknown kind") {
+		t.Fatalf("%d\n%s", code, out)
+	}
+}
+
+func TestConfigHasAShortFlag(t *testing.T) {
+	missing := filepath.Join(t.TempDir(), "agent.yaml")
+	if out, _ := run(t, "-c", missing, "status"); !strings.Contains(out, missing) {
+		t.Fatalf("-c must name the config like --config:\n%s", out)
 	}
 }

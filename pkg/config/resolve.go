@@ -55,62 +55,9 @@ type ResolveOptions struct {
 // Output is sorted, so a commit always compiles to the same bytes.
 func (ix *Index) Resolve(ctx context.Context, opts ResolveOptions) (model.DesiredState, error) {
 	var zero model.DesiredState
-	if opts.Host == "" {
-		return zero, errors.New("no host identity: cannot decide what should run here")
-	}
-	host, ok := ix.Hosts[opts.Host]
-	if !ok {
-		known := ix.HostNames()
-		if len(known) == 0 {
-			return zero, fmt.Errorf("no Host document matches %q (no Host documents were found at all)", opts.Host)
-		}
-		return zero, fmt.Errorf("no Host document matches %q (known hosts: %s)", opts.Host, strings.Join(known, ", "))
-	}
-
-	// Layers, lowest precedence first; selected is the union of what they name.
-	var layers []layer
-	selected := map[string]bool{}
-	addLayer := func(label, repo string, spec SelectionSpec) error {
-		for _, n := range spec.Applications {
-			selected[n] = true
-		}
-		values, err := ix.layerValues(repo, spec.Values)
-		if err != nil {
-			return fmt.Errorf("%s: %w", label, err)
-		}
-		layers = append(layers, layer{label, spec.Overrides, spec.NetworkOverrides, values})
-		return nil
-	}
-
-	if e := host.Spec.Environment; e != "" {
-		env, ok := ix.Environments[e]
-		if !ok {
-			return zero, fmt.Errorf("%s: environment %q is not defined (known: %s)",
-				host.Source, e, strings.Join(slices.Sorted(maps.Keys(ix.Environments)), ", "))
-		}
-		if err := addLayer("environment/"+e, env.Source.Repo, env.Spec); err != nil {
-			return zero, err
-		}
-	}
-	for _, g := range host.Spec.Groups {
-		group, ok := ix.Groups[g]
-		if !ok {
-			return zero, fmt.Errorf("%s: group %q is not defined (known: %s)",
-				host.Source, g, strings.Join(slices.Sorted(maps.Keys(ix.Groups)), ", "))
-		}
-		if err := addLayer("group/"+g, group.Source.Repo, group.Spec); err != nil {
-			return zero, err
-		}
-	}
-	hostSelection := SelectionSpec{Applications: host.Spec.Applications, Overrides: host.Spec.Overrides, NetworkOverrides: host.Spec.NetworkOverrides, Values: host.Spec.Values}
-	if err := addLayer("host/"+opts.Host, host.Source.Repo, hostSelection); err != nil {
+	host, layers, selected, values, err := ix.hostLayers(opts.Host, opts.Values)
+	if err != nil {
 		return zero, err
-	}
-
-	// Values: same precedence, with agent.yaml's values below all layers.
-	values := opts.Values
-	for _, l := range layers {
-		values = MergeValues(values, l.values)
 	}
 
 	for _, ex := range host.Spec.ExcludeApplications {
@@ -264,6 +211,103 @@ type layer struct {
 	overrides        map[string]Override
 	networkOverrides map[string]Override
 	values           Values
+}
+
+// hostLayers looks up a host and collects its layers, lowest precedence first:
+// what they select, and their values merged onto base (agent.yaml's values).
+func (ix *Index) hostLayers(name string, base Values) (Doc[HostSpec], []layer, map[string]bool, Values, error) {
+	var zero Doc[HostSpec]
+	if name == "" {
+		return zero, nil, nil, nil, errors.New("no host identity: cannot decide what should run here")
+	}
+	host, ok := ix.Hosts[name]
+	if !ok {
+		known := ix.HostNames()
+		if len(known) == 0 {
+			return zero, nil, nil, nil, fmt.Errorf("no Host document matches %q (no Host documents were found at all)", name)
+		}
+		return zero, nil, nil, nil, fmt.Errorf("no Host document matches %q (known hosts: %s)", name, strings.Join(known, ", "))
+	}
+
+	// Layers, lowest precedence first; selected is the union of what they name.
+	var layers []layer
+	selected := map[string]bool{}
+	addLayer := func(label, repo string, spec SelectionSpec) error {
+		for _, n := range spec.Applications {
+			selected[n] = true
+		}
+		values, err := ix.layerValues(repo, spec.Values)
+		if err != nil {
+			return fmt.Errorf("%s: %w", label, err)
+		}
+		layers = append(layers, layer{label, spec.Overrides, spec.NetworkOverrides, values})
+		return nil
+	}
+
+	if e := host.Spec.Environment; e != "" {
+		env, ok := ix.Environments[e]
+		if !ok {
+			return zero, nil, nil, nil, fmt.Errorf("%s: environment %q is not defined (known: %s)",
+				host.Source, e, strings.Join(slices.Sorted(maps.Keys(ix.Environments)), ", "))
+		}
+		if err := addLayer("environment/"+e, env.Source.Repo, env.Spec); err != nil {
+			return zero, nil, nil, nil, err
+		}
+	}
+	for _, g := range host.Spec.Groups {
+		group, ok := ix.Groups[g]
+		if !ok {
+			return zero, nil, nil, nil, fmt.Errorf("%s: group %q is not defined (known: %s)",
+				host.Source, g, strings.Join(slices.Sorted(maps.Keys(ix.Groups)), ", "))
+		}
+		if err := addLayer("group/"+g, group.Source.Repo, group.Spec); err != nil {
+			return zero, nil, nil, nil, err
+		}
+	}
+	hostSelection := SelectionSpec{Applications: host.Spec.Applications, Overrides: host.Spec.Overrides, NetworkOverrides: host.Spec.NetworkOverrides, Values: host.Spec.Values}
+	if err := addLayer("host/"+name, host.Source.Repo, hostSelection); err != nil {
+		return zero, nil, nil, nil, err
+	}
+
+	// Values: same precedence, with agent.yaml's values below all layers.
+	values := base
+	for _, l := range layers {
+		values = MergeValues(values, l.values)
+	}
+
+	return host, layers, selected, values, nil
+}
+
+// CheckHost reports whether a host and the layers it names are defined, without rendering.
+func (ix *Index) CheckHost(name string) error {
+	_, _, _, _, err := ix.hostLayers(name, nil)
+	return err
+}
+
+// ForHost returns the documents as one host sees them: the plain files plus
+// the templates rendered with its values. base is agent.yaml's values.
+func (ix *Index) ForHost(name string, base Values) (*Index, error) {
+	_, _, _, values, err := ix.hostLayers(name, base)
+	if err != nil {
+		return nil, err
+	}
+	rendered, err := ix.renderTemplates(values)
+	if err != nil {
+		return nil, err
+	}
+	out := &Index{documents: newDocuments(), files: ix.files}
+	for _, d := range []*documents{&ix.documents, rendered} {
+		maps.Copy(out.Groups, d.Groups)
+		maps.Copy(out.Environments, d.Environments)
+		maps.Copy(out.Hosts, d.Hosts)
+		maps.Copy(out.Networks, d.Networks)
+		maps.Copy(out.Pods, d.Pods)
+		maps.Copy(out.ConfigMaps, d.ConfigMaps)
+		maps.Copy(out.Secrets, d.Secrets)
+		maps.Copy(out.SecretStores, d.SecretStores)
+		maps.Copy(out.ExternalSecrets, d.ExternalSecrets)
+	}
+	return out, nil
 }
 
 // podOverrides and networkOverrides pick a layer's override map for overlay.

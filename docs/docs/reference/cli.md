@@ -13,7 +13,7 @@ Run `podcd <command> --help` to see the full flag list.
 podcd status      # what is running here and when it last reconciled
 podcd plan        # show changes without making them
 podcd reconcile   # apply the current Git desired state
-podcd health      # report application health; non-zero exit if anything is unhealthy
+podcd health      # report application health; non-zero exit if anything is unhealthy (-o json only reports)
 podcd logs api    # recent output for one application (--tail N)
 ```
 
@@ -43,7 +43,10 @@ podcd get networks                          # NAME  DRIVER  SUBNET  SOURCE
 podcd get pod api -o yaml                   # one document, as written
 podcd get all --repo ./gitops               # a checkout you are editing
 podcd get pods --repo https://github.com/podcd/podcd-gitops.git
+podcd get pods --repo ./gitops --host vm-1  # *.tpl Pods too, rendered with vm-1's values
 ```
+
+`get` lists `*.tpl` templates as rendered for a host: the agent's own for its repository, `--host` for any. Without one it lists the plain documents and says how many templates it skipped. A `--repo` directory or URL renders without agent.yaml's values, and `-o yaml` shows a template rendered, not as written.
 
 ## The agent
 
