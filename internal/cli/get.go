@@ -33,7 +33,7 @@ type item struct {
 
 // kinds maps every spelling a user might type to a canonical kind.
 var kinds = map[string]string{
-	"pod": config.KindPod, "pods": config.KindPod, "app": config.KindPod, "apps": config.KindPod,
+	"pod": config.KindPod, "pods": config.KindPod,
 	"host": config.KindHost, "hosts": config.KindHost,
 	"group": config.KindGroup, "groups": config.KindGroup,
 	"environment": config.KindEnvironment, "environments": config.KindEnvironment, "env": config.KindEnvironment, "envs": config.KindEnvironment,
@@ -52,7 +52,7 @@ func newGetCommand(f *configFlags) *cobra.Command {
 		Long: "Lists the documents in every repository the agent config points at, fetched the same way\n" +
 			"the agent fetches them. --repo narrows that to one: the name of a repository in the agent\n" +
 			"config, a local directory, or a git URL to clone (in that order of precedence).\n" +
-			"KIND is one of applications, pods, hosts, groups, environments, networks, configmaps, secrets, or all\n" +
+			"KIND is one of pods, hosts, groups, environments, networks, configmaps, secrets, or all\n" +
 			"(the " +
 			"default). With NAME, only that document; add -o yaml to print it as written.",
 		Args: cobra.MaximumNArgs(2),
@@ -61,7 +61,7 @@ func newGetCommand(f *configFlags) *cobra.Command {
 			if len(args) > 0 {
 				k, ok := kinds[strings.ToLower(args[0])]
 				if !ok {
-					return fmt.Errorf("unknown kind %q (applications, pods, hosts, groups, environments, configmaps, secrets, all)", args[0])
+					return fmt.Errorf("unknown kind %q (pods, hosts, groups, environments, networks, configmaps, secrets, all)", args[0])
 				}
 				kind = k
 			}
@@ -71,12 +71,20 @@ func newGetCommand(f *configFlags) *cobra.Command {
 
 			ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 			defer stop()
-			ix, offline, err := loadIndex(ctx, f, repo, revision)
+			ix, values, host, offline, err := loadIndex(ctx, f, repo, revision)
 			if err != nil {
 				return err
 			}
 			for _, r := range offline {
 				fmt.Fprintf(cmd.ErrOrStderr(), "warning: repository %q could not be refreshed; showing the commit already on disk\n", r)
+			}
+			// Templates are documents only once rendered with a host's values.
+			if n := len(ix.Templates()); n > 0 {
+				if rendered, err := ix.ForHost(host, values); err != nil {
+					fmt.Fprintf(cmd.ErrOrStderr(), "warning: %d template(s) not listed, pass --host to render them: %v\n", n, err)
+				} else {
+					ix = rendered
+				}
 			}
 
 			items := collect(ix, kind, name)
@@ -103,39 +111,45 @@ func newGetCommand(f *configFlags) *cobra.Command {
 }
 
 // loadIndex reads the agent config's repository, or --repo as a configured
-// repository name, a local directory, or a git URL.
-func loadIndex(ctx context.Context, f *configFlags, repo, revision string) (*config.Index, []string, error) {
+// repository name, a local directory, or a git URL. It also returns the
+// agent.yaml values and the host that templates render for: --host, else the
+// agent's identity, else none.
+func loadIndex(ctx context.Context, f *configFlags, repo, revision string) (*config.Index, config.Values, string, []string, error) {
 	env, setupErr := setup(*f)
+	host := f.host
+	if setupErr == nil {
+		host = env.engine.Identity().Host
+	}
 	if repo == "" {
 		if setupErr != nil {
-			return nil, nil, setupErr
+			return nil, nil, "", nil, setupErr
 		}
-		ix, _, _, offline, err := env.engine.Index(ctx)
-		return ix, offline, err
+		ix, values, _, offline, err := env.engine.Index(ctx)
+		return ix, values, host, offline, err
 	}
 	if setupErr == nil && env.cfg.Repository.Name == repo {
-		ix, _, _, offline, err := env.engine.Index(ctx, repo)
-		return ix, offline, err
+		ix, values, _, offline, err := env.engine.Index(ctx, repo)
+		return ix, values, host, offline, err
 	}
 
 	// One explicit repository needs no label in front of its paths.
 	ix := config.NewIndex()
 	if info, err := os.Stat(repo); err == nil && info.IsDir() {
-		return ix, nil, ix.LoadTree("", repo)
+		return ix, nil, host, nil, ix.LoadTree("", repo)
 	}
 	if !strings.Contains(repo, "://") && !strings.HasPrefix(repo, "git@") {
-		return nil, nil, fmt.Errorf("%s: %s", repo, notARepo(env, setupErr))
+		return nil, nil, "", nil, fmt.Errorf("%s: %s", repo, notARepo(env, setupErr))
 	}
 	tmp, err := os.MkdirTemp("", "podcd-get-")
 	if err != nil {
-		return nil, nil, err
+		return nil, nil, "", nil, err
 	}
 	defer os.RemoveAll(tmp)
 	r := git.New("repo", repo, revision, "", tmp)
 	if _, err := r.Sync(ctx); err != nil {
-		return nil, nil, err
+		return nil, nil, "", nil, err
 	}
-	return ix, nil, ix.LoadTree("", r.TreePath())
+	return ix, nil, host, nil, ix.LoadTree("", r.TreePath())
 }
 
 // notARepo explains what --repo accepts.

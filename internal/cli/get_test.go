@@ -88,9 +88,9 @@ func TestGetKindTablesAndNames(t *testing.T) {
 	if !strings.Contains(out, "NAME  ENVIRONMENT  GROUPS  APPLICATIONS") || !strings.Contains(out, "vm-2  prod         web") {
 		t.Errorf("hosts table:\n%s", out)
 	}
-	out, _ = run(t, "get", "apps", "--repo", dir)
+	out, _ = run(t, "get", "pods", "--repo", dir)
 	if !strings.Contains(out, "CONTAINERS") || !strings.Contains(out, "8080→80") {
-		t.Errorf("applications table:\n%s", out)
+		t.Errorf("pods table:\n%s", out)
 	}
 	out, _ = run(t, "get", "pod", "side", "-o", "yaml", "--repo", dir)
 	if !strings.HasPrefix(out, "kind: Pod\n") || !strings.Contains(out, "hostPort: 8082") {
@@ -242,5 +242,25 @@ func TestCreatePrintsAStreamReadyToAppend(t *testing.T) {
 	}
 	if _, code := run(t, "create", "pod", "api", "--image", "ghcr.io/you/api"+testDigest, "--to", "x"); code == 0 {
 		t.Fatal("--to must not exist any more")
+	}
+}
+
+// A Pod in a template is still an application: get renders it for the host.
+func TestGetRendersTemplatesForTheHost(t *testing.T) {
+	t.Setenv("HOME", t.TempDir()) // no agent config: only --host names the host
+	t.Setenv("XDG_CONFIG_HOME", "")
+	dir := repoWithEverything(t)
+	tpl := "apiVersion: v1\nkind: Pod\nmetadata:\n  name: '{{ default \"api\" .Values.name }}'\nspec:\n  containers:\n    - name: api\n      image: ghcr.io/you/api" + testDigest + "\n"
+	if err := os.WriteFile(filepath.Join(dir, "api.yaml.tpl"), []byte(tpl), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	out, code := run(t, "get", "pods", "--repo", dir, "--host", "vm-2")
+	if code != 0 || !strings.Contains(out, "api.yaml.tpl:1") || !strings.Contains(out, "side") {
+		t.Fatalf("get pods --host:\n%s", out)
+	}
+	out, code = run(t, "get", "pods", "--repo", dir)
+	if code != 0 || !strings.Contains(out, "warning: 1 template(s) not listed, pass --host") || strings.Contains(out, "api.yaml.tpl") {
+		t.Fatalf("without a host the template must be named, not hidden:\n%s", out)
 	}
 }
