@@ -23,6 +23,9 @@ type Source struct {
 	TokenRefs map[string]string
 	// ValuesFiles are agent.yaml values files, by repo name.
 	ValuesFiles map[string][]string
+
+	// offline holds the repositories whose outage was already warned about.
+	offline map[string]bool
 }
 
 // LoadIndex fetches and loads every repository, returning the index, the
@@ -43,9 +46,22 @@ func (s *Source) LoadIndex(ctx context.Context, only ...string) (*config.Index, 
 		sha, err := repo.Sync(ctx)
 		switch {
 		case err == nil:
+			if s.offline[repo.Name] {
+				delete(s.offline, repo.Name)
+				s.log(ctx, slog.LevelInfo, "git remote reachable again", "repo", repo.Name, "revision", sha)
+			}
 		case errors.Is(err, git.ErrOffline) && sha != "":
 			offline = append(offline, repo.Name)
-			s.logWarn("git remote unreachable, using the commit already on disk",
+			// Warn once per outage; every pass after that is debug.
+			lvl := slog.LevelDebug
+			if !s.offline[repo.Name] {
+				if s.offline == nil {
+					s.offline = map[string]bool{}
+				}
+				s.offline[repo.Name] = true
+				lvl = slog.LevelWarn
+			}
+			s.log(ctx, lvl, "git remote unreachable, using the commit already on disk",
 				"repo", repo.Name, "revision", sha, "error", err)
 		default:
 			return nil, nil, nil, nil, fmt.Errorf("repository %s: %w", repo.Name, err)
@@ -83,9 +99,9 @@ func (s *Source) resolveAuth(ctx context.Context, repo *git.Repository) error {
 	return nil
 }
 
-func (s *Source) logWarn(msg string, args ...any) {
+func (s *Source) log(ctx context.Context, lvl slog.Level, msg string, args ...any) {
 	if s.Log != nil {
-		s.Log.Warn(msg, args...)
+		s.Log.Log(ctx, lvl, msg, args...)
 	}
 }
 

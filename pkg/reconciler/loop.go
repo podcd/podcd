@@ -26,14 +26,14 @@ func (e *Engine) Run(ctx context.Context) error {
 
 	backoff := e.cfg.RetryInterval
 	var lastImagePrune time.Time
-	idle := "" // last "nothing to do" logged at info; reset by a failure or a change
+	var idle idleLog // reset by a failure or a change
 	for {
 		res, err := e.Reconcile(ctx, Options{})
 		if err != nil {
 			if ctx.Err() != nil {
 				break
 			}
-			idle = ""
+			idle = idleLog{}
 			e.log.Error("reconcile failed", "error", err, "retry_in", backoff.String())
 			if !sleepCtx(ctx, backoff) {
 				break
@@ -43,7 +43,7 @@ func (e *Engine) Run(ctx context.Context) error {
 		}
 
 		backoff = e.cfg.RetryInterval
-		idle = logReconciled(e, res, idle)
+		idle = logReconciled(ctx, e, res, idle)
 
 		// Only after success: every desired app is running, so its image is in use.
 		if e.cfg.ImagePrune > 0 && time.Since(lastImagePrune) >= e.cfg.ImagePrune {
@@ -81,29 +81,42 @@ func (e *Engine) pruneImages(ctx context.Context) error {
 	return nil
 }
 
-// logReconciled reports an idle pass at info once, then at debug until the revision, the
-// application count or the offline repositories change, something is applied or a reconcile
-// fails. It returns the new idle key.
-func logReconciled(e *Engine, res Result, idle string) string {
-	if len(res.Applied) == 0 {
-		rev := res.Desired.RevisionString()
-		// The prefix keeps the key from ever equalling "", the reset value.
-		key := fmt.Sprintf("idle:%s|%d|%v", rev, len(res.Desired.Applications), res.Offline)
-		lvl := slog.LevelInfo
-		if key == idle {
-			lvl = slog.LevelDebug
-		}
-		e.log.Log(context.Background(), lvl, "nothing to do", "revision", rev,
-			"applications", len(res.Desired.Applications), "took", res.Elapsed.Round(time.Millisecond).String())
-		return key
+// idleHeartbeat is how often a steady idle agent still says so at info, as a sign of life.
+const idleHeartbeat = time.Hour
+
+// idleLog is the last "nothing to do" logged at info; the zero value forces the next one.
+type idleLog struct {
+	key string
+	at  time.Time
+}
+
+// logReconciled reports an idle pass at info once, then at debug until the revisions, the
+// application count or the offline repositories change, something is applied, a reconcile
+// fails or idleHeartbeat passes. It returns the new idle state.
+func logReconciled(ctx context.Context, e *Engine, res Result, idle idleLog) idleLog {
+	rev := res.Desired.RevisionString()
+	took := res.Elapsed.Round(time.Millisecond).String()
+	if len(res.Applied) > 0 {
+		e.log.Info("reconciled",
+			"revision", rev,
+			"changes", len(res.Applied),
+			"actions", describeActions(res.Applied),
+			"took", took,
+		)
+		return idleLog{}
 	}
-	e.log.Info("reconciled",
-		"revision", res.Desired.RevisionString(),
-		"changes", len(res.Applied),
-		"actions", describeActions(res.Applied),
-		"took", res.Elapsed.Round(time.Millisecond).String(),
-	)
-	return ""
+	args := []any{"revision", rev, "applications", len(res.Desired.Applications), "took", took}
+	if len(res.Offline) > 0 {
+		args = append(args, "offline", res.Offline)
+	}
+	// Full shas and quoted names, so no two different states share a key.
+	key := fmt.Sprintf("%q|%d|%q", res.Desired.Revisions, len(res.Desired.Applications), res.Offline)
+	if key == idle.key && time.Since(idle.at) < idleHeartbeat {
+		e.log.Log(ctx, slog.LevelDebug, "nothing to do", args...)
+		return idle
+	}
+	e.log.Log(ctx, slog.LevelInfo, "nothing to do", args...)
+	return idleLog{key: key, at: time.Now()}
 }
 
 // sleepCtx waits for d, returning false if the context ended first.
