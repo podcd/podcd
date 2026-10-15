@@ -41,10 +41,11 @@ type fakeRuntime struct {
 	logins   []string
 	loginErr error
 
-	applyErr  error
-	removeErr map[string]error
-	unhealthy map[string]bool
-	healthErr error
+	applyErr   error
+	inspectErr error
+	removeErr  map[string]error
+	unhealthy  map[string]bool
+	healthErr  error
 }
 
 func newFakeRuntime() *fakeRuntime {
@@ -57,6 +58,9 @@ func (f *fakeRuntime) Available(context.Context) (bool, string) { return true, "
 func (f *fakeRuntime) Inspect(context.Context) (model.ActualState, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
+	if f.inspectErr != nil {
+		return model.ActualState{}, f.inspectErr
+	}
 	apps := make(map[string]model.ActualApp, len(f.apps))
 	for k, v := range f.apps {
 		apps[k] = v

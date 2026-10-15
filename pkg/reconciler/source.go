@@ -23,6 +23,9 @@ type Source struct {
 	TokenRefs map[string]string
 	// ValuesFiles are agent.yaml values files, by repo name.
 	ValuesFiles map[string][]string
+
+	// offline holds the repositories whose outage was already warned about.
+	offline map[string]bool
 }
 
 // LoadIndex fetches and loads every repository, returning the index, the
@@ -43,10 +46,24 @@ func (s *Source) LoadIndex(ctx context.Context, only ...string) (*config.Index, 
 		sha, err := repo.Sync(ctx)
 		switch {
 		case err == nil:
+			if s.offline[repo.Name] {
+				delete(s.offline, repo.Name)
+				s.logger().Info("git remote reachable again", "repo", repo.Name, "revision", sha)
+			}
 		case errors.Is(err, git.ErrOffline) && sha != "":
 			offline = append(offline, repo.Name)
-			s.logWarn("git remote unreachable, using the commit already on disk",
-				"repo", repo.Name, "revision", sha, "error", err)
+			// Warn once per outage; every pass after that is debug.
+			const msg = "git remote unreachable, using the commit already on disk"
+			args := []any{"repo", repo.Name, "revision", sha, "error", err}
+			if s.offline[repo.Name] {
+				s.logger().Debug(msg, args...)
+			} else {
+				if s.offline == nil {
+					s.offline = map[string]bool{}
+				}
+				s.offline[repo.Name] = true
+				s.logger().Warn(msg, args...)
+			}
 		default:
 			return nil, nil, nil, nil, fmt.Errorf("repository %s: %w", repo.Name, err)
 		}
@@ -83,10 +100,11 @@ func (s *Source) resolveAuth(ctx context.Context, repo *git.Repository) error {
 	return nil
 }
 
-func (s *Source) logWarn(msg string, args ...any) {
-	if s.Log != nil {
-		s.Log.Warn(msg, args...)
+func (s *Source) logger() *slog.Logger {
+	if s.Log == nil {
+		return slog.New(slog.DiscardHandler)
 	}
+	return s.Log
 }
 
 // ReposFromConfig returns the repositories, token references and values files, keyed by repo name.
