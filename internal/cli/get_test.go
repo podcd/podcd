@@ -230,15 +230,20 @@ func TestCreatePrintsAStreamReadyToAppend(t *testing.T) {
 	}
 }
 
-// repoWithTemplate is repoWithEverything plus api.yaml.tpl, a templated Pod.
+// repoWithTemplate is repoWithEverything plus api.yaml.tpl, a templated Pod, and vm-api, which runs it.
 func repoWithTemplate(t *testing.T) string {
 	t.Helper()
 	t.Setenv("HOME", t.TempDir()) // keep the developer's own agent config out
 	t.Setenv("XDG_CONFIG_HOME", "")
 	dir := repoWithEverything(t)
 	tpl := "apiVersion: v1\nkind: Pod\nmetadata:\n  name: '{{ default \"api\" .Values.name }}'\nspec:\n  containers:\n    - name: api\n      image: ghcr.io/you/api" + testDigest + "\n"
-	if err := os.WriteFile(filepath.Join(dir, "api.yaml.tpl"), []byte(tpl), 0o600); err != nil {
-		t.Fatal(err)
+	for file, doc := range map[string]string{
+		"api.yaml.tpl": tpl,
+		"vm-api.yaml":  "apiVersion: gitops.podcd.io/v1\nkind: Host\nmetadata: {name: vm-api}\nspec: {applications: [api]}\n",
+	} {
+		if err := os.WriteFile(filepath.Join(dir, file), []byte(doc), 0o600); err != nil {
+			t.Fatal(err)
+		}
 	}
 	return dir
 }
@@ -267,8 +272,8 @@ func agentConfigFor(t *testing.T, dir, host string) string {
 
 // A Pod in a template is still a Pod: get renders it for the host.
 func TestGetRendersTemplatesForTheHost(t *testing.T) {
-	out, code := run(t, "get", "pods", "--repo", repoWithTemplate(t), "--host", "vm-2")
-	if code != 0 || !strings.Contains(out, "api.yaml.tpl:1") || !strings.Contains(out, "side") {
+	out, code := run(t, "get", "pods", "--repo", repoWithTemplate(t), "--host", "vm-api")
+	if code != 0 || !strings.Contains(out, "api.yaml.tpl:1") {
 		t.Fatalf("%d\n%s", code, out)
 	}
 }
@@ -323,7 +328,8 @@ func TestGetWithAnUnknownHostOnTheAgentsRepositoryIsAnError(t *testing.T) {
 	}
 }
 
-// repoWithSecrets is repoWithTemplate plus a SecretStore and a templated ExternalSecret with four keys.
+// repoWithSecrets is repoWithTemplate plus a SecretStore, a templated ExternalSecret with
+// four keys, and worker on vm-es, which reads its Secret.
 func repoWithSecrets(t *testing.T) string {
 	t.Helper()
 	dir := repoWithTemplate(t)
@@ -332,7 +338,9 @@ func repoWithSecrets(t *testing.T) string {
 	for _, k := range []string{"a", "b", "c", "d"} {
 		es += "    - {secretKey: " + k + ", remoteRef: {key: API_" + k + "}}\n"
 	}
-	for file, doc := range map[string]string{"stores.yaml": store, "creds.yaml.tpl": es} {
+	worker := "apiVersion: v1\nkind: Pod\nmetadata: {name: worker}\nspec:\n  containers:\n    - name: worker\n      image: ghcr.io/you/worker" + testDigest + "\n      envFrom: [{secretRef: {name: api-secret}}]\n" +
+		"---\napiVersion: gitops.podcd.io/v1\nkind: Host\nmetadata: {name: vm-es}\nspec: {applications: [worker]}\n"
+	for file, doc := range map[string]string{"stores.yaml": store, "creds.yaml.tpl": es, "worker.yaml": worker} {
 		if err := os.WriteFile(filepath.Join(dir, file), []byte(doc), 0o600); err != nil {
 			t.Fatal(err)
 		}
@@ -340,10 +348,10 @@ func repoWithSecrets(t *testing.T) string {
 	return dir
 }
 
-// Every kind counts: scaffold's nginx, side, web, prod, vm-1, vm-2, and the store.
+// Every kind counts: nginx, side, worker, web, prod, vm-1, vm-2, vm-api, vm-es, and the store.
 func TestLintCountsEveryKind(t *testing.T) {
 	out, code := run(t, "lint", repoWithSecrets(t))
-	if code != 0 || !strings.Contains(out, "ok: 7 document(s) and 2 template(s) loaded") {
+	if code != 0 || !strings.Contains(out, "ok: 10 document(s) and 2 template(s) loaded") {
 		t.Fatalf("%d\n%s", code, out)
 	}
 }
@@ -357,15 +365,129 @@ func TestGetListsSecretStores(t *testing.T) {
 
 // Rendered like any template; key names shown, the fourth only counted.
 func TestGetListsRenderedExternalSecrets(t *testing.T) {
-	out, code := run(t, "get", "externalsecrets", "--repo", repoWithSecrets(t), "--host", "vm-2")
+	out, code := run(t, "get", "externalsecrets", "--repo", repoWithSecrets(t), "--host", "vm-es")
 	if code != 0 || !strings.Contains(out, "api-creds  local  api-secret  a,b,c +1  creds.yaml.tpl:1") {
+		t.Fatalf("%d\n%s", code, out)
+	}
+}
+
+// repoForUse has two hosts: h1 runs api, which reads a Secret an ExternalSecret
+// provisions from store "local"; h2 runs nothing. "other" and "unused" serve no one.
+func repoForUse(t *testing.T) string {
+	t.Helper()
+	t.Setenv("HOME", t.TempDir())
+	t.Setenv("XDG_CONFIG_HOME", "")
+	dir := t.TempDir()
+	docs := `apiVersion: v1
+kind: Pod
+metadata: {name: api}
+spec:
+  containers:
+    - name: api
+      image: ghcr.io/you/api` + testDigest + `
+      env:
+        - name: TOKEN
+          valueFrom: {secretKeyRef: {name: api-secret, key: token}}
+---
+apiVersion: external-secrets.io/v1beta1
+kind: SecretStore
+metadata: {name: local}
+spec: {provider: {env: {}}}
+---
+apiVersion: external-secrets.io/v1beta1
+kind: SecretStore
+metadata: {name: unused}
+spec: {provider: {env: {}}}
+---
+apiVersion: external-secrets.io/v1beta1
+kind: ExternalSecret
+metadata: {name: api-creds}
+spec:
+  secretStoreRef: {name: local}
+  target: {name: api-secret}
+  data:
+    - {secretKey: token, remoteRef: {key: API_TOKEN}}
+---
+apiVersion: external-secrets.io/v1beta1
+kind: ExternalSecret
+metadata: {name: other}
+spec:
+  secretStoreRef: {name: unused}
+  data:
+    - {secretKey: x, remoteRef: {key: X}}
+---
+apiVersion: gitops.podcd.io/v1
+kind: Host
+metadata: {name: h1}
+spec: {applications: [api]}
+---
+apiVersion: gitops.podcd.io/v1
+kind: Host
+metadata: {name: h2}
+spec: {}
+`
+	if err := os.WriteFile(filepath.Join(dir, "all.yaml"), []byte(docs), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	return dir
+}
+
+// With a host, get follows what it runs: its Pods, their Secrets' ExternalSecrets and stores.
+func TestGetWithAHostListsOnlyWhatItUses(t *testing.T) {
+	out, code := run(t, "get", "--repo", repoForUse(t), "--host", "h1")
+	if code != 0 {
+		t.Fatal(out)
+	}
+	for _, want := range []string{"Host            h1", "Pod             api", "SecretStore     local", "ExternalSecret  api-creds"} {
+		if !strings.Contains(out, want) {
+			t.Errorf("missing %q in:\n%s", want, out)
+		}
+	}
+	for _, unwanted := range []string{"h2", "unused", "other"} {
+		if strings.Contains(out, unwanted) {
+			t.Errorf("%q is not used by h1:\n%s", unwanted, out)
+		}
+	}
+}
+
+// get hosts is how to find the others, so it is never narrowed to one.
+func TestGetHostsListsEveryHost(t *testing.T) {
+	out, code := run(t, "get", "hosts", "--repo", repoForUse(t), "--host", "h1")
+	if code != 0 || !strings.Contains(out, "h1") || !strings.Contains(out, "h2") {
+		t.Fatalf("%d\n%s", code, out)
+	}
+}
+
+func TestGetAllListsEveryHostsDocuments(t *testing.T) {
+	out, code := run(t, "get", "-a", "--repo", repoForUse(t), "--host", "h1")
+	if code != 0 || !strings.Contains(out, "h2") || !strings.Contains(out, "unused") || !strings.Contains(out, "other") {
+		t.Fatalf("%d\n%s", code, out)
+	}
+}
+
+// A host that does not compile cannot say what it uses: warn and list everything.
+func TestGetOfAHostThatDoesNotCompileListsEverything(t *testing.T) {
+	dir := repoForUse(t)
+	h3 := "apiVersion: gitops.podcd.io/v1\nkind: Host\nmetadata: {name: h3}\nspec: {applications: [missing]}\n"
+	if err := os.WriteFile(filepath.Join(dir, "h3.yaml"), []byte(h3), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	out, code := run(t, "get", "secretstores", "--repo", dir, "--host", "h3")
+	if code != 0 || !strings.Contains(out, "warning: cannot tell what h3 uses") || !strings.Contains(out, "unused") {
+		t.Fatalf("%d\n%s", code, out)
+	}
+}
+
+func TestGetOfANameTheHostDoesNotUse(t *testing.T) {
+	out, code := run(t, "get", "secretstore", "unused", "--repo", repoForUse(t), "--host", "h1")
+	if code == 0 || !strings.Contains(out, `no secretstores named "unused" that h1 uses`) {
 		t.Fatalf("%d\n%s", code, out)
 	}
 }
 
 func TestGetRendersTheAgentsRepositoryForItsIdentity(t *testing.T) {
 	dir := repoWithTemplate(t)
-	out, code := run(t, "--config", agentConfigFor(t, dir, "vm-2"), "get", "pods")
+	out, code := run(t, "--config", agentConfigFor(t, dir, "vm-api"), "get", "pods")
 	if code != 0 || !strings.Contains(out, "gitops/api.yaml.tpl:1") {
 		t.Fatalf("%d\n%s", code, out)
 	}

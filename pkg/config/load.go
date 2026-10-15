@@ -19,10 +19,10 @@ import (
 	sigyaml "sigs.k8s.io/yaml"
 )
 
-// documents is every decoded document, by kind and name. Names are global
+// Documents is every decoded document, by kind and name. Names are global
 // across repositories; a duplicate is an error. The Index holds the plain
 // files; Resolve builds a second set per host from rendered templates.
-type documents struct {
+type Documents struct {
 	Groups       map[string]Doc[SelectionSpec]
 	Environments map[string]Doc[SelectionSpec]
 	Hosts        map[string]Doc[HostSpec]
@@ -36,8 +36,8 @@ type documents struct {
 	ExternalSecrets map[string]Doc[ExternalSecretSpec]
 }
 
-func newDocuments() documents {
-	return documents{
+func newDocuments() Documents {
+	return Documents{
 		Groups:          map[string]Doc[SelectionSpec]{},
 		Environments:    map[string]Doc[SelectionSpec]{},
 		Hosts:           map[string]Doc[HostSpec]{},
@@ -52,7 +52,7 @@ func newDocuments() documents {
 
 // Index is everything loaded from Git: decoded documents, raw templates, and every file's bytes.
 type Index struct {
-	documents
+	Documents
 
 	// templates are *.tpl files (by name, never content), rendered per host in Resolve.
 	templates []Source
@@ -64,7 +64,7 @@ type Index struct {
 // NewIndex returns an empty index.
 func NewIndex() *Index {
 	return &Index{
-		documents: newDocuments(),
+		Documents: newDocuments(),
 		files:     map[string]map[string][]byte{},
 	}
 }
@@ -187,7 +187,7 @@ func (ix *Index) loadFile(repo, path string, data []byte) error {
 
 // addDocuments strictly decodes a multi-document YAML file into d. rendered
 // marks template output, which may only hold deployable kinds.
-func (d *documents) addDocuments(repo, path string, data []byte, rendered bool) error {
+func (d *Documents) addDocuments(repo, path string, data []byte, rendered bool) error {
 	docs, err := SplitDocuments(repo, path, data)
 	if err != nil {
 		return fmt.Errorf("%s/%s: %w", repo, path, err)
@@ -222,7 +222,7 @@ func deployable(kind string) bool {
 	return false
 }
 
-func (d *documents) add(env document, src Source) error {
+func (d *Documents) add(env document, src Source) error {
 	name := env.Name
 	switch env.APIVersion {
 	case APIVersion:

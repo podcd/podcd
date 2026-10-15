@@ -378,34 +378,39 @@ spec: {applications: [from-values]}
 	}
 }
 
-func TestForHostAddsRenderedTemplatesWithoutTouchingTheIndex(t *testing.T) {
+func TestViewRendersTemplatesBesideTheIndex(t *testing.T) {
 	ix := loadIndex(t, map[string]string{
 		"app.yaml.tpl": "apiVersion: v1\nkind: Pod\nmetadata:\n  name: '{{ .Values.name }}'\nspec:\n  containers:\n    - name: web\n      image: nginx\n",
 		"host.yaml":    "apiVersion: gitops.podcd.io/v1\nkind: Host\nmetadata: {name: vm-1}\nspec: {applications: [from-values]}\n",
 	})
-	rendered, err := ix.ForHost("vm-1", Values{"name": "from-values"})
+	v, err := ix.View(context.Background(), "vm-1", Values{"name": "from-values"}, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, ok := rendered.Pods["from-values"]; !ok {
-		t.Fatalf("the rendered Pod should be listed: %v", rendered.Pods)
+	if _, ok := v.Rendered.Pods["from-values"]; !ok {
+		t.Fatalf("the rendered Pod should be in Rendered: %v", v.Rendered.Pods)
 	}
-	if _, ok := rendered.Hosts["vm-1"]; !ok {
-		t.Fatal("the plain documents should be kept")
+	if !v.Used[KindPod]["from-values"] || !v.Used[KindHost]["vm-1"] {
+		t.Fatalf("vm-1 runs from-values: %v", v.Used)
 	}
 	if _, ok := ix.Pods["from-values"]; ok {
-		t.Fatal("ForHost must not add to the index it renders from")
+		t.Fatal("View must not add to the index it renders from")
 	}
 }
 
-func TestForHostKeepsTheDefinedTwiceRule(t *testing.T) {
+// A template that does not render still leaves what the Host document says.
+func TestViewKeepsTheDefinedTwiceRule(t *testing.T) {
 	ix := loadIndex(t, map[string]string{
 		"app.yaml":     "apiVersion: v1\nkind: Pod\nmetadata: {name: web}\nspec:\n  containers:\n    - name: web\n      image: nginx\n",
 		"app.yaml.tpl": "apiVersion: v1\nkind: Pod\nmetadata: {name: web}\nspec:\n  containers:\n    - name: web\n      image: nginx\n",
 		"host.yaml":    "apiVersion: gitops.podcd.io/v1\nkind: Host\nmetadata: {name: vm-1}\nspec: {applications: [web]}\n",
 	})
-	if _, err := ix.ForHost("vm-1", nil); err == nil || !strings.Contains(err.Error(), "defined twice") {
+	v, err := ix.View(context.Background(), "vm-1", nil, nil)
+	if err == nil || !strings.Contains(err.Error(), "defined twice") {
 		t.Fatalf("want a defined-twice error, got %v", err)
+	}
+	if v == nil || v.Rendered != nil || !v.Used[KindHost]["vm-1"] || v.Used[KindPod] != nil {
+		t.Fatalf("want the host-level view only: %+v", v)
 	}
 }
 
