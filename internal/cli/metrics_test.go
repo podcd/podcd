@@ -35,7 +35,7 @@ func TestMetricsAreServedUntilTheAgentStops(t *testing.T) {
 	if resp.StatusCode != http.StatusOK || !strings.HasPrefix(resp.Header.Get("Content-Type"), "text/plain; version=0.0.4") {
 		t.Fatalf("%s %s", resp.Status, resp.Header.Get("Content-Type"))
 	}
-	for _, line := range []string{`host="vm-1"} 1`, "podcd_last_success_timestamp_seconds ", "podcd_consecutive_failures 0"} {
+	for _, line := range []string{`host="vm-1"} 1`, "podcd_last_success_timestamp_seconds ", "podcd_consecutive_failures 0", `podcd_repository_behind{repository="infrastructure"} 0`} {
 		if !strings.Contains(string(body), line) {
 			t.Errorf("missing %q in:\n%s", line, body)
 		}

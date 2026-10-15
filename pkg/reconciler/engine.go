@@ -135,7 +135,7 @@ type Result struct {
 func (e *Engine) desiredState(ctx context.Context) (model.DesiredState, []string, map[string]string, map[string]bool, error) {
 	index, values, revisions, offline, err := e.source.LoadIndex(ctx)
 	if err != nil {
-		return model.DesiredState{}, offline, nil, nil, err
+		return model.DesiredState{}, offline, revisions, nil, err
 	}
 	prov := NewProvisioner(index, e.source.Secrets)
 	desired, err := index.Resolve(ctx, config.ResolveOptions{

@@ -30,6 +30,8 @@ type Source struct {
 
 // LoadIndex fetches and loads every repository, returning the index, the
 // agent.yaml values, the commits, and the repositories that were offline.
+// On failure the commits and offline repositories found so far are still
+// returned, for the failure record.
 func (s *Source) LoadIndex(ctx context.Context, only ...string) (*config.Index, config.Values, map[string]string, []string, error) {
 	index := config.NewIndex()
 	revisions := map[string]string{}
@@ -41,7 +43,7 @@ func (s *Source) LoadIndex(ctx context.Context, only ...string) (*config.Index, 
 			continue
 		}
 		if err := s.resolveAuth(ctx, repo); err != nil {
-			return nil, nil, nil, nil, err
+			return nil, nil, revisions, offline, err
 		}
 		sha, err := repo.Sync(ctx)
 		switch {
@@ -65,19 +67,19 @@ func (s *Source) LoadIndex(ctx context.Context, only ...string) (*config.Index, 
 				s.logger().Warn(msg, args...)
 			}
 		default:
-			return nil, nil, nil, nil, fmt.Errorf("repository %s: %w", repo.Name, err)
+			return nil, nil, revisions, offline, fmt.Errorf("repository %s: %w", repo.Name, err)
 		}
 		revisions[repo.Name] = sha
 
 		for _, vf := range s.ValuesFiles[repo.Name] {
 			v, err := config.LoadValuesFile(filepath.Join(repo.TreePath(), vf))
 			if err != nil {
-				return nil, nil, nil, nil, fmt.Errorf("repository %s: %w", repo.Name, err)
+				return nil, nil, revisions, offline, fmt.Errorf("repository %s: %w", repo.Name, err)
 			}
 			values = config.MergeValues(values, v)
 		}
 		if err := index.LoadTree(repo.Name, repo.TreePath()); err != nil {
-			return nil, nil, nil, nil, err
+			return nil, nil, revisions, offline, err
 		}
 	}
 	return index, values, revisions, offline, nil

@@ -38,6 +38,20 @@ func (e *Engine) WriteMetrics(w io.Writer, version string) error {
 	gauge("podcd_consecutive_failures", "Reconciles failed since the last success.")
 	fmt.Fprintf(&b, "podcd_consecutive_failures %d\n", st.FailureCount)
 
+	r := e.cfg.Repository
+	var attempted, succeeded string
+	if a := st.LastAttempt; a != nil {
+		attempted = a.Revisions[r.Name]
+	}
+	if a := st.LastSuccess; a != nil {
+		succeeded = a.Revisions[r.Name]
+	}
+	gauge("podcd_repository_info", "Always 1: the revision agent.yaml targets and the commits of the last reconcile and the last successful one.")
+	fmt.Fprintf(&b, "podcd_repository_info{repository=%s,target_revision=%s,last_attempt_revision=%s,last_success_revision=%s} 1\n",
+		label(r.Name), label(r.Revision), label(attempted), label(succeeded))
+	gauge("podcd_repository_behind", "1 if the host does not run the commit the last reconcile tried to deploy.")
+	fmt.Fprintf(&b, "podcd_repository_behind{repository=%s} %d\n", label(r.Name), bit(attempted != "" && attempted != succeeded))
+
 	gauge("podcd_repository_offline", "1 if the last reconcile used the commit on disk because the remote was unreachable.")
 	if a := st.LastAttempt; a != nil {
 		for _, repo := range slices.Sorted(maps.Keys(a.Revisions)) {
