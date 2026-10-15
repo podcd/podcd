@@ -3,6 +3,7 @@ package reconciler
 import (
 	"context"
 	"errors"
+	"log/slog"
 	"math/rand"
 	"time"
 )
@@ -24,12 +25,14 @@ func (e *Engine) Run(ctx context.Context) error {
 
 	backoff := e.cfg.RetryInterval
 	var lastImagePrune time.Time
+	idle := "" // last "nothing to do" logged at info; reset by a failure or a change
 	for {
 		res, err := e.Reconcile(ctx, Options{})
 		if err != nil {
 			if ctx.Err() != nil {
 				break
 			}
+			idle = ""
 			e.log.Error("reconcile failed", "error", err, "retry_in", backoff.String())
 			if !sleepCtx(ctx, backoff) {
 				break
@@ -39,7 +42,7 @@ func (e *Engine) Run(ctx context.Context) error {
 		}
 
 		backoff = e.cfg.RetryInterval
-		logReconciled(e, res)
+		idle = logReconciled(e, res, idle)
 
 		// Only after success: every desired app is running, so its image is in use.
 		if e.cfg.ImagePrune > 0 && time.Since(lastImagePrune) >= e.cfg.ImagePrune {
@@ -77,11 +80,18 @@ func (e *Engine) pruneImages(ctx context.Context) error {
 	return nil
 }
 
-func logReconciled(e *Engine, res Result) {
+// logReconciled reports an idle pass at info once, then at debug until the revision changes,
+// something is applied or a reconcile fails. It returns the new idle key.
+func logReconciled(e *Engine, res Result, idle string) string {
 	if len(res.Applied) == 0 {
-		e.log.Info("nothing to do", "revision", res.Desired.RevisionString(),
+		key := "idle:" + res.Desired.RevisionString()
+		lvl := slog.LevelInfo
+		if key == idle {
+			lvl = slog.LevelDebug
+		}
+		e.log.Log(context.Background(), lvl, "nothing to do", "revision", res.Desired.RevisionString(),
 			"applications", len(res.Desired.Applications), "took", res.Elapsed.Round(time.Millisecond).String())
-		return
+		return key
 	}
 	e.log.Info("reconciled",
 		"revision", res.Desired.RevisionString(),
@@ -89,6 +99,7 @@ func logReconciled(e *Engine, res Result) {
 		"actions", describeActions(res.Applied),
 		"took", res.Elapsed.Round(time.Millisecond).String(),
 	)
+	return ""
 }
 
 // sleepCtx waits for d, returning false if the context ended first.
