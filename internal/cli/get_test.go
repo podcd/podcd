@@ -478,6 +478,51 @@ func TestGetOfAHostThatDoesNotCompileListsEverything(t *testing.T) {
 	}
 }
 
+// Hosts come from no template, so a miss says nothing about templates.
+func TestGetOfAMissingHostDoesNotBlameTemplates(t *testing.T) {
+	out, code := run(t, "get", "host", "nope", "--repo", repoWithTemplate(t))
+	if code == 0 || strings.Contains(out, "template") {
+		t.Fatalf("%d\n%s", code, out)
+	}
+}
+
+func TestGetAllOfANameTheHostDoesNotUsePointsAtAll(t *testing.T) {
+	out, code := run(t, "get", "all", "unused", "--repo", repoForUse(t), "--host", "h1")
+	if code == 0 || !strings.Contains(out, `no documents named "unused" that h1 uses (--all`) {
+		t.Fatalf("%d\n%s", code, out)
+	}
+}
+
+// A broken template with --host: Pods are listed plain and unfiltered with a warning;
+// environments come from the Host document alone, so they need none.
+func TestGetWithABrokenTemplateWarnsOnlyForKindsItTouches(t *testing.T) {
+	dir := repoWithTemplate(t)
+	if err := os.WriteFile(filepath.Join(dir, "broken.yaml.tpl"), []byte("{{ .Values.missing.key }}"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	out, code := run(t, "get", "pods", "--repo", dir, "--host", "vm-api")
+	if code != 0 || !strings.Contains(out, "warning: 2 template(s) not rendered for vm-api") || !strings.Contains(out, "side") {
+		t.Fatalf("%d\n%s", code, out)
+	}
+	out, code = run(t, "get", "environments", "--repo", dir, "--host", "vm-api")
+	if code != 0 || strings.Contains(out, "warning") {
+		t.Fatalf("%d\n%s", code, out)
+	}
+}
+
+// Reconcile fails on a Host that names an undefined group; get must not hide that.
+func TestGetWarnsWhenTheAgentsHostNamesAnUndefinedGroup(t *testing.T) {
+	dir := repoWithTemplate(t)
+	bad := "apiVersion: gitops.podcd.io/v1\nkind: Host\nmetadata: {name: vm-bad}\nspec: {groups: [nope]}\n"
+	if err := os.WriteFile(filepath.Join(dir, "bad.yaml"), []byte(bad), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	out, code := run(t, "--config", agentConfigFor(t, dir, "vm-bad"), "get", "configmaps")
+	if code != 0 || !strings.Contains(out, "warning: listing everything:") || !strings.Contains(out, `group "nope" is not defined`) {
+		t.Fatalf("%d\n%s", code, out)
+	}
+}
+
 func TestGetOfANameTheHostDoesNotUse(t *testing.T) {
 	out, code := run(t, "get", "secretstore", "unused", "--repo", repoForUse(t), "--host", "h1")
 	if code == 0 || !strings.Contains(out, `no secretstores named "unused" that h1 uses`) {

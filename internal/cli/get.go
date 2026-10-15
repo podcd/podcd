@@ -53,16 +53,12 @@ func newGetCommand(f *configFlags) *cobra.Command {
 		Use:   "get [KIND] [NAME]",
 		Short: "list what a repository defines",
 		Long: "Lists the documents in every repository the agent config points at, fetched the same way\n" +
-			"the agent fetches them. --repo narrows that to one: the name of a repository in the agent\n" +
-			"config, a local directory, or a git URL to clone (in that order of precedence).\n" +
+			"the agent fetches them. --repo to filter against a Host\n" +
 			"KIND is one of pods, hosts, groups, environments, networks, configmaps, secrets,\n" +
 			"secretstores, externalsecrets, or all\n" +
-			"(the default). With NAME, only that document; add -o yaml to print it as written\n" +
-			"(a template as rendered).\n\n" +
-			"With a host (the agent's own for its repository, --host for any) get lists only what\n" +
-			"that host uses, *.tpl files rendered with its values; --all lists every host's, and\n" +
-			"`get hosts` always does. Without one, everything the repository defines. A --repo\n" +
-			"directory or URL renders without agent.yaml's values.",
+			"(the default). Specifying a  NAME will only show that document; add -o yaml to print it as written\n" +
+			"On a configured podcd instance, it will lists only what the instance is reconciling.\n" +
+			"Use --all to list every host's manifests and",
 		Args: cobra.MaximumNArgs(2),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			kind, name := "", ""
@@ -91,12 +87,21 @@ func newGetCommand(f *configFlags) *cobra.Command {
 			// document lists the repository unrendered and unfiltered.
 			docs := []*config.Documents{&src.ix.Documents}
 			var used map[string]map[string]bool
-			unrendered, why := len(src.ix.Templates()), error(nil)
+			var why error // why templates were not rendered
+			unrendered := 0
+			if templatable(kind) {
+				unrendered = len(src.ix.Templates())
+			}
 			if src.host != "" {
 				v, err := src.ix.View(ctx, src.host, src.values, src.secrets)
+				_, defined := src.ix.Hosts[src.host]
 				switch {
 				case v == nil && f.host != "":
 					return err
+				case v == nil && defined:
+					// The Host names undefined layers: reconcile fails on it too, so always say.
+					fmt.Fprintf(cmd.ErrOrStderr(), "warning: listing everything: %v\n", err)
+					unrendered = 0
 				case v == nil:
 					why = err
 				default:
@@ -114,7 +119,7 @@ func newGetCommand(f *configFlags) *cobra.Command {
 					}
 				}
 			}
-			if unrendered > 0 && templatable(kind) {
+			if unrendered > 0 {
 				if why != nil {
 					fmt.Fprintf(cmd.ErrOrStderr(), "warning: %d template(s) not listed: %v; pass --host to render them with another host's values\n", unrendered, why)
 				} else {
@@ -122,13 +127,15 @@ func newGetCommand(f *configFlags) *cobra.Command {
 				}
 			}
 
-			items := slices.DeleteFunc(collect(docs, kind, name), func(it item) bool {
+			items := collect(docs, kind, name)
+			found := len(items)
+			items = slices.DeleteFunc(items, func(it item) bool {
 				set, ok := used[it.Kind]
 				return ok && !set[it.Name]
 			})
 			if name != "" && len(items) == 0 {
 				switch {
-				case used[kind] != nil:
+				case found > 0:
 					return fmt.Errorf("no %s named %q that %s uses (--all lists every host's)", orAll(kind), name, src.host)
 				case unrendered > 0:
 					return fmt.Errorf("no %s named %q among the plain documents; %d template(s) were not rendered, pass --host", orAll(kind), name, unrendered)

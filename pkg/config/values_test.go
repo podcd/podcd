@@ -414,6 +414,91 @@ func TestViewKeepsTheDefinedTwiceRule(t *testing.T) {
 	}
 }
 
+// Used follows the Pods as the host runs them: after overrides, without excluded
+// ones, through pull Secrets, registry secretRefs, and ExternalSecrets that
+// default their target to their own name.
+func TestViewUsedFollowsWhatTheHostRuns(t *testing.T) {
+	ix := loadIndex(t, map[string]string{"all.yaml": `apiVersion: v1
+kind: Pod
+metadata: {name: web}
+spec:
+  imagePullSecrets: [{name: pull}]
+  containers:
+    - name: web
+      image: nginx` + digest + `
+---
+apiVersion: v1
+kind: Pod
+metadata: {name: gone}
+spec:
+  containers:
+    - name: gone
+      image: nginx` + digest + `
+      envFrom: [{configMapRef: {name: gone-cm}}]
+---
+apiVersion: v1
+kind: ConfigMap
+metadata: {name: added-cm}
+data: {k: v}
+---
+apiVersion: external-secrets.io/v1beta1
+kind: SecretStore
+metadata: {name: local}
+spec: {provider: {env: {}}}
+---
+apiVersion: external-secrets.io/v1beta1
+kind: ExternalSecret
+metadata: {name: pull}
+spec:
+  secretStoreRef: {name: local}
+  data: [{secretKey: .dockerconfigjson, remoteRef: {key: PULL}}]
+---
+apiVersion: external-secrets.io/v1beta1
+kind: ExternalSecret
+metadata: {name: reg-es}
+spec:
+  secretStoreRef: {name: local}
+  target: {name: reg}
+  data: [{secretKey: .dockerconfigjson, remoteRef: {key: REG}}]
+---
+apiVersion: gitops.podcd.io/v1
+kind: Group
+metadata: {name: all}
+spec: {applications: [web, gone]}
+---
+apiVersion: gitops.podcd.io/v1
+kind: Host
+metadata: {name: vm-1}
+spec:
+  groups: [all]
+  excludeApplications: [gone]
+  overrides:
+    web:
+      spec:
+        containers:
+          - name: web
+            envFrom: [{configMapRef: {name: added-cm}}]
+`})
+	v, err := ix.View(context.Background(), "vm-1", nil, []string{"reg"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, c := range []struct {
+		kind, name string
+		want       bool
+	}{
+		{KindPod, "web", true}, {KindPod, "gone", false},
+		{KindConfigMap, "added-cm", true}, {KindConfigMap, "gone-cm", false},
+		{KindSecret, "pull", true}, {KindSecret, "reg", true},
+		{KindExternalSecret, "pull", true}, {KindExternalSecret, "reg-es", true},
+		{KindSecretStore, "local", true}, {KindGroup, "all", true},
+	} {
+		if v.Used[c.kind][c.name] != c.want {
+			t.Errorf("Used[%s][%s] = %v, want %v", c.kind, c.name, !c.want, c.want)
+		}
+	}
+}
+
 // TestPodBlockConditionalWorks is TestBlockConditionalsWork for kind: Pod: a
 // conditional around a whole container.
 func TestPodBlockConditionalWorks(t *testing.T) {
