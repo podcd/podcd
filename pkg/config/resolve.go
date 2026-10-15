@@ -54,12 +54,23 @@ type ResolveOptions struct {
 // Precedence, lowest first: Pod, Environment, each Group in Host order, Host.
 // Output is sorted, so a commit always compiles to the same bytes.
 func (ix *Index) Resolve(ctx context.Context, opts ResolveOptions) (model.DesiredState, error) {
-	var zero model.DesiredState
-	host, layers, selected, values, err := ix.hostLayers(opts.Host, opts.Values)
+	plan, err := ix.hostLayers(opts.Host, opts.Values)
 	if err != nil {
-		return zero, err
+		return model.DesiredState{}, err
 	}
+	// Templates render only now: their kind and name depend on this host's values.
+	rendered, err := ix.renderTemplates(plan.values)
+	if err != nil {
+		return model.DesiredState{}, err
+	}
+	return ix.resolve(ctx, opts, plan, rendered, nil)
+}
 
+// resolve is Resolve past planning and rendering. used, when set, records what
+// the compilation reads, by kind (see View).
+func (ix *Index) resolve(ctx context.Context, opts ResolveOptions, plan hostPlan, rendered *Documents, used map[string]map[string]bool) (model.DesiredState, error) {
+	var zero model.DesiredState
+	host, layers, selected := plan.host, plan.layers, plan.selected
 	for _, ex := range host.Spec.ExcludeApplications {
 		if !selected[ex] {
 			return zero, fmt.Errorf("%s: excludeApplications lists %q, which this host does not run anyway",
@@ -68,11 +79,6 @@ func (ix *Index) Resolve(ctx context.Context, opts ResolveOptions) (model.Desire
 		delete(selected, ex)
 	}
 
-	// Templates render only now: their kind and name depend on this host's values.
-	rendered, err := ix.renderTemplates(values)
-	if err != nil {
-		return zero, err
-	}
 	docs := hostDocuments{ix, rendered}
 	if opts.Secrets != nil {
 		opts.Secrets.AddExternalSecrets(rendered.ExternalSecrets)
@@ -99,6 +105,9 @@ func (ix *Index) Resolve(ctx context.Context, opts ResolveOptions) (model.Desire
 			pod, e = patchPod(pod, o)
 			return e
 		})
+		if err == nil && used != nil {
+			markPod(used, name, pod)
+		}
 		if err == nil {
 			app, err = docs.podToApplication(ctx, name, pod, opts.Secrets)
 		}
@@ -121,6 +130,9 @@ func (ix *Index) Resolve(ctx context.Context, opts ResolveOptions) (model.Desire
 	seenNet := map[string]bool{}
 	for i := range apps {
 		for _, n := range apps[i].Networks {
+			if used != nil {
+				used[KindNetwork][n] = true
+			}
 			doc, ok := docs.network(n)
 			if !ok {
 				continue
@@ -213,101 +225,145 @@ type layer struct {
 	values           Values
 }
 
-// hostLayers looks up a host and collects its layers, lowest precedence first:
-// what they select, and their values merged onto base (agent.yaml's values).
-func (ix *Index) hostLayers(name string, base Values) (Doc[HostSpec], []layer, map[string]bool, Values, error) {
-	var zero Doc[HostSpec]
+// hostPlan is one host's layers, lowest precedence first, the union of what
+// they select, and their values merged onto agent.yaml's.
+type hostPlan struct {
+	host     Doc[HostSpec]
+	layers   []layer
+	selected map[string]bool
+	values   Values
+}
+
+// hostLayers looks up a host and plans its layers; base is agent.yaml's values.
+func (ix *Index) hostLayers(name string, base Values) (hostPlan, error) {
 	if name == "" {
-		return zero, nil, nil, nil, errors.New("no host identity: cannot decide what should run here")
+		return hostPlan{}, errors.New("no host identity: cannot decide what should run here")
 	}
 	host, ok := ix.Hosts[name]
 	if !ok {
 		known := ix.HostNames()
 		if len(known) == 0 {
-			return zero, nil, nil, nil, fmt.Errorf("no Host document matches %q (no Host documents were found at all)", name)
+			return hostPlan{}, fmt.Errorf("no Host document matches %q (no Host documents were found at all)", name)
 		}
-		return zero, nil, nil, nil, fmt.Errorf("no Host document matches %q (known hosts: %s)", name, strings.Join(known, ", "))
+		return hostPlan{}, fmt.Errorf("no Host document matches %q (known hosts: %s)", name, strings.Join(known, ", "))
 	}
 
-	// Layers, lowest precedence first; selected is the union of what they name.
-	var layers []layer
-	selected := map[string]bool{}
+	plan := hostPlan{host: host, selected: map[string]bool{}}
 	addLayer := func(label, repo string, spec SelectionSpec) error {
 		for _, n := range spec.Applications {
-			selected[n] = true
+			plan.selected[n] = true
 		}
 		values, err := ix.layerValues(repo, spec.Values)
 		if err != nil {
 			return fmt.Errorf("%s: %w", label, err)
 		}
-		layers = append(layers, layer{label, spec.Overrides, spec.NetworkOverrides, values})
+		plan.layers = append(plan.layers, layer{label, spec.Overrides, spec.NetworkOverrides, values})
 		return nil
 	}
 
 	if e := host.Spec.Environment; e != "" {
 		env, ok := ix.Environments[e]
 		if !ok {
-			return zero, nil, nil, nil, fmt.Errorf("%s: environment %q is not defined (known: %s)",
+			return hostPlan{}, fmt.Errorf("%s: environment %q is not defined (known: %s)",
 				host.Source, e, strings.Join(slices.Sorted(maps.Keys(ix.Environments)), ", "))
 		}
 		if err := addLayer("environment/"+e, env.Source.Repo, env.Spec); err != nil {
-			return zero, nil, nil, nil, err
+			return hostPlan{}, err
 		}
 	}
 	for _, g := range host.Spec.Groups {
 		group, ok := ix.Groups[g]
 		if !ok {
-			return zero, nil, nil, nil, fmt.Errorf("%s: group %q is not defined (known: %s)",
+			return hostPlan{}, fmt.Errorf("%s: group %q is not defined (known: %s)",
 				host.Source, g, strings.Join(slices.Sorted(maps.Keys(ix.Groups)), ", "))
 		}
 		if err := addLayer("group/"+g, group.Source.Repo, group.Spec); err != nil {
-			return zero, nil, nil, nil, err
+			return hostPlan{}, err
 		}
 	}
 	hostSelection := SelectionSpec{Applications: host.Spec.Applications, Overrides: host.Spec.Overrides, NetworkOverrides: host.Spec.NetworkOverrides, Values: host.Spec.Values}
 	if err := addLayer("host/"+name, host.Source.Repo, hostSelection); err != nil {
-		return zero, nil, nil, nil, err
+		return hostPlan{}, err
 	}
 
 	// Values: same precedence, with agent.yaml's values below all layers.
-	values := base
-	for _, l := range layers {
-		values = MergeValues(values, l.values)
+	plan.values = base
+	for _, l := range plan.layers {
+		plan.values = MergeValues(plan.values, l.values)
 	}
-
-	return host, layers, selected, values, nil
+	return plan, nil
 }
 
-// CheckHost reports whether a host and the layers it names are defined, without rendering.
-func (ix *Index) CheckHost(name string) error {
-	_, _, _, _, err := ix.hostLayers(name, nil)
-	return err
+// View is the index as one host sees it: its templates rendered with its
+// values, beside the plain documents, and by kind the names its reconcile reads.
+type View struct {
+	// Rendered holds only the rendered templates; nil when they did not render.
+	Rendered *Documents
+	// Used is the host's Host, environment and groups, and, once it compiles,
+	// its Pods, the ConfigMaps, Secrets and Networks they reference, the
+	// ExternalSecrets that provision those Secrets and the SecretStores they name.
+	Used map[string]map[string]bool
 }
 
-// ForHost returns the documents as one host sees them: the plain files plus
-// the templates rendered with its values. base is agent.yaml's values.
-func (ix *Index) ForHost(name string, base Values) (*Index, error) {
-	_, _, _, values, err := ix.hostLayers(name, base)
+// View renders the index for host. base is agent.yaml's values; secrets its
+// registry secretRefs, which count as used. An unknown host or a broken layer
+// returns no view. Past that, a failure returns the view so far with the error:
+// templates that do not render leave Rendered nil, a host that does not compile
+// leaves Used with no kinds beyond Host, Environment and Group.
+func (ix *Index) View(ctx context.Context, host string, base Values, secrets []string) (*View, error) {
+	plan, err := ix.hostLayers(host, base)
 	if err != nil {
 		return nil, err
 	}
-	rendered, err := ix.renderTemplates(values)
+	v := &View{Used: map[string]map[string]bool{KindHost: {host: true}, KindEnvironment: {}, KindGroup: {}}}
+	if e := plan.host.Spec.Environment; e != "" {
+		v.Used[KindEnvironment][e] = true
+	}
+	for _, g := range plan.host.Spec.Groups {
+		v.Used[KindGroup][g] = true
+	}
+
+	rendered, err := ix.renderTemplates(plan.values)
 	if err != nil {
-		return nil, err
+		return v, fmt.Errorf("%d template(s) not rendered for %s: %w", len(ix.templates), host, err)
 	}
-	out := &Index{documents: newDocuments(), files: ix.files}
-	for _, d := range []*documents{&ix.documents, rendered} {
-		maps.Copy(out.Groups, d.Groups)
-		maps.Copy(out.Environments, d.Environments)
-		maps.Copy(out.Hosts, d.Hosts)
-		maps.Copy(out.Networks, d.Networks)
-		maps.Copy(out.Pods, d.Pods)
-		maps.Copy(out.ConfigMaps, d.ConfigMaps)
-		maps.Copy(out.Secrets, d.Secrets)
-		maps.Copy(out.SecretStores, d.SecretStores)
-		maps.Copy(out.ExternalSecrets, d.ExternalSecrets)
+	v.Rendered = rendered
+
+	used := maps.Clone(v.Used)
+	for _, k := range []string{KindPod, KindConfigMap, KindSecret, KindNetwork, KindExternalSecret, KindSecretStore} {
+		used[k] = map[string]bool{}
 	}
-	return out, nil
+	if _, err := ix.resolve(ctx, ResolveOptions{Host: host}, plan, rendered, used); err != nil {
+		return v, fmt.Errorf("cannot tell what %s uses: %w", host, err)
+	}
+	for _, s := range secrets {
+		used[KindSecret][s] = true
+	}
+	for _, d := range []*Documents{&ix.Documents, rendered} {
+		for name, es := range d.ExternalSecrets {
+			if used[KindSecret][cmp.Or(es.Spec.Target.Name, name)] {
+				used[KindExternalSecret][name] = true
+				used[KindSecretStore][es.Spec.SecretStoreRef.Name] = true
+			}
+		}
+	}
+	v.Used = used
+	return v, nil
+}
+
+// markPod records a Pod a host runs, after overrides, and what it references.
+func markPod(used map[string]map[string]bool, name string, pod corev1.Pod) {
+	used[KindPod][name] = true
+	refs := collectRefs(pod) // its values say optional, not used
+	for n := range refs.configMaps {
+		used[KindConfigMap][n] = true
+	}
+	for n := range refs.secrets {
+		used[KindSecret][n] = true
+	}
+	for _, ref := range pod.Spec.ImagePullSecrets {
+		used[KindSecret][ref.Name] = true
+	}
 }
 
 // podOverrides and networkOverrides pick a layer's override map for overlay.
@@ -329,7 +385,7 @@ func (ix *Index) layerValues(repo string, files []string) (Values, error) {
 
 // renderTemplates renders every template with one host's values and decodes
 // the results like plain documents. Rendered names must not collide with any other.
-func (ix *Index) renderTemplates(values Values) (*documents, error) {
+func (ix *Index) renderTemplates(values Values) (*Documents, error) {
 	rendered := newDocuments()
 	for _, tpl := range ix.templates {
 		out, err := renderTemplate(tpl.String(), tpl.Raw, values)
@@ -347,7 +403,7 @@ func (ix *Index) renderTemplates(values Values) (*documents, error) {
 }
 
 // checkNoOverlap is put's "defined twice" rule across the two sets.
-func (ix *Index) checkNoOverlap(rendered *documents) error {
+func (ix *Index) checkNoOverlap(rendered *Documents) error {
 	for name, doc := range rendered.Pods {
 		if prev, ok := ix.Pods[name]; ok {
 			return fmt.Errorf("Pod %q is defined twice: %s and %s (rendered)", name, prev.Source, doc.Source)
@@ -380,7 +436,7 @@ func (ix *Index) checkNoOverlap(rendered *documents) error {
 // rendered templates. checkNoOverlap guarantees a name is in at most one.
 type hostDocuments struct {
 	*Index
-	rendered *documents
+	rendered *Documents
 }
 
 func (h hostDocuments) pod(name string) (Doc[corev1.Pod], bool) {

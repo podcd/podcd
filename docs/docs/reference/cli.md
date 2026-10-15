@@ -44,9 +44,10 @@ podcd get pod api -o yaml                   # one document, as written
 podcd get all --repo ./gitops               # a checkout you are editing
 podcd get pods --repo https://github.com/podcd/podcd-gitops.git
 podcd get pods --repo ./gitops --host vm-1  # *.tpl Pods too, rendered with vm-1's values
+podcd get pods -a                           # every host's Pods, not only this one's
 ```
 
-`get` lists `*.tpl` templates as rendered for a host: the agent's own for its repository, `--host` for any. Without one it lists the plain documents and says how many templates it skipped. A `--repo` directory or URL renders without agent.yaml's values, and `-o yaml` shows a template rendered, not as written.
+With a host (the agent's own for its repository, `--host` for any) `get` lists only what that host uses: its Host, environment and groups, the Pods it runs, the ConfigMaps, Secrets and Networks they reference, and the ExternalSecrets and SecretStores behind those Secrets. `-a`/`--all` lists every host's; `get hosts` always does. `*.tpl` templates are listed as rendered with the host's values; without a host `get` lists the plain documents and says how many templates it skipped. A `--repo` directory or URL renders without agent.yaml's values, and `-o yaml` shows a template rendered, not as written.
 
 ## The agent
 

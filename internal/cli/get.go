@@ -48,18 +48,17 @@ var kinds = map[string]string{
 func newGetCommand(f *configFlags) *cobra.Command {
 	var out outputFormat
 	var repo, revision string
+	var all bool
 	cmd := &cobra.Command{
 		Use:   "get [KIND] [NAME]",
 		Short: "list what a repository defines",
 		Long: "Lists the documents in every repository the agent config points at, fetched the same way\n" +
-			"the agent fetches them. --repo narrows that to one: the name of a repository in the agent\n" +
-			"config, a local directory, or a git URL to clone (in that order of precedence).\n" +
+			"the agent fetches them. --repo to filter against a Host\n" +
 			"KIND is one of pods, hosts, groups, environments, networks, configmaps, secrets,\n" +
 			"secretstores, externalsecrets, or all\n" +
-			"(the default). With NAME, only that document; add -o yaml to print it as written\n" +
-			"(a template as rendered).\n\n" +
-			"*.tpl files are listed as rendered for a host: the agent's own for its repository,\n" +
-			"--host for any (a --repo directory or URL renders without agent.yaml's values).",
+			"(the default). Specifying a  NAME will only show that document; add -o yaml to print it as written\n" +
+			"On a configured podcd instance, it will lists only what the instance is reconciling.\n" +
+			"Use --all to list every host's manifests and",
 		Args: cobra.MaximumNArgs(2),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			kind, name := "", ""
@@ -76,47 +75,69 @@ func newGetCommand(f *configFlags) *cobra.Command {
 
 			ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 			defer stop()
-			ix, values, host, offline, err := loadIndex(ctx, f, repo, revision)
+			src, err := loadIndex(ctx, f, repo, revision)
 			if err != nil {
 				return err
 			}
-			for _, r := range offline {
+			for _, r := range src.offline {
 				fmt.Fprintf(cmd.ErrOrStderr(), "warning: repository %q could not be refreshed; showing the commit already on disk\n", r)
 			}
-			// Templates are documents only once rendered with a host's values, and
-			// only render kinds a template may hold. An explicit --host must exist
-			// whatever the kind; an identity without a Host document still lists the rest.
+			// With a host, templates render with its values and the listing narrows to
+			// what it uses. An explicit --host must exist; an identity without a Host
+			// document lists the repository unrendered and unfiltered.
+			docs := []*config.Documents{&src.ix.Documents}
+			var used map[string]map[string]bool
+			var why error // why templates were not rendered
 			unrendered := 0
-			n := len(ix.Templates())
-			if (n == 0 || !templatable(kind)) && f.host != "" {
-				if err := ix.CheckHost(f.host); err != nil {
+			if templatable(kind) {
+				unrendered = len(src.ix.Templates())
+			}
+			if src.host != "" {
+				v, err := src.ix.View(ctx, src.host, src.values, src.secrets)
+				_, defined := src.ix.Hosts[src.host]
+				switch {
+				case v == nil && f.host != "":
 					return err
+				case v == nil && defined:
+					// The Host names undefined layers: reconcile fails on it too, so always say.
+					fmt.Fprintf(cmd.ErrOrStderr(), "warning: listing everything: %v\n", err)
+					unrendered = 0
+				case v == nil:
+					why = err
+				default:
+					// Only a failure that touches this kind is worth a warning.
+					if err != nil && (kind == "" || v.Used[kind] == nil) {
+						fmt.Fprintf(cmd.ErrOrStderr(), "warning: %v\n", err)
+					}
+					if v.Rendered != nil {
+						docs = append(docs, v.Rendered)
+					}
+					unrendered = 0 // rendered, or the warning above says why not
+					// `get hosts` is how to find the others, so it is never narrowed.
+					if !all && kind != config.KindHost {
+						used = v.Used
+					}
 				}
 			}
-			if n > 0 && templatable(kind) {
-				var renderErr error
-				if host != "" {
-					var rendered *config.Index
-					if rendered, renderErr = ix.ForHost(host, values); renderErr == nil {
-						ix = rendered
-					}
-				}
-				if host == "" || renderErr != nil {
-					if f.host != "" {
-						return renderErr
-					}
-					unrendered = n
-					if renderErr != nil {
-						fmt.Fprintf(cmd.ErrOrStderr(), "warning: %d template(s) not listed: %v; pass --host to render them with another host's values\n", n, renderErr)
-					} else {
-						fmt.Fprintf(cmd.ErrOrStderr(), "warning: %d template(s) not listed: pass --host to render them with that host's values\n", n)
-					}
+			if unrendered > 0 {
+				if why != nil {
+					fmt.Fprintf(cmd.ErrOrStderr(), "warning: %d template(s) not listed: %v; pass --host to render them with another host's values\n", unrendered, why)
+				} else {
+					fmt.Fprintf(cmd.ErrOrStderr(), "warning: %d template(s) not listed: pass --host to render them with that host's values\n", unrendered)
 				}
 			}
 
-			items := collect(ix, kind, name)
+			items := collect(docs, kind, name)
+			found := len(items)
+			items = slices.DeleteFunc(items, func(it item) bool {
+				set, ok := used[it.Kind]
+				return ok && !set[it.Name]
+			})
 			if name != "" && len(items) == 0 {
-				if unrendered > 0 {
+				switch {
+				case found > 0:
+					return fmt.Errorf("no %s named %q that %s uses (--all lists every host's)", orAll(kind), name, src.host)
+				case unrendered > 0:
 					return fmt.Errorf("no %s named %q among the plain documents; %d template(s) were not rendered, pass --host", orAll(kind), name, unrendered)
 				}
 				return fmt.Errorf("no %s named %q", orAll(kind), name)
@@ -137,6 +158,7 @@ func newGetCommand(f *configFlags) *cobra.Command {
 	out.addFlag(cmd)
 	cmd.Flags().StringVar(&repo, "repo", "", "only this repository: a name from the agent config, a local directory, or a git URL to clone")
 	cmd.Flags().StringVar(&revision, "revision", "main", "branch, tag or commit to read when --repo is a git URL")
+	cmd.Flags().BoolVarP(&all, "all", "a", false, "every host's documents, not only what the host uses")
 	return cmd
 }
 
@@ -149,43 +171,57 @@ func templatable(kind string) bool {
 	return false
 }
 
+// source is what get reads: the index, agent.yaml's values and registry
+// Secrets, the host it renders and filters for, and repositories found offline.
+type source struct {
+	ix      *config.Index
+	values  config.Values
+	secrets []string
+	host    string
+	offline []string
+}
+
 // loadIndex reads the agent config's repository, or --repo as a configured
-// repository name, a local directory, or a git URL. It also returns the
-// agent.yaml values and the host that templates render for: the agent's
+// repository name, a local directory, or a git URL. The host is the agent's
 // identity for its own repository, only --host for any other.
-func loadIndex(ctx context.Context, f *configFlags, repo, revision string) (*config.Index, config.Values, string, []string, error) {
+func loadIndex(ctx context.Context, f *configFlags, repo, revision string) (source, error) {
 	env, setupErr := setup(*f)
-	if repo == "" {
-		if setupErr != nil {
-			return nil, nil, "", nil, setupErr
+	if repo == "" && setupErr != nil {
+		return source{}, setupErr
+	}
+	if repo == "" || setupErr == nil && env.cfg.Repository.Name == repo {
+		var only []string
+		if repo != "" {
+			only = []string{repo}
 		}
-		ix, values, _, offline, err := env.engine.Index(ctx)
-		return ix, values, env.engine.Identity().Host, offline, err
+		ix, values, _, offline, err := env.engine.Index(ctx, only...)
+		var secrets []string
+		for _, r := range env.cfg.Registries {
+			if r.SecretRef != "" {
+				secrets = append(secrets, r.SecretRef)
+			}
+		}
+		return source{ix: ix, values: values, secrets: secrets, host: env.engine.Identity().Host, offline: offline}, err
 	}
-	if setupErr == nil && env.cfg.Repository.Name == repo {
-		ix, values, _, offline, err := env.engine.Index(ctx, repo)
-		return ix, values, env.engine.Identity().Host, offline, err
-	}
-	host := f.host
 
 	// One explicit repository needs no label in front of its paths.
 	ix := config.NewIndex()
 	if info, err := os.Stat(repo); err == nil && info.IsDir() {
-		return ix, nil, host, nil, ix.LoadTree("", repo)
+		return source{ix: ix, host: f.host}, ix.LoadTree("", repo)
 	}
 	if !strings.Contains(repo, "://") && !strings.HasPrefix(repo, "git@") {
-		return nil, nil, "", nil, fmt.Errorf("%s: %s", repo, notARepo(env, setupErr))
+		return source{}, fmt.Errorf("%s: %s", repo, notARepo(env, setupErr))
 	}
 	tmp, err := os.MkdirTemp("", "podcd-get-")
 	if err != nil {
-		return nil, nil, "", nil, err
+		return source{}, err
 	}
 	defer os.RemoveAll(tmp)
 	r := git.New("repo", repo, revision, "", tmp)
 	if _, err := r.Sync(ctx); err != nil {
-		return nil, nil, "", nil, err
+		return source{}, err
 	}
-	return ix, nil, host, nil, ix.LoadTree("", r.TreePath())
+	return source{ix: ix, host: f.host}, ix.LoadTree("", r.TreePath())
 }
 
 // notARepo explains what --repo accepts.
@@ -196,8 +232,8 @@ func notARepo(env *environment, setupErr error) string {
 	return fmt.Sprintf("not the configured repository (%s), a directory, or a git URL", env.cfg.Repository.Name)
 }
 
-// collect flattens the index into sorted items, filtered by kind and name.
-func collect(ix *config.Index, kind, name string) []item {
+// collect flattens document sets into sorted items, filtered by kind and name.
+func collect(sets []*config.Documents, kind, name string) []item {
 	var items []item
 	add := func(k, n string, src config.Source, spec any, cols ...string) {
 		if (kind != "" && kind != k) || (name != "" && name != n) {
@@ -205,41 +241,43 @@ func collect(ix *config.Index, kind, name string) []item {
 		}
 		items = append(items, item{Kind: k, Name: n, Source: src.String(), Spec: spec, raw: src.Raw, cols: cols})
 	}
-	for n, d := range ix.Pods {
-		add(config.KindPod, n, d.Source, d.Spec.Spec, containerNames(d.Spec), podPorts(d.Spec))
-	}
-	for n, d := range ix.Hosts {
-		add(config.KindHost, n, d.Source, d.Spec, dash(d.Spec.Environment), dash(strings.Join(d.Spec.Groups, ",")), dash(strings.Join(d.Spec.Applications, ",")))
-	}
-	for n, d := range ix.Groups {
-		add(config.KindGroup, n, d.Source, d.Spec, dash(strings.Join(d.Spec.Applications, ",")), strconv.Itoa(len(d.Spec.Overrides)))
-	}
-	for n, d := range ix.Environments {
-		add(config.KindEnvironment, n, d.Source, d.Spec, dash(strings.Join(d.Spec.Applications, ",")), strconv.Itoa(len(d.Spec.Overrides)))
-	}
-	for n, d := range ix.Networks {
-		add(config.KindNetwork, n, d.Source, d.Spec, dash(d.Spec.Driver), dash(d.Spec.Subnet))
-	}
-	for n, d := range ix.ConfigMaps {
-		add(config.KindConfigMap, n, d.Source, d.Spec.Data, keyList(slices.Sorted(maps.Keys(d.Spec.Data))))
-	}
-	for n, d := range ix.Secrets {
-		// StringData holds references, not values.
-		add(config.KindSecret, n, d.Source, d.Spec.StringData, keyList(slices.Sorted(maps.Keys(d.Spec.StringData))))
-	}
-	for n, d := range ix.SecretStores {
-		add(config.KindSecretStore, n, d.Source, d.Spec, storeProvider(d.Spec.Provider))
-	}
-	for n, d := range ix.ExternalSecrets {
-		// Secret key names only; values are fetched at reconcile, never here.
-		keys := make([]string, 0, len(d.Spec.Data)+len(d.Spec.DataFrom))
-		for _, k := range d.Spec.Data {
-			keys = append(keys, k.SecretKey)
+	for _, ix := range sets {
+		for n, d := range ix.Pods {
+			add(config.KindPod, n, d.Source, d.Spec.Spec, containerNames(d.Spec), podPorts(d.Spec))
 		}
-		for _, k := range d.Spec.DataFrom {
-			keys = append(keys, "all of "+k.Extract.Key)
+		for n, d := range ix.Hosts {
+			add(config.KindHost, n, d.Source, d.Spec, dash(d.Spec.Environment), dash(strings.Join(d.Spec.Groups, ",")), dash(strings.Join(d.Spec.Applications, ",")))
 		}
-		add(config.KindExternalSecret, n, d.Source, d.Spec, d.Spec.SecretStoreRef.Name, cmp.Or(d.Spec.Target.Name, n), keyList(keys))
+		for n, d := range ix.Groups {
+			add(config.KindGroup, n, d.Source, d.Spec, dash(strings.Join(d.Spec.Applications, ",")), strconv.Itoa(len(d.Spec.Overrides)))
+		}
+		for n, d := range ix.Environments {
+			add(config.KindEnvironment, n, d.Source, d.Spec, dash(strings.Join(d.Spec.Applications, ",")), strconv.Itoa(len(d.Spec.Overrides)))
+		}
+		for n, d := range ix.Networks {
+			add(config.KindNetwork, n, d.Source, d.Spec, dash(d.Spec.Driver), dash(d.Spec.Subnet))
+		}
+		for n, d := range ix.ConfigMaps {
+			add(config.KindConfigMap, n, d.Source, d.Spec.Data, keyList(slices.Sorted(maps.Keys(d.Spec.Data))))
+		}
+		for n, d := range ix.Secrets {
+			// StringData holds references, not values.
+			add(config.KindSecret, n, d.Source, d.Spec.StringData, keyList(slices.Sorted(maps.Keys(d.Spec.StringData))))
+		}
+		for n, d := range ix.SecretStores {
+			add(config.KindSecretStore, n, d.Source, d.Spec, storeProvider(d.Spec.Provider))
+		}
+		for n, d := range ix.ExternalSecrets {
+			// Secret key names only; values are fetched at reconcile, never here.
+			keys := make([]string, 0, len(d.Spec.Data)+len(d.Spec.DataFrom))
+			for _, k := range d.Spec.Data {
+				keys = append(keys, k.SecretKey)
+			}
+			for _, k := range d.Spec.DataFrom {
+				keys = append(keys, "all of "+k.Extract.Key)
+			}
+			add(config.KindExternalSecret, n, d.Source, d.Spec, d.Spec.SecretStoreRef.Name, cmp.Or(d.Spec.Target.Name, n), keyList(keys))
+		}
 	}
 	slices.SortFunc(items, func(a, b item) int {
 		return cmp.Or(cmp.Compare(kindOrder(a.Kind), kindOrder(b.Kind)), cmp.Compare(a.Name, b.Name))

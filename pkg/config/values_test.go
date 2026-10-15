@@ -378,34 +378,124 @@ spec: {applications: [from-values]}
 	}
 }
 
-func TestForHostAddsRenderedTemplatesWithoutTouchingTheIndex(t *testing.T) {
+func TestViewRendersTemplatesBesideTheIndex(t *testing.T) {
 	ix := loadIndex(t, map[string]string{
 		"app.yaml.tpl": "apiVersion: v1\nkind: Pod\nmetadata:\n  name: '{{ .Values.name }}'\nspec:\n  containers:\n    - name: web\n      image: nginx\n",
 		"host.yaml":    "apiVersion: gitops.podcd.io/v1\nkind: Host\nmetadata: {name: vm-1}\nspec: {applications: [from-values]}\n",
 	})
-	rendered, err := ix.ForHost("vm-1", Values{"name": "from-values"})
+	v, err := ix.View(context.Background(), "vm-1", Values{"name": "from-values"}, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, ok := rendered.Pods["from-values"]; !ok {
-		t.Fatalf("the rendered Pod should be listed: %v", rendered.Pods)
+	if _, ok := v.Rendered.Pods["from-values"]; !ok {
+		t.Fatalf("the rendered Pod should be in Rendered: %v", v.Rendered.Pods)
 	}
-	if _, ok := rendered.Hosts["vm-1"]; !ok {
-		t.Fatal("the plain documents should be kept")
+	if !v.Used[KindPod]["from-values"] || !v.Used[KindHost]["vm-1"] {
+		t.Fatalf("vm-1 runs from-values: %v", v.Used)
 	}
 	if _, ok := ix.Pods["from-values"]; ok {
-		t.Fatal("ForHost must not add to the index it renders from")
+		t.Fatal("View must not add to the index it renders from")
 	}
 }
 
-func TestForHostKeepsTheDefinedTwiceRule(t *testing.T) {
+// A template that does not render still leaves what the Host document says.
+func TestViewKeepsTheDefinedTwiceRule(t *testing.T) {
 	ix := loadIndex(t, map[string]string{
 		"app.yaml":     "apiVersion: v1\nkind: Pod\nmetadata: {name: web}\nspec:\n  containers:\n    - name: web\n      image: nginx\n",
 		"app.yaml.tpl": "apiVersion: v1\nkind: Pod\nmetadata: {name: web}\nspec:\n  containers:\n    - name: web\n      image: nginx\n",
 		"host.yaml":    "apiVersion: gitops.podcd.io/v1\nkind: Host\nmetadata: {name: vm-1}\nspec: {applications: [web]}\n",
 	})
-	if _, err := ix.ForHost("vm-1", nil); err == nil || !strings.Contains(err.Error(), "defined twice") {
+	v, err := ix.View(context.Background(), "vm-1", nil, nil)
+	if err == nil || !strings.Contains(err.Error(), "defined twice") {
 		t.Fatalf("want a defined-twice error, got %v", err)
+	}
+	if v == nil || v.Rendered != nil || !v.Used[KindHost]["vm-1"] || v.Used[KindPod] != nil {
+		t.Fatalf("want the host-level view only: %+v", v)
+	}
+}
+
+// Used follows the Pods as the host runs them: after overrides, without excluded
+// ones, through pull Secrets, registry secretRefs, and ExternalSecrets that
+// default their target to their own name.
+func TestViewUsedFollowsWhatTheHostRuns(t *testing.T) {
+	ix := loadIndex(t, map[string]string{"all.yaml": `apiVersion: v1
+kind: Pod
+metadata: {name: web}
+spec:
+  imagePullSecrets: [{name: pull}]
+  containers:
+    - name: web
+      image: nginx` + digest + `
+---
+apiVersion: v1
+kind: Pod
+metadata: {name: gone}
+spec:
+  containers:
+    - name: gone
+      image: nginx` + digest + `
+      envFrom: [{configMapRef: {name: gone-cm}}]
+---
+apiVersion: v1
+kind: ConfigMap
+metadata: {name: added-cm}
+data: {k: v}
+---
+apiVersion: external-secrets.io/v1beta1
+kind: SecretStore
+metadata: {name: local}
+spec: {provider: {env: {}}}
+---
+apiVersion: external-secrets.io/v1beta1
+kind: ExternalSecret
+metadata: {name: pull}
+spec:
+  secretStoreRef: {name: local}
+  data: [{secretKey: .dockerconfigjson, remoteRef: {key: PULL}}]
+---
+apiVersion: external-secrets.io/v1beta1
+kind: ExternalSecret
+metadata: {name: reg-es}
+spec:
+  secretStoreRef: {name: local}
+  target: {name: reg}
+  data: [{secretKey: .dockerconfigjson, remoteRef: {key: REG}}]
+---
+apiVersion: gitops.podcd.io/v1
+kind: Group
+metadata: {name: all}
+spec: {applications: [web, gone]}
+---
+apiVersion: gitops.podcd.io/v1
+kind: Host
+metadata: {name: vm-1}
+spec:
+  groups: [all]
+  excludeApplications: [gone]
+  overrides:
+    web:
+      spec:
+        containers:
+          - name: web
+            envFrom: [{configMapRef: {name: added-cm}}]
+`})
+	v, err := ix.View(context.Background(), "vm-1", nil, []string{"reg"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, c := range []struct {
+		kind, name string
+		want       bool
+	}{
+		{KindPod, "web", true}, {KindPod, "gone", false},
+		{KindConfigMap, "added-cm", true}, {KindConfigMap, "gone-cm", false},
+		{KindSecret, "pull", true}, {KindSecret, "reg", true},
+		{KindExternalSecret, "pull", true}, {KindExternalSecret, "reg-es", true},
+		{KindSecretStore, "local", true}, {KindGroup, "all", true},
+	} {
+		if v.Used[c.kind][c.name] != c.want {
+			t.Errorf("Used[%s][%s] = %v, want %v", c.kind, c.name, !c.want, c.want)
+		}
 	}
 }
 
