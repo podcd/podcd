@@ -525,11 +525,13 @@ func TestMetricsAreOffWithALoopbackDefault(t *testing.T) {
 func TestMetricsAddressMustBeHostPort(t *testing.T) {
 	base := "envFile: /e\nrepository: {url: https://example.com/r.git}\n"
 	for addr, ok := range map[string]bool{
-		`""`:             true,
-		"127.0.0.1:9464": true,
-		":9464":          true,
-		"9464":           false,
-		"localhost:":     false,
+		`""`:              true,
+		"127.0.0.1:9464":  true,
+		":9464":           true,
+		"9464":            false,
+		"localhost:":      false,
+		"localhost:99999": false,
+		"localhost:http":  false,
 	} {
 		_, err := ParseAgentConfig([]byte(base + "metricsAddress: " + addr))
 		if (err == nil) != ok {

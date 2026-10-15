@@ -3,7 +3,6 @@ package cli
 import (
 	"context"
 	"fmt"
-	"net"
 	"strings"
 
 	"github.com/spf13/cobra"
@@ -202,18 +201,8 @@ func newRunCommand(f *configFlags) *cobra.Command {
 		Short:   "reconcile in a loop (this is what the systemd service runs)",
 		Args:    cobra.NoArgs,
 		RunE: withEngine(f, func(ctx context.Context, env *environment) error {
-			if addr := env.cfg.MetricsAddress; env.cfg.MetricsEnabled {
-				// Metrics are an aid: a taken port is logged, never a reason to stop deploying.
-				if ln, err := net.Listen("tcp", addr); err != nil {
-					env.log.Error("metrics are not served", "address", addr, "error", err)
-				} else {
-					env.log.Info("serving metrics", "url", "http://"+ln.Addr().String()+"/metrics")
-					go func() {
-						if err := serveMetrics(ctx, ln, env.engine); err != nil {
-							env.log.Error("metrics server stopped", "error", err)
-						}
-					}()
-				}
+			if env.cfg.MetricsEnabled {
+				startMetrics(ctx, env)
 			}
 			return env.engine.Run(ctx)
 		}),

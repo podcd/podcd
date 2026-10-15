@@ -15,7 +15,7 @@ import (
 
 func TestMetricsRenderTheState(t *testing.T) {
 	store := state.NewFileStore(filepath.Join(t.TempDir(), "state.json"))
-	e := &Engine{store: store}
+	e := &Engine{store: store, log: slog.New(slog.DiscardHandler)}
 	e.ident.Host = "vm-1"
 	e.cfg.Repository = config.RepositorySpec{Name: "infra", Revision: "main"}
 	at := time.Unix(1700000000, 0)
@@ -39,10 +39,10 @@ func TestMetricsRenderTheState(t *testing.T) {
 	want := `# HELP podcd_info The agent's version and host, always 1.
 # TYPE podcd_info gauge
 podcd_info{version="v1.2.3\"x",host="vm-1"} 1
-# HELP podcd_last_attempt_timestamp_seconds When the last reconcile started, whether it succeeded or not.
+# HELP podcd_last_attempt_timestamp_seconds When the last reconcile started, whether it succeeded or not; 0 if never.
 # TYPE podcd_last_attempt_timestamp_seconds gauge
 podcd_last_attempt_timestamp_seconds 1700000060
-# HELP podcd_last_success_timestamp_seconds When the last successful reconcile started.
+# HELP podcd_last_success_timestamp_seconds When the last successful reconcile started; 0 if never.
 # TYPE podcd_last_success_timestamp_seconds gauge
 podcd_last_success_timestamp_seconds 1700000000
 # HELP podcd_consecutive_failures Reconciles failed since the last success.
@@ -136,8 +136,14 @@ func TestMetricsSurviveALostState(t *testing.T) {
 		if err := e.WriteMetrics(&b, "dev"); err != nil {
 			t.Fatalf("state %q: %v", content, err)
 		}
-		if !strings.Contains(b.String(), "podcd_consecutive_failures 0\n") {
-			t.Errorf("state %q:\n%s", content, b.String())
+		for _, line := range []string{
+			"podcd_last_attempt_timestamp_seconds 0",
+			"podcd_last_success_timestamp_seconds 0",
+			"podcd_consecutive_failures 0",
+		} {
+			if !strings.Contains(b.String(), line+"\n") {
+				t.Errorf("state %q: missing %q in:\n%s", content, line, b.String())
+			}
 		}
 	}
 }

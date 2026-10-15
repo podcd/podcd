@@ -51,8 +51,8 @@ With `metricsEnabled: true`, the agent serves `GET /metrics` on `metricsAddress`
 | Metric | Meaning |
 |---|---|
 | `podcd_info{version,host}` | Always 1; the agent's version and host. |
-| `podcd_last_attempt_timestamp_seconds` | When the last reconcile started, successful or not. |
-| `podcd_last_success_timestamp_seconds` | When the last successful reconcile started. |
+| `podcd_last_attempt_timestamp_seconds` | When the last reconcile started, successful or not; 0 if never. |
+| `podcd_last_success_timestamp_seconds` | When the last successful reconcile started; 0 if never, so the age alert below fires on a host that never succeeded. |
 | `podcd_consecutive_failures` | Reconciles failed since the last success. |
 | `podcd_repository_info{repository,target_revision,last_attempt_revision,last_success_revision}` | Always 1; see [Revisions](#revisions). |
 | `podcd_repository_behind{repository}` | 1 if the host does not run the commit the last reconcile tried to deploy. |
@@ -84,4 +84,4 @@ podcd records per repository in `state.json`, and exports with `podcd_repository
 | `last_attempt_revision` | The commit the target revision resolved to on the last reconcile: what podcd tried to deploy (`lastAttempt.revisions`). |
 | `last_success_revision` | The commit of the last successful reconcile, applied and healthy: what the host runs (`lastSuccess.revisions`). |
 
-`podcd_repository_behind` is 1 while the two commits differ: a newer commit has not reconciled successfully yet. While the remote is unreachable podcd compares against the commit on disk, so check `podcd_repository_offline` too.
+`podcd_repository_behind` is 1 while the two commits differ: a newer commit has not reconciled successfully yet. While the remote is unreachable podcd compares against the commit on disk, so check `podcd_repository_offline` too. It reads 0 when the last reconcile failed before the commit was known, e.g. on an authentication error.

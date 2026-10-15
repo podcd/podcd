@@ -10,6 +10,7 @@ import (
 	"os"
 	"os/user"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"time"
 
@@ -278,6 +279,8 @@ func (c AgentConfig) Validate() error {
 	if c.MetricsAddress != "" {
 		if _, port, err := net.SplitHostPort(c.MetricsAddress); err != nil || port == "" {
 			p.add("metricsAddress %q must be host:port, e.g. 127.0.0.1:9464", c.MetricsAddress)
+		} else if _, err := strconv.ParseUint(port, 10, 16); err != nil {
+			p.add("metricsAddress %q has no valid port (0-65535)", c.MetricsAddress)
 		}
 	}
 	return p.err()

@@ -8,6 +8,7 @@ import (
 	"strings"
 
 	"github.com/podcd/podcd/pkg/model"
+	"github.com/podcd/podcd/pkg/state"
 )
 
 // WriteMetrics renders state.json in the Prometheus text format. It reads the
@@ -17,7 +18,7 @@ import (
 func (e *Engine) WriteMetrics(w io.Writer, version string) error {
 	st, err := e.store.Load()
 	if err != nil {
-		e.log.Warn("local state could not be read", "error", err)
+		e.log.Debug("local state could not be read", "error", err)
 	}
 	var b strings.Builder
 	gauge := func(name, help string) {
@@ -27,14 +28,11 @@ func (e *Engine) WriteMetrics(w io.Writer, version string) error {
 	gauge("podcd_info", "The agent's version and host, always 1.")
 	fmt.Fprintf(&b, "podcd_info{version=%s,host=%s} 1\n", label(version), label(e.ident.Host))
 
-	gauge("podcd_last_attempt_timestamp_seconds", "When the last reconcile started, whether it succeeded or not.")
-	if a := st.LastAttempt; a != nil {
-		fmt.Fprintf(&b, "podcd_last_attempt_timestamp_seconds %d\n", a.At.Unix())
-	}
-	gauge("podcd_last_success_timestamp_seconds", "When the last successful reconcile started.")
-	if a := st.LastSuccess; a != nil {
-		fmt.Fprintf(&b, "podcd_last_success_timestamp_seconds %d\n", a.At.Unix())
-	}
+	// 0 for never, so an age alert fires instead of finding no sample.
+	gauge("podcd_last_attempt_timestamp_seconds", "When the last reconcile started, whether it succeeded or not; 0 if never.")
+	fmt.Fprintf(&b, "podcd_last_attempt_timestamp_seconds %d\n", unix(st.LastAttempt))
+	gauge("podcd_last_success_timestamp_seconds", "When the last successful reconcile started; 0 if never.")
+	fmt.Fprintf(&b, "podcd_last_success_timestamp_seconds %d\n", unix(st.LastSuccess))
 	gauge("podcd_consecutive_failures", "Reconciles failed since the last success.")
 	fmt.Fprintf(&b, "podcd_consecutive_failures %d\n", st.FailureCount)
 
@@ -74,6 +72,13 @@ var labelEscaper = strings.NewReplacer(`\`, `\\`, `"`, `\"`, "\n", `\n`)
 
 // label quotes a Prometheus label value.
 func label(s string) string { return `"` + labelEscaper.Replace(s) + `"` }
+
+func unix(a *state.Attempt) int64 {
+	if a == nil {
+		return 0
+	}
+	return a.At.Unix()
+}
 
 func bit(b bool) int {
 	if b {

@@ -3,6 +3,7 @@ package cli
 import (
 	"context"
 	"io"
+	"log/slog"
 	"net"
 	"net/http"
 	"strings"
@@ -44,5 +45,27 @@ func TestMetricsAreServedUntilTheAgentStops(t *testing.T) {
 	cancel()
 	if err := <-done; err != nil {
 		t.Fatalf("a stopping agent is not a metrics failure: %v", err)
+	}
+}
+
+// A taken port must not stop the agent: it is logged and no server is left behind.
+func TestMetricsOnATakenPortAreLogged(t *testing.T) {
+	newFakeHost(t, hostWith())
+	env, err := setup(configFlags{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	taken, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = taken.Close() }()
+	var logs strings.Builder
+	env.log = slog.New(slog.NewTextHandler(&logs, nil))
+	env.cfg.MetricsAddress = taken.Addr().String()
+
+	startMetrics(context.Background(), env)
+	if !strings.Contains(logs.String(), "metrics are not served") {
+		t.Errorf("logs:\n%s", logs.String())
 	}
 }
