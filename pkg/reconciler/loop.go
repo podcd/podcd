@@ -3,6 +3,7 @@ package reconciler
 import (
 	"context"
 	"errors"
+	"fmt"
 	"log/slog"
 	"math/rand"
 	"time"
@@ -80,16 +81,19 @@ func (e *Engine) pruneImages(ctx context.Context) error {
 	return nil
 }
 
-// logReconciled reports an idle pass at info once, then at debug until the revision changes,
-// something is applied or a reconcile fails. It returns the new idle key.
+// logReconciled reports an idle pass at info once, then at debug until the revision, the
+// application count or the offline repositories change, something is applied or a reconcile
+// fails. It returns the new idle key.
 func logReconciled(e *Engine, res Result, idle string) string {
 	if len(res.Applied) == 0 {
-		key := "idle:" + res.Desired.RevisionString()
+		rev := res.Desired.RevisionString()
+		// The prefix keeps the key from ever equalling "", the reset value.
+		key := fmt.Sprintf("idle:%s|%d|%v", rev, len(res.Desired.Applications), res.Offline)
 		lvl := slog.LevelInfo
 		if key == idle {
 			lvl = slog.LevelDebug
 		}
-		e.log.Log(context.Background(), lvl, "nothing to do", "revision", res.Desired.RevisionString(),
+		e.log.Log(context.Background(), lvl, "nothing to do", "revision", rev,
 			"applications", len(res.Desired.Applications), "took", res.Elapsed.Round(time.Millisecond).String())
 		return key
 	}
