@@ -576,6 +576,24 @@ func TestAvailableNamesWhatIsMissing(t *testing.T) {
 	}
 }
 
+// A containerized agent cannot see the host's generator; the host's podman version decides.
+func TestQuadletOfAContainerizedAgentIsTheHosts(t *testing.T) {
+	t.Setenv("CONTAINER_HOST", "unix:///run/user/1000/podman/podman.sock")
+	for server, want := range map[string]bool{"5.4.0\n": true, "4.9.4-rhel": true, "4.4.0": true, "4.3.1": false, "": false} {
+		r, f := newRuntime(t, func(string, []string) (string, error) { return server, nil })
+		if got := r.quadletPresent(context.Background()); got != want {
+			t.Errorf("server %q: got %v, want %v", server, got, want)
+		}
+		if !f.has("podman", "version --format {{.Server.Version}}") {
+			t.Fatalf("the host's podman was not asked: %+v", f.calls)
+		}
+	}
+	r, _ := newRuntime(t, func(string, []string) (string, error) { return "", errors.New("connection refused") })
+	if r.quadletPresent(context.Background()) {
+		t.Error("an unreachable host podman is no Quadlet")
+	}
+}
+
 func TestLogsTailsTheUnit(t *testing.T) {
 	r, f := newRuntime(t, func(string, []string) (string, error) { return "line\n", nil })
 	if out, err := r.Logs(context.Background(), "api", 0); err != nil || out != "line\n" {
