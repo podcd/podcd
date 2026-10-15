@@ -61,12 +61,31 @@ func newCreateCommand() *cobra.Command {
 		Long: "Builds one document from flags, per kind. It is checked with the same loader the agent\n" +
 			"uses and printed; put it where you want it (`>> apps.yaml`) and run `podcd lint`.",
 		Example: "  podcd create pod api --image ghcr.io/you/api:1.2.3 --port 8081:8080 >> apps.yaml",
+		// A kind that is no subcommand lands here as an argument.
+		Args: func(_ *cobra.Command, args []string) error {
+			if len(args) > 0 {
+				return unknownCreateKind(args[0])
+			}
+			return nil
+		},
 		RunE: func(cmd *cobra.Command, _ []string) error {
 			return cmd.Help()
 		},
 	}
+	// With flags, `create application api --image x` fails parsing before Args
+	// runs: name the kind, not the flag. Subcommands inherit this, so only for create itself.
+	cmd.SetFlagErrorFunc(func(c *cobra.Command, err error) error {
+		if args := c.Flags().Args(); c == cmd && len(args) > 0 {
+			return unknownCreateKind(args[0])
+		}
+		return err
+	})
 	cmd.AddCommand(newCreatePod(), newCreateNetwork(), newCreateHost(), newCreateGroup(), newCreateEnvironment())
 	return cmd
+}
+
+func unknownCreateKind(kind string) error {
+	return fmt.Errorf("unknown kind %q (pod, network, host, group, environment)", kind)
 }
 
 // emit prints documents, each after a separator, so output appends to a file cleanly.

@@ -46,7 +46,7 @@ type configFlags struct {
 
 func (f *configFlags) addFlags(root *cobra.Command) {
 	pf := root.PersistentFlags()
-	pf.StringVar(&f.config, "config", "", "agent config file (default: $PODCD_CONFIG, ~/.config/podcd/agent.yaml, /etc/podcd/agent.yaml)")
+	pf.StringVarP(&f.config, "config", "c", "", "agent config file (default: $PODCD_CONFIG, ~/.config/podcd/agent.yaml, /etc/podcd/agent.yaml)")
 	pf.StringVar(&f.host, "host", "", "act as this host identity instead of the configured one")
 	pf.StringVar(&f.logLevel, "log-level", "info", "debug, info, warn or error")
 	pf.StringVar(&f.logFormat, "log-format", "", "text or json")
@@ -54,7 +54,7 @@ func (f *configFlags) addFlags(root *cobra.Command) {
 
 // addConfigFlag adds --config for commands that read the agent config.
 func (f *configFlags) addConfigFlag(cmd *cobra.Command) {
-	cmd.Flags().StringVar(&f.config, "config", "", "agent config file (default: $PODCD_CONFIG, ~/.config/podcd/agent.yaml, /etc/podcd/agent.yaml)")
+	cmd.Flags().StringVarP(&f.config, "config", "c", "", "agent config file (default: $PODCD_CONFIG, ~/.config/podcd/agent.yaml, /etc/podcd/agent.yaml)")
 }
 
 func newRootCommand() *cobra.Command {

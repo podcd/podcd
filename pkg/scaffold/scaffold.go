@@ -282,7 +282,7 @@ This repository is the desired state for hosts managed by podcd. There is no
 prescribed layout: any .yaml file anywhere is read, and documents are found by
 kind and name.
 
-- `+"`apps.yaml`"+`  - what can run: Application (and Pod) documents
+- `+"`apps.yaml`"+`  - what can run: Pod documents
 - `+"`hosts.yaml`"+` - which host runs what: one Host per machine
 
 Point a host to this repository:
@@ -290,17 +290,18 @@ Point a host to this repository:
     podcd config create --host %s --repo-url <local path or url to this repository>
 
 Manual reconciliation:
+
     podcd validate
     podcd plan
     podcd reconcile
 
 To grow it, add documents with podcd or by hand:
 
-    podcd create application api --image ghcr.io/you/api:1.2.3 --port 8081:8080 >> apps.yaml
+    podcd create pod api --image ghcr.io/you/api:1.2.3 --port 8081:8080 >> apps.yaml
     podcd create group web --app nginx --app api >> groups.yaml
     podcd create host web-02 --group web >> hosts.yaml
     podcd lint
 
-Secrets are references (env:NAME, file:path, vault:mount/path/key)
+Secrets are references (env:NAME, file:path, vault:mount/path/key), never values.
 `, host)
 }

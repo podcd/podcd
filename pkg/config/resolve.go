@@ -213,7 +213,6 @@ type layer struct {
 	values           Values
 }
 
-// podOverrides and networkOverrides pick a layer's override map for overlay.
 // hostLayers looks up a host and collects its layers, lowest precedence first:
 // what they select, and their values merged onto base (agent.yaml's values).
 func (ix *Index) hostLayers(name string, base Values) (Doc[HostSpec], []layer, map[string]bool, Values, error) {
@@ -279,6 +278,12 @@ func (ix *Index) hostLayers(name string, base Values) (Doc[HostSpec], []layer, m
 	return host, layers, selected, values, nil
 }
 
+// CheckHost reports whether a host and the layers it names are defined, without rendering.
+func (ix *Index) CheckHost(name string) error {
+	_, _, _, _, err := ix.hostLayers(name, nil)
+	return err
+}
+
 // ForHost returns the documents as one host sees them: the plain files plus
 // the templates rendered with its values. base is agent.yaml's values.
 func (ix *Index) ForHost(name string, base Values) (*Index, error) {
@@ -305,6 +310,7 @@ func (ix *Index) ForHost(name string, base Values) (*Index, error) {
 	return out, nil
 }
 
+// podOverrides and networkOverrides pick a layer's override map for overlay.
 func podOverrides(l layer) map[string]Override     { return l.overrides }
 func networkOverrides(l layer) map[string]Override { return l.networkOverrides }
 
