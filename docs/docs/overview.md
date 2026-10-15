@@ -63,6 +63,8 @@ A port that cannot be bound is logged and the agent keeps reconciling without me
 
 The endpoint has no authentication and names the host, the version and every application. Keep it on loopback; bind another address only on a network you trust.
 
+A containerized agent (`examples/quadlet`) has its own loopback: set `metricsAddress: 0.0.0.0:9464` and publish it on the host's with `PublishPort=127.0.0.1:9464:9464`.
+
 To scrape the loopback address from a container, e.g. Grafana Alloy deployed by podcd, give its pod `hostNetwork: true`. That puts the pod in the host's network namespace: it reaches every port on the host and its own ports are opened on the host, so keep it to a scraper you trust.
 
 ```alloy

@@ -42,19 +42,23 @@ Image=ghcr.io/podcd/podcd:latest
 ContainerName=podcd-agent
 Exec=run
 
-# Run as this session's own user, mapped 1:1 rather than through the usual
-# subuid range - required for the bind-mounted sockets below to pass their
-# peer-credential checks. Assumes the primary GID equals the UID, true for
-# a typical dedicated service account (useradd -u N -U); adjust Group= if
-# yours differs.
-UserNS=keep-id:uid=%U,gid=%U
+# Run as this session's own user and primary group (%U, %G), mapped 1:1
+# rather than through the usual subuid range - required for the bind-mounted
+# sockets below to pass their peer-credential checks.
+UserNS=keep-id:uid=%U,gid=%G
 User=%U
-Group=%U
+Group=%G
 
 # The host's own systemd --user bus and Podman API socket live under its
 # runtime directory (%t = /run/user/<uid> in a user session).
 Volume=%t:%t
 Volume=/run/systemd/system:/run/systemd/system:ro
+# journalctl reads the journal files directly, not over the bus: `podcd logs`
+# and the output in health messages need the host's persistent journal and
+# its machine-id. Never add ,z/,Z to these two - relabelling them breaks the
+# host; on SELinux use SecurityLabelDisable=true instead.
+Volume=/var/log/journal:/var/log/journal:ro
+Volume=/etc/machine-id:/etc/machine-id:ro
 Environment=XDG_RUNTIME_DIR=%t
 Environment=CONTAINER_HOST=unix://%t/podman/podman.sock
 Environment=HOME=%h

@@ -91,10 +91,25 @@ func (r *Runtime) Available(ctx context.Context) (bool, string) {
 			return false, "no systemd user manager: " + err.Error()
 		}
 	}
-	if !quadletGeneratorPresent() {
+	if !r.quadletPresent(ctx) {
 		return false, "the Quadlet generator was not found; podman 4.4+ with quadlet is required"
 	}
 	return true, ""
+}
+
+// quadletPresent reports whether the host's podman has Quadlet.
+// A containerized agent (CONTAINER_HOST set) cannot see the host's generator
+// It asks the host's podman for its version: Quadlet ships with 4.4+.
+func (r *Runtime) quadletPresent(ctx context.Context) bool {
+	if os.Getenv("CONTAINER_HOST") == "" {
+		return quadletGeneratorPresent()
+	}
+	out, err := r.run(ctx, r.podman, "version", "--format", "{{.Server.Version}}")
+	var major, minor int
+	if _, scanErr := fmt.Sscanf(strings.TrimSpace(out), "%d.%d", &major, &minor); err != nil || scanErr != nil {
+		return false
+	}
+	return major > 4 || major == 4 && minor >= 4
 }
 
 // Inspect reads the real state of the host: the unit files on disk, what systemd thinks of them, and what Podman actually has running.
