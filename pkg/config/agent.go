@@ -6,9 +6,11 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"net"
 	"os"
 	"os/user"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"time"
 
@@ -74,6 +76,9 @@ type AgentConfig struct {
 
 	LogFormat string `yaml:"logFormat,omitempty" doc:"text or json."`
 
+	MetricsEnabled bool   `yaml:"metricsEnabled,omitempty" doc:"Serve Prometheus metrics at http://<metricsAddress>/metrics. Off by default: the agent listens on no port unless asked to."`
+	MetricsAddress string `yaml:"metricsAddress,omitempty" doc:"host:port the metrics are served on, when metricsEnabled."`
+
 	// Path this config was read from, for diagnostics.
 	Path string `yaml:"-"`
 }
@@ -92,6 +97,7 @@ func DefaultAgentConfig() AgentConfig {
 		SecretsDir:       "",
 		Prune:            &prune,
 		LogFormat:        "text",
+		MetricsAddress:   "127.0.0.1:9464",
 	}
 }
 
@@ -189,6 +195,7 @@ func (c *AgentConfig) applyDefaults() {
 	}
 	c.Runtime = cmp.Or(c.Runtime, d.Runtime)
 	c.LogFormat = cmp.Or(c.LogFormat, d.LogFormat)
+	c.MetricsAddress = cmp.Or(c.MetricsAddress, d.MetricsAddress)
 	c.StateDir = expandPath(cmp.Or(c.StateDir, d.StateDir))
 	c.UnitDir = expandPath(cmp.Or(c.UnitDir, d.UnitDir))
 	c.EnvFile = expandPath(c.EnvFile)
@@ -268,6 +275,13 @@ func (c AgentConfig) Validate() error {
 	}
 	if c.LogFormat != "text" && c.LogFormat != "json" {
 		p.add("logFormat %q must be text or json", c.LogFormat)
+	}
+	if c.MetricsAddress != "" {
+		if _, port, err := net.SplitHostPort(c.MetricsAddress); err != nil || port == "" {
+			p.add("metricsAddress %q must be host:port, e.g. 127.0.0.1:9464", c.MetricsAddress)
+		} else if _, err := strconv.ParseUint(port, 10, 16); err != nil {
+			p.add("metricsAddress %q has no valid port (0-65535)", c.MetricsAddress)
+		}
 	}
 	return p.err()
 }

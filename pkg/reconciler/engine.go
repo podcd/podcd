@@ -135,7 +135,7 @@ type Result struct {
 func (e *Engine) desiredState(ctx context.Context) (model.DesiredState, []string, map[string]string, map[string]bool, error) {
 	index, values, revisions, offline, err := e.source.LoadIndex(ctx)
 	if err != nil {
-		return model.DesiredState{}, offline, nil, nil, err
+		return model.DesiredState{}, offline, revisions, nil, err
 	}
 	prov := NewProvisioner(index, e.source.Secrets)
 	desired, err := index.Resolve(ctx, config.ResolveOptions{
@@ -212,7 +212,7 @@ func (e *Engine) Reconcile(ctx context.Context, opts Options) (Result, error) {
 
 	desired, offline, revisions, protected, resolveErr := e.desiredState(ctx)
 	if resolveErr != nil && len(protected) == 0 {
-		e.recordFailure(&st, started, revisions, resolveErr)
+		e.recordFailure(&st, started, offline, revisions, resolveErr)
 		return res, resolveErr
 	}
 	res.Offline = offline
@@ -220,14 +220,14 @@ func (e *Engine) Reconcile(ctx context.Context, opts Options) (Result, error) {
 
 	actual, err := e.rt.Inspect(ctx)
 	if err != nil {
-		e.recordFailure(&st, started, desired.Revisions, err)
+		e.recordFailure(&st, started, offline, desired.Revisions, err)
 		return res, err
 	}
 	res.Actual = actual
 
 	plan, err := planner.Build(desired, actual, e.rend, planner.Options{Prune: e.prune(opts.Prune), Protected: protected})
 	if err != nil {
-		e.recordFailure(&st, started, desired.Revisions, err)
+		e.recordFailure(&st, started, offline, desired.Revisions, err)
 		return res, err
 	}
 	res.Plan = plan
@@ -238,14 +238,14 @@ func (e *Engine) Reconcile(ctx context.Context, opts Options) (Result, error) {
 	}
 
 	if err := e.login(ctx, desired); err != nil {
-		e.recordFailure(&st, started, desired.Revisions, err)
+		e.recordFailure(&st, started, offline, desired.Revisions, err)
 		return res, err
 	}
 
 	applied, applyErr := e.apply(ctx, plan, desired, &st)
 	res.Applied = applied
 	if applyErr != nil {
-		e.recordFailure(&st, started, desired.Revisions, applyErr)
+		e.recordFailure(&st, started, offline, desired.Revisions, applyErr)
 		return res, applyErr
 	}
 
@@ -253,17 +253,17 @@ func (e *Engine) Reconcile(ctx context.Context, opts Options) (Result, error) {
 		health, unhealthy := e.checkHealth(ctx, desired, applied, &st)
 		res.Health = health
 		if unhealthy != nil {
-			e.recordFailure(&st, started, desired.Revisions, unhealthy)
+			e.recordFailure(&st, started, offline, desired.Revisions, unhealthy)
 			return res, unhealthy
 		}
 	}
 	if resolveErr != nil {
-		e.recordFailure(&st, started, desired.Revisions, resolveErr)
+		e.recordFailure(&st, started, offline, desired.Revisions, resolveErr)
 		return res, resolveErr
 	}
 
 	res.Elapsed = time.Since(started)
-	e.recordSuccess(&st, started, desired.Revisions, applied, res.Elapsed)
+	e.recordSuccess(&st, started, offline, desired.Revisions, applied, res.Elapsed)
 	return res, nil
 }
 
@@ -529,10 +529,11 @@ func (e *Engine) prune(override *bool) bool {
 	return e.cfg.PruneEnabled()
 }
 
-func (e *Engine) recordSuccess(st *state.State, started time.Time, revs map[string]string, applied []model.Action, elapsed time.Duration) {
+func (e *Engine) recordSuccess(st *state.State, started time.Time, offline []string, revs map[string]string, applied []model.Action, elapsed time.Duration) {
 	att := &state.Attempt{
 		At:        started.UTC(),
 		Revisions: revs,
+		Offline:   offline,
 		Actions:   describeActions(applied),
 		Duration:  elapsed.Round(time.Millisecond).String(),
 	}
@@ -542,10 +543,11 @@ func (e *Engine) recordSuccess(st *state.State, started time.Time, revs map[stri
 	e.save(st)
 }
 
-func (e *Engine) recordFailure(st *state.State, started time.Time, revs map[string]string, cause error) {
+func (e *Engine) recordFailure(st *state.State, started time.Time, offline []string, revs map[string]string, cause error) {
 	att := &state.Attempt{
 		At:        started.UTC(),
 		Revisions: revs,
+		Offline:   offline,
 		Error:     cause.Error(),
 		Duration:  time.Since(started).Round(time.Millisecond).String(),
 	}

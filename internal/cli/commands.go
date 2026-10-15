@@ -201,6 +201,9 @@ func newRunCommand(f *configFlags) *cobra.Command {
 		Short:   "reconcile in a loop (this is what the systemd service runs)",
 		Args:    cobra.NoArgs,
 		RunE: withEngine(f, func(ctx context.Context, env *environment) error {
+			if env.cfg.MetricsEnabled {
+				startMetrics(ctx, env)
+			}
 			return env.engine.Run(ctx)
 		}),
 	}

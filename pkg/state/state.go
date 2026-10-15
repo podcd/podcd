@@ -31,6 +31,7 @@ type Store interface {
 type Attempt struct {
 	At        time.Time         `json:"at"`
 	Revisions map[string]string `json:"revisions,omitempty"`
+	Offline   []string          `json:"offline,omitempty"`
 	Actions   []string          `json:"actions,omitempty"`
 	Error     string            `json:"error,omitempty"`
 	Duration  string            `json:"duration,omitempty"`
