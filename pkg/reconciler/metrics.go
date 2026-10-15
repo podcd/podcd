@@ -12,11 +12,12 @@ import (
 
 // WriteMetrics renders state.json in the Prometheus text format. It reads the
 // file on every call, so values survive a restart and include a manual
-// `podcd reconcile`.
+// `podcd reconcile`. A missing or unreadable file renders as a fresh state,
+// as it does for the reconcile that will rewrite it.
 func (e *Engine) WriteMetrics(w io.Writer, version string) error {
 	st, err := e.store.Load()
 	if err != nil {
-		return err
+		e.log.Warn("local state could not be read", "error", err)
 	}
 	var b strings.Builder
 	gauge := func(name, help string) {

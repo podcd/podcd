@@ -1,6 +1,7 @@
 package reconciler
 
 import (
+	"log/slog"
 	"os"
 	"path/filepath"
 	"strings"
@@ -79,6 +80,26 @@ func TestMetricsSeeAnOfflineRemote(t *testing.T) {
 	} {
 		if !strings.Contains(b.String(), line+"\n") {
 			t.Errorf("missing %q in:\n%s", line, b.String())
+		}
+	}
+}
+
+// state.json is metadata a user may delete or break; metrics must still render.
+func TestMetricsSurviveALostState(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "state.json")
+	e := &Engine{store: state.NewFileStore(path), log: slog.New(slog.DiscardHandler)}
+	for _, content := range []string{"", "{not json"} {
+		if content != "" {
+			if err := os.WriteFile(path, []byte(content), 0o600); err != nil {
+				t.Fatal(err)
+			}
+		}
+		var b strings.Builder
+		if err := e.WriteMetrics(&b, "dev"); err != nil {
+			t.Fatalf("state %q: %v", content, err)
+		}
+		if !strings.Contains(b.String(), "podcd_consecutive_failures 0\n") {
+			t.Errorf("state %q:\n%s", content, b.String())
 		}
 	}
 }

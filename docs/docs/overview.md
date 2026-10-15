@@ -66,4 +66,4 @@ prometheus.scrape "podcd" {
 }
 ```
 
-Useful alerts: `time() - podcd_last_success_timestamp_seconds > 900` (the agent is stuck, failing or gone), `podcd_application_healthy == 0`, and `podcd_repository_offline == 1` for longer than an outage you tolerate.
+Useful alerts: `time() - podcd_last_success_timestamp_seconds > 900` (the agent is stuck, failing or gone), `podcd_consecutive_failures > 3`, `podcd_application_healthy == 0`, and `podcd_repository_offline == 1` for longer than an outage you tolerate.
